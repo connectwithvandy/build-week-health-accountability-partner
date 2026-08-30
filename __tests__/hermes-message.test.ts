@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { POST } from "@/app/api/hermes/messages/route";
+import { loadTedPersonality } from "@/lib/coach/ted-personality";
 import { FIRST_REPLY } from "@/lib/hermes/handle-message";
 
 const textPayload = {
@@ -29,11 +30,46 @@ describe("local Hermes adapter", () => {
       status: "handled",
       message: {
         messageId: "hermes.local-test",
+        chatId: "919999999999",
         from: "919999999999",
         text: "Okay, let’s do this 🫡",
         reply: FIRST_REPLY,
       },
     });
+  });
+
+  it("handles the installed Hermes bridge event shape", async () => {
+    const request = new Request("http://localhost/api/hermes/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        messageId: "whatsapp.real-test",
+        chatId: "919999999999@s.whatsapp.net",
+        senderId: "919999999999@s.whatsapp.net",
+        body: "Okay let's do this",
+      }),
+    });
+
+    const response = await POST(request);
+    const result = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(result.message).toEqual({
+      messageId: "whatsapp.real-test",
+      chatId: "919999999999@s.whatsapp.net",
+      from: "919999999999@s.whatsapp.net",
+      text: "Okay let's do this",
+      reply: FIRST_REPLY,
+    });
+  });
+
+  it("loads the agreed Ted personality", async () => {
+    const personality = await loadTedPersonality();
+
+    expect(personality).toContain("One question at a time");
+    expect(personality).toContain("I never count their failures back at them");
+    expect(personality).toContain("I never write during quiet hours");
+    expect(personality).toContain("I do not diagnose");
   });
 
   it("does not handle payloads without a supported text message", async () => {

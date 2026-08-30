@@ -7,6 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "hermes:worker": "node scripts/run-hermes-worker.mjs",
     "simulate:hermes": "node scripts/simulate-hermes-message.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
