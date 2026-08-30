@@ -16,6 +16,22 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+To send a local WhatsApp-shaped text event through Ted's message handler, keep the
+development server running and use a second terminal:
+
+```bash
+npm run simulate:whatsapp
+```
+
+You can provide a different message after `--`:
+
+```bash
+npm run simulate:whatsapp -- "I ate two rotis and paneer"
+```
+
+The simulator endpoint is disabled in production. It does not contact Meta or send
+a real WhatsApp message.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

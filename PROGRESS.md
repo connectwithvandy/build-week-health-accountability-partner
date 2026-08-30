@@ -47,6 +47,9 @@ Last updated: Sun 30 Aug 2026, Asia/Kolkata
 - The public Vercel URL is `https://whatsapp-accountability-partner-ted.vercel.app`.
 - Convex is connected to the Next.js application.
 - Vitest and React Testing Library are configured; the baseline page test passes.
+- A secret-free `.env.example` documents the Convex, OpenAI, Meta WhatsApp and Vercel settings without containing credentials.
+- A local-only simulator sends Meta-shaped text events through the shared WhatsApp message handler and returns Ted's first reply.
+- Current official OpenAI documentation confirms support for typed text, meal photos, voice-note transcription and health-plan PDFs. The chosen starting models are `gpt-5.6-terra` for Responses API inputs and `gpt-transcribe` for voice notes.
 - The default production Convex deployment is `hardy-scorpion-901` in Europe (Ireland).
 - Vercel deploys Convex functions and the Next.js application together on every production build.
 - The original empty Virginia production deployment was permanently deleted after the Ireland replacement was verified.
@@ -63,6 +66,10 @@ First working path:
 
 Text is implemented first to establish the shared path. Photo, voice and PDF health-plan support remain required V1 scope and are added after the typed path works end to end.
 
+## Foundation result
+
+The local Foundation pass check is complete: the app runs and builds, tests pass, Convex connects, environment examples contain no secrets, and a simulated WhatsApp message reaches the shared message handler. OpenAI capability is verified from current official documentation, and OpenAI accepted the locally configured API key. Paid model responses and output quality are not yet tested.
+
 ## Exact next step
 
-Finish the remaining foundation work one item at a time: add a secret-free `.env.example`, add the local WhatsApp webhook simulator and verify the current OpenAI text, photo, voice and PDF capabilities. Meta developer-account verification remains blocked. Never save access tokens or verification codes in this file or in Git.
+Begin Milestone 1: replace the default Next.js screen with Ted's polished mobile-first landing page. Meta developer-account verification remains blocked. Never save access tokens or verification codes in this file or in Git.
