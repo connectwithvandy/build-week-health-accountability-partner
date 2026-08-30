@@ -46,6 +46,7 @@ Last updated: Sun 30 Aug 2026, Asia/Kolkata
 - GitHub `main` is connected to Vercel and deploys automatically.
 - The public Vercel URL is `https://whatsapp-accountability-partner-ted.vercel.app`.
 - Convex is connected to the Next.js application.
+- Vitest and React Testing Library are configured; the baseline page test passes.
 - The default production Convex deployment is `hardy-scorpion-901` in Europe (Ireland).
 - Vercel deploys Convex functions and the Next.js application together on every production build.
 - The original empty Virginia production deployment was permanently deleted after the Ireland replacement was verified.
@@ -64,4 +65,4 @@ Text is implemented first to establish the shared path. Photo, voice and PDF hea
 
 ## Exact next step
 
-Finish the remaining foundation work one item at a time: add automated testing, add a secret-free `.env.example`, add the local WhatsApp webhook simulator and verify the current OpenAI text, photo, voice and PDF capabilities. Meta developer-account verification remains blocked. Never save access tokens or verification codes in this file or in Git.
+Finish the remaining foundation work one item at a time: add a secret-free `.env.example`, add the local WhatsApp webhook simulator and verify the current OpenAI text, photo, voice and PDF capabilities. Meta developer-account verification remains blocked. Never save access tokens or verification codes in this file or in Git.
