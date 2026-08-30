@@ -16,21 +16,21 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-To send a local WhatsApp-shaped text event through Ted's message handler, keep the
+To send a local Hermes-shaped text event through Ted's message handler, keep the
 development server running and use a second terminal:
 
 ```bash
-npm run simulate:whatsapp
+npm run simulate:hermes
 ```
 
 You can provide a different message after `--`:
 
 ```bash
-npm run simulate:whatsapp -- "I ate two rotis and paneer"
+npm run simulate:hermes -- "I ate two rotis and paneer"
 ```
 
-The simulator endpoint is disabled in production. It does not contact Meta or send
-a real WhatsApp message.
+The adapter endpoint is disabled in production. It does not contact Hermes or send
+a real WhatsApp message; it only verifies the local message-handling path.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

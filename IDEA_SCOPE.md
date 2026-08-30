@@ -42,7 +42,7 @@ Read and apply `PRODUCT_BUILD_GUARDRAILS.md` alongside this document before maki
 | Primary track | AI Agent as a Service |
 | Riskiest assumption | An AI coach that remembers and proactively follows up will actually improve users’ follow-through. If users ignore the nudges or do not change what they do next, the product becomes just another tracker. |
 | The 30-minute no-code test for it | Run a compressed-day conversation: record one real commitment, send a timely manual nudge and one follow-up, then observe whether the person completes or meaningfully reschedules something they otherwise would have missed. |
-| First users (names, where they are) | Ankita, Richa, Khushboo and Arpit, reached by direct WhatsApp message on Mon 31 Aug. Together with Vandy, they fill all five recipient slots on Meta's test number. |
+| First users (names, where they are) | Ankita, Richa, Khushboo and Arpit, reached by direct WhatsApp message on Mon 31 Aug. Vandy uses the ordinary WhatsApp account paired to Hermes. |
 | Tuesday channel (where those users already gather) | Elfina Health community if posting is permitted; otherwise direct WhatsApp invitations. |
 | Personal artifact a user would screenshot | Daily review: meals logged, estimated totals, commitments completed and one realistic action still possible today. |
 | Saturday numbers I expect to report | 3+ real users; 9+ real inputs; all three input types used; 3+ automatic reminders delivered; 3+ daily reviews generated. |
@@ -257,19 +257,19 @@ The daily review shows meals logged, estimated totals, completed commitments and
 |---|---|---|---|---|
 | Live web product | Vercel | Project connected to public GitHub repo | Hobby functions have duration and usage limits | Official Vercel docs checked 29 Aug 2026; deploy still unverified |
 | Database and durable scheduling | Convex | Tables, actions, scheduled functions and cron | Scheduled jobs and function limits apply | Account ready; project creation and end-to-end access unverified |
-| WhatsApp send/receive | Meta WhatsApp Cloud API | Webhook and Graph API `/{phone-number-id}/messages` | Meta test number, not a production sender; up to 5 recipient numbers; template rules apply outside the 24-hour customer-service window | Account access and end-to-end delivery unverified; verify in M0 |
+| WhatsApp send/receive | Hermes | Local process paired by QR code to an ordinary WhatsApp account | The WhatsApp worker must run on the same machine as Hermes; QR session persistence, reconnect behavior and the installed local interface must be tested | End-to-end delivery unverified; verify in M0 |
 | Text, image, voice and PDF understanding | OpenAI API for now | Responses request and speech transcription | Exact model names, price, rate and file limits must be verified before implementation | Provider chosen; account access and hard-input test remain unverified |
 
 ### unsupported assumptions
 
-- Meta's test number can send into a real person's real WhatsApp thread. Evidence must identify it as test-number output, not production-sender output, and the judge decides the rubric level.
-- Reminder and daily-review templates may require approval and must be tested early; a production sender is not on the critical path.
+- Hermes can send into real WhatsApp threads after QR pairing. Evidence must show the paired ordinary account and a real end-to-end exchange.
+- Hermes session persistence, reconnect behavior and scheduled outbound messages must be tested early.
 - Precise high-frequency Vercel cron is not assumed; use Convex scheduling.
 - Medical advice and exact nutrition accuracy are unsupported. Raw-media storage until user-requested deletion is required V1 behavior.
 
 ### secrets and access
 
-Store provider keys in Convex or Vercel environment variables. Never put keys, phone numbers, tokens or webhook secrets in this document or the repository.
+Store provider keys in local or hosted environment variables as appropriate. Never put keys, phone numbers, tokens or Hermes session data in this document or the repository.
 
 ## 6. rubric strategy
 
@@ -279,13 +279,13 @@ Store provider keys in Convex or Vercel environment variables. Never put keys, p
 |---|---|
 | Primary track | AI Agent as a Service |
 | Why this track fits the idea and my advantage | Vandy has lived coaching experience, four reachable users and a product whose value is an unattended task reaching a real messaging surface. |
-| The one thing the track needs | A real coaching task completed unattended in a real person's WhatsApp thread through Meta Cloud API. Evidence must say that Meta's test number—not a production sender—sent it. |
+| The one thing the track needs | A real coaching task completed unattended in a real person's WhatsApp thread through the QR-paired Hermes bridge. |
 
 ### the track's rows
 
 | Row | Weight | Max base | Current level | Target level | Target points (L−1)×weight | Observable proof | Work required | Milestone |
 |---|---:|---:|---|---|---:|---|---|---|
-| Working product shipping real output | 20x | 80 | L1: no new live product | L4: real output on a real surface with limited babysitting | 60 | Timestamped real WhatsApp threads for fresh inputs, reminders and reviews, labelled as Meta test-number evidence | Complete golden path through Meta Cloud API | M1–M4 |
+| Working product shipping real output | 20x | 80 | L1: no new live product | L4: real output on a real surface with limited babysitting | 60 | Timestamped real WhatsApp threads for fresh inputs, reminders and reviews through the paired account | Complete golden path through Hermes | M1–M4 |
 | Agent org structure | 5x | 20 | L1: not implemented | L2: 2–3 roles with fixed handoffs | 5 | Trace names intake, interpreter and coach steps | Fixed routing only; no dynamic manager | M1 |
 | Observability | 7x | 28 | L1: no new run records | L3: open a run and see every step | 14 | Read-only run page and Convex rows | Store step, status, duration, estimated cost and error | M1–M3 |
 | Evaluation and iteration | 5x | 20 | L1: no evals | L3: named test set run manually | 10 | Results for 3 text, 3 photo and 3 voice cases | Save expected outcome and pass/fail | M1–M4 |
@@ -312,7 +312,7 @@ Fixed agent roles, a manual eval set, persistent memory, measured latency/cost a
 
 ### rubric traps
 
-A “multi-agent” label on one prompt, Meta test-number output called production-sender output, a dashboard without real runs, test accounts counted as signups, the same evidence used for two rows, or L4/L5 claims without screenshots and links.
+A “multi-agent” label on one prompt, simulated output called real WhatsApp output, a dashboard without real runs, test accounts counted as signups, the same evidence used for two rows, or L4/L5 claims without screenshots and links.
 
 ## 7. gtm plan
 
@@ -368,13 +368,13 @@ Required: WhatsApp onboarding, typed meal, multiple routine reminders, daily rev
 
 Acceptance test: a fresh user completes onboarding, saves at least two different commitments, logs a typed meal, receives both scheduled reminders and gets a daily review at the live URL/messaging surface without explanation.
 
-If behind: one WhatsApp user, typed meals, two fixed routine reminders and a text daily review; hardcode everything else. Use Meta's test number throughout and label the evidence accurately.
+If behind: one WhatsApp user, typed meals, two fixed routine reminders and a text daily review; hardcode everything else. Use the Hermes-paired account and label simulated versus real evidence accurately.
 
 ### M2 — media completion and first users (Mon 31 Aug, stop building at 5:00 PM)
 
-Required before 5:00 PM: add the five permitted recipients carefully—Ankita, Richa, Khushboo, Arpit and Vandy—because Meta's test number has no spare recipient slot. Attempt photo and voice through the same saved meal flow. At 5:00 PM hide any broken input type and stop building. That evening, Ankita, Richa, Khushboo and Arpit use the live working product; each creates a real first-use row; note where each stops.
+Required before 5:00 PM: verify the Hermes session remains connected, then invite Ankita, Richa, Khushboo and Arpit. Attempt photo and voice through the same saved meal flow. At 5:00 PM hide any broken input type and stop building. That evening, the four users use the working product; each creates a real first-use row; note where each stops.
 
-Acceptance test: four non-builder users complete the available core flow and one sentence per user records the biggest stop; all five recipient slots, including Vandy's, are accounted for.
+Acceptance test: four non-builder users complete the available core flow and one sentence per user records the biggest stop; Hermes remains connected throughout the test.
 
 If behind: one user on screen share using typed meals. Do not delay testing for photo or voice.
 
@@ -440,7 +440,7 @@ Number of real coaching tasks completed on real user messaging threads.
 ### claims I must not make
 
 - Medical or exact nutrition accuracy.
-- Production-sender WhatsApp output when Meta's test number was used.
+- Real WhatsApp output when only the local simulator was used.
 - Autonomous completion for any run Vandy manually triggered or approved.
 
 ## 10. test plan
@@ -466,7 +466,7 @@ Number of real coaching tasks completed on real user messaging threads.
 
 | Risk | Probability | Damage | Earliest test | Mitigation | Fallback |
 |---|---|---|---|---|---|
-| WhatsApp reminder and daily-review template approval | High | Scheduled coaching messages cannot be sent as designed | M0 | Submit and test both templates immediately; keep proof of approval status | Run the flow inside the 24-hour customer-service window and disclose the limitation |
+| Hermes disconnects or loses its QR-paired session | High | Incoming updates and scheduled coaching messages stop | M0 | Expose connection state, test restart and reconnect, and record send failures | Re-pair locally and disclose the interruption |
 | Photo/voice delays core | High | No users Monday | M0/M1 | Shared route; feature flags | Hide broken type at Monday 5 PM |
 | Cross-user data leak | Medium | Severe privacy harm | M1 | User ID on every record; two-account tests | Disable invites |
 | Unsafe advice | Medium | Trust/health harm | M1 | No diagnosis/prescription; fixed boundaries | Tracking-only responses |
@@ -476,11 +476,11 @@ Number of real coaching tasks completed on real user messaging threads.
 
 It is Saturday 11:00 AM and the product is not submitted, or is submitted with no users, because:
 
-1. Reminder or daily-review templates were not approved in time, so proactive messages could not be demonstrated.
+1. Hermes disconnected or lost its paired session, so proactive messages could not be demonstrated.
 2. Photo and voice consumed Monday and user testing was postponed.
 3. A multi-user privacy or persistence bug made the product unsafe to invite people into.
 
-The corresponding controls are early template submission and testing, the Monday 5:00 PM hard stop and a mandatory two-account isolation test before invitations.
+The corresponding controls are early Hermes connection and restart testing, the Monday 5:00 PM hard stop and a mandatory two-account isolation test before invitations.
 
 ## 12. non-goals
 
@@ -520,15 +520,15 @@ M0 — feasibility and setup.
 
 ### verified
 
-- Meta Cloud API test-number constraints recorded; account access, template approval and end-to-end delivery remain unverified.
+- Hermes is selected as the local QR-paired WhatsApp bridge; its installed interface and end-to-end delivery remain unverified.
 
 ### current blocker
 
-Meta developer-account verification is blocked because the SMS code did not arrive; credit-card verification is available but paused. Application code, Vercel project, Convex project and messaging credentials do not yet exist. Vercel and Convex accounts are ready. OpenAI API is the chosen provider for now, but account access and the exact models remain unverified.
+Hermes has not yet been started, QR-paired and tested end to end with the local WhatsApp worker. The public Vercel site cannot call a Hermes process bound to a laptop's `localhost`, so messaging runs locally beside Hermes. Vercel, Convex and OpenAI setup are available for the rest of the product.
 
 ### next single action
 
-Complete Meta developer-account verification. Do not remove the spare number from WhatsApp Business until the Meta app is ready to add it.
+Start Hermes in its own terminal, pair the ordinary WhatsApp account by QR code, and record the exact local receive/send interface without saving session secrets in Git.
 
 ## 15. decision log
 
@@ -538,4 +538,4 @@ Complete Meta developer-account verification. Do not remove the spare number fro
 | Sat 29 Aug | Primary track is AI Agent as a Service | User wants an active coach, not payments or a viral score | Real output and observability first |
 | Sat 29 Aug | WhatsApp first, Telegram fallback | WhatsApp fits user behaviour; Sandbox is test-only | Sunday-afternoon switch point |
 | Sat 29 Aug | Attempt text, photo and voice before user test | Builder explicitly wants integrated Coachy experience | Monday 5:00 PM hard cutoff protects user milestone |
-| Sun 30 Aug | Use Meta WhatsApp Cloud API directly; drop Twilio and the Telegram fallback | Meta's test number delivers to real WhatsApp threads and supports exactly the five planned recipients; evidence will identify it as a test number, not a production sender | Replace the messaging dependency; template approval and the five-recipient cap become the operating constraints |
+| Sun 30 Aug | Use Hermes; drop hosted WhatsApp providers, Twilio and the Telegram fallback | Hermes pairs to an ordinary WhatsApp account by QR code and runs as a separate local process | The WhatsApp worker runs locally beside Hermes; no hosted-provider limits are assumed |

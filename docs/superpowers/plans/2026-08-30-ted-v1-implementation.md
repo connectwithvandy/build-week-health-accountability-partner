@@ -4,9 +4,9 @@
 
 **Goal:** Build the WhatsApp fitness coach defined in `SCOPING.md`, without adding features outside that scope.
 
-**Architecture:** A Next.js TypeScript app on Vercel provides the landing page and webhook endpoints. Convex stores user state and media and runs scheduled reminders and reviews. Meta WhatsApp Cloud API handles messages, while OpenAI interprets text, photos, voice notes, and health-plan PDFs.
+**Architecture:** A Next.js TypeScript app on Vercel provides the public landing page. A local WhatsApp worker runs beside Hermes, which pairs to an ordinary WhatsApp account by QR code. The worker receives and sends messages through Hermes on the local machine. Convex stores user state and media and runs scheduled reminders and reviews. OpenAI interprets text, photos, voice notes, and health-plan PDFs.
 
-**Tech Stack:** Next.js, TypeScript, Vercel, Convex, Meta WhatsApp Cloud API, OpenAI API
+**Tech Stack:** Next.js, TypeScript, Vercel, Convex, Hermes, OpenAI API
 
 **Spec:** `SCOPING.md`
 
@@ -23,7 +23,7 @@
 - Do not provide medical advice, diagnoses, treatment, supplement prescriptions, crash diets, or automatic calorie-deficit prescriptions.
 - Build and verify one milestone at a time.
 - After each milestone, report what was built, how Vandy can verify it, tests run, assumptions made, and remaining blockers.
-- Meta-dependent behavior may be tested locally but cannot be marked passed until it works through WhatsApp.
+- Hermes behavior cannot be marked passed until the bridge is QR-paired and the flow works through a real WhatsApp thread.
 
 ---
 
@@ -31,11 +31,11 @@
 
 1. Initialize Git and scaffold a Next.js TypeScript app.
 2. Add Convex, automated tests, and secret-free environment templates.
-3. Create a local webhook simulator while Meta verification remains blocked.
+3. Create a local Hermes event simulator and adapter.
 4. Create and connect Vercel and Convex projects when access permits.
 5. Verify current OpenAI support for the required text, photo, voice, and PDF inputs before choosing exact models.
 
-**Pass check:** The app runs locally, tests run, Convex connects, no secrets are committed, and a simulated WhatsApp message reaches the message handler.
+**Pass check:** The app runs locally, tests run, Convex connects, no secrets are committed, and a simulated Hermes message reaches the message handler.
 
 ## Milestone 1 — Landing page
 
@@ -51,7 +51,7 @@ Connect every call-to-action to WhatsApp with the exact pre-filled message “Ok
 
 ## Milestone 3 — First WhatsApp reply
 
-Build webhook verification, incoming-message handling, phone-number-based user lookup, duplicate-event protection, outbound replies, message storage, and the exact first response from the scope.
+Build Hermes connection-state handling, incoming-message handling, phone-number-based user lookup, duplicate-event protection, outbound replies, message storage, and the exact first response from the scope.
 
 **Pass check:** A real WhatsApp message receives exactly one correct reply. Local simulation is not enough to mark this passed.
 
@@ -147,4 +147,4 @@ Verify that conversations, media, profiles, plans, goals, targets, reminders, qu
 
 ## Current Blocker
 
-Meta developer-account verification is still blocked. Development and local testing may proceed, but real WhatsApp receipt, replies, reminders, reviews, delivery states, and template behavior cannot be marked passed until Meta access works.
+The installed Hermes process's local interface and QR-paired session have not been verified yet. Development and simulation may proceed, but real WhatsApp receipt, replies, reminders, reviews and delivery states cannot be marked passed until Hermes works end to end. Because Hermes is local, the WhatsApp worker must run on the same machine; the public Vercel deployment cannot reach laptop-only `localhost` services.

@@ -109,4 +109,4 @@ The work is split into three builds, but every V1 requirement above remains requ
 2. Text-message coach and saved daily state.
 3. Reminders, daily review, supported media, safety, failure handling, and deletion.
 
-Meta developer-account verification is required before the real WhatsApp webhook can be tested. Until then, website work and local backend behavior can continue.
+Hermes must be running locally and paired by QR code before the real WhatsApp flow can be tested. The public website remains on Vercel; the WhatsApp worker runs on the same machine as Hermes so it can use the local bridge.

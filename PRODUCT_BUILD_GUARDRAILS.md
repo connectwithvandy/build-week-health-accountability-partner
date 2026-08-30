@@ -76,7 +76,7 @@ The personal prototype encountered meal photos, body-stat screenshots and diet-p
 
 ### Media delivery can be delayed or fail
 
-Messaging providers may fire the webhook before media is immediately retrievable. Downloads need retry and error handling.
+Hermes may report a media message before the local media file is ready. Downloads need retry and error handling.
 
 ### Process photo bursts in order
 
@@ -122,12 +122,13 @@ For vague portions, unclear dishes or ambiguous commands, say what is uncertain 
 
 The tone prompt can define how the coach speaks. User targets, schedules, body data and preferences belong in per-user state injected at runtime.
 
-## 6. Messaging and provider realities
+## 6. Hermes and local messaging realities
 
-- Do not assume outbound API acceptance means the WhatsApp message was delivered. Store provider delivery status where available.
-- Do not assume proactive WhatsApp messages can always be sent as free-form text. Template and session-window constraints must be treated as product constraints and tested early.
+- Do not assume Hermes accepting a send command means the WhatsApp message was delivered. Store delivery status where Hermes exposes it.
+- Keep Hermes connection and QR-pairing state visible so a disconnected local process cannot silently lose messages.
+- The WhatsApp worker and Hermes must share a machine or a deliberately configured private connection; a hosted app cannot call a laptop's `localhost`.
 - Do not manually trigger a scheduled reminder or review and then present it as autonomous output.
-- Retries must be idempotent: a webhook retry must not double-log a meal or send duplicate replies.
+- Retries must be idempotent: a repeated Hermes event must not double-log a meal or send duplicate replies.
 - Acknowledge slow media quickly, then process asynchronously where appropriate.
 
 ## 7. Guiding principle

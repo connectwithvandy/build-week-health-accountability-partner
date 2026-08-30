@@ -1,9 +1,9 @@
-import { handleWhatsAppMessage } from "@/lib/whatsapp/handle-message";
+import { handleHermesMessage } from "@/lib/hermes/handle-message";
 
 export async function POST(request: Request) {
   if (process.env.NODE_ENV === "production") {
     return Response.json(
-      { error: "The local simulator is disabled in production." },
+      { error: "The local Hermes adapter is disabled in production." },
       { status: 503 },
     );
   }
@@ -16,11 +16,11 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON payload." }, { status: 400 });
   }
 
-  const handledMessage = handleWhatsAppMessage(payload);
+  const handledMessage = handleHermesMessage(payload);
 
   if (!handledMessage) {
     return Response.json(
-      { error: "No supported text message was found." },
+      { error: "No supported Hermes text message was found." },
       { status: 422 },
     );
   }
