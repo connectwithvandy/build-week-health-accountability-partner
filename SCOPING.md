@@ -22,26 +22,15 @@ Existing tools also require her to remember to open them. They record isolated n
 
 2. The page explains the product through benefits, WhatsApp chat examples, how it works, privacy information, and repeated “Start on WhatsApp” buttons. There is no product dashboard.
 
-3. Pressing the button opens WhatsApp with the pre-filled message: “Okay, let’s do this 🫡” There is no payment, waitlist, email, password, or separate account. The WhatsApp number identifies the user.
+3. Pressing the button opens WhatsApp with the pre-filled message: “Okay Ted, let's do this 🫡” There is no payment, waitlist, email, password, or separate account. The WhatsApp number identifies the user.
 
-4. Ted replies: “Chalo, scene set karte hain 😌 First things first: what are we trying to fix?”
+4. Ted gives a short disclosure and asks the first useful question in the same message: “Quick heads-up: I’ll keep what you share so I can remember your day, I’m not a doctor, and you can say ‘delete my data’ anytime. If that works for you, what’s the one thing you want to change?” Answering that question records consent for the beta.
 
-5. Before saving health information, the coach asks the user to accept the privacy policy and acknowledge that it is not providing medical advice.
+5. Beta setup has only two more questions: “What should I call you?” and “What time should I check in each day? Send your city too, so I get the time right.”
 
-6. Setup happens conversationally, one question at a time. Every setup field is mandatory. The coach collects:
+6. Ted then starts coaching. It asks for height, weight, age, calorie target, diet plan, steps, water, workouts, quiet hours, and custom commitments only when that information becomes relevant in a real conversation.
 
-   - Name and age
-   - Height and weight
-   - Time zone
-   - Goal: maintain weight, lose weight, gain weight, or improve consistency
-   - Meal and nutrition targets
-   - Step, water, and workout targets
-   - Custom commitments written in plain language
-   - Preferred reminder and daily-review times
-   - Quiet hours
-   - The single commitment used for the morning reminder
-
-7. If setup is abandoned, the coach remembers where the user stopped and continues when they return.
+7. The 18+ check appears immediately before Ted first calculates or discusses a calorie target. The invited beta testers must already be known adults.
 
 8. The user can provide an existing health plan through text, photos, voice notes, or PDFs. PDFs are accepted only for existing health plans, not for daily updates.
 
@@ -118,6 +107,7 @@ V1 does not include:
 - Human-coach escalation
 - Viewing, correcting, or deleting older individual entries
 - Automatic decisions based on unclear media
+- A long setup questionnaire before the user receives coaching
 - Punishment, guilt, shame, or advice to compensate for food through exercise
 
 Future versions may explore calls and replies using voice notes, GIFs, and stickers.

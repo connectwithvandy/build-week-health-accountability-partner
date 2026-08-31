@@ -13,9 +13,7 @@ Read and apply `PRODUCT_BUILD_GUARDRAILS.md` alongside this document before maki
 | Build starts | Sat 29 Aug 2026, 11:00 AM IST |
 | Submission deadline | Sat 5 Sep 2026, 11:00 AM IST |
 | Demo | Sat 5 Sep 2026, 3:00 PM IST |
-| Current milestone | M0 |
-| Live URL | Not created |
-| Public repo | Not created |
+| Current build state | See `PROGRESS.md`, the single source of truth for implemented, local, live, verified, blocked, and next-step status |
 | Last updated | Sun 30 Aug 2026 |
 
 ### status language
@@ -74,7 +72,7 @@ The landing page must explain the product, show a realistic example conversation
 ##### v1 public pages and states
 
 1. **Landing page:** product promise, benefits, supported inputs, how it works, example WhatsApp conversation, privacy and safety information, and repeated Start on WhatsApp actions.
-2. **WhatsApp handoff:** opens WhatsApp with the prepared first message—“Okay, let’s do this 🫡”.
+2. **WhatsApp handoff:** opens WhatsApp with the prepared first message—“Okay Ted, let's do this 🫡”.
 3. **Privacy policy:** collected data, raw-media retention, service providers, deletion requests and health-data boundaries.
 
 ##### website data and measurement
@@ -93,12 +91,11 @@ Later: website login, a personal web dashboard, blog, payments, complex animatio
 
 #### onboarding choices
 
-- Ask whether the user already has a weekly diet plan.
-- If not, ask whether the user already knows their calorie target.
-- If neither applies, offer a Mifflin–St Jeor maintenance-calorie estimate and clearly label it as an estimate, not a prescribed diet.
-- Save personal targets, routine, timezone and reminders.
-- Ask every scoped setup field one at a time; every field is mandatory: name, age, height, weight, time zone, goal, meal and nutrition targets, step, water and workout targets, custom commitments, reminder and daily-review times, quiet hours, and the single morning commitment.
-- If setup is abandoned, resume from the field where the user stopped.
+- Keep beta onboarding to three questions: the one thing the user wants to change, what Ted should call them, and their daily check-in time plus city.
+- Put the storage, medical boundary, and deletion disclosure in the same message as the goal question. Answering after that disclosure records beta consent.
+- Ask for age, height, weight, diet plan, calorie target, step, water, workout, quiet-hours, and custom-commitment details only when they become relevant during coaching.
+- Ask the 18+ question immediately before first discussing or calculating a calorie target. Invite only known adults to the beta.
+- If the user has no calorie target when nutrition coaching becomes relevant, offer a Mifflin–St Jeor maintenance-calorie estimate and clearly label it as an estimate, not a prescribed diet.
 
 #### realistic failure cases
 
@@ -112,7 +109,7 @@ Current instructions, pauses, corrections and reminder changes must override pre
 
 ##### must have
 
-- WhatsApp onboarding for name, timezone, goals, routine and targets.
+- Three-question WhatsApp beta onboarding for goal, name, and check-in time plus city.
 - Unified tracking for steps, water, workouts, custom commitments and meals.
 - Nutrition onboarding through a health plan supplied by text, photo, voice note or PDF, a user-provided calorie target, or a Mifflin–St Jeor maintenance estimate. PDFs are only for health plans.
 - Meal and progress logging through text or voice notes, plus meal logging through photos.
@@ -186,9 +183,9 @@ The job is complete only when:
 
 ### golden path
 
-1. User opens WhatsApp and explicitly consents to fitness-message processing.
-2. Ted asks every mandatory onboarding field one at a time and resumes an abandoned setup at the unanswered field.
-3. After the prepared user message, Ted replies: “Chalo, scene set karte hain 😌 First things first: what are we trying to fix?”
+1. User opens WhatsApp and receives one short message explaining storage, the medical boundary, and the deletion command, followed immediately by the goal question.
+2. The user's answer records beta consent. Ted asks only their name and daily check-in time plus city before starting.
+3. Ted gathers other profile and target details later, when each detail becomes useful to the current conversation.
 4. User logs a meal by text, photo or voice, or sends a progress update by text or voice.
 5. Coach interprets the update, asks one question when uncertain, saves the confirmed result and replies against the user's plan or targets.
 6. Coach sends the saved reminders and an end-of-day review automatically.
@@ -364,17 +361,17 @@ If behind: deploy one empty page and test text plus one photo. If the critical c
 
 ### M1 — one ugly complete flow (Sat 29 Aug evening → Sun 30 Aug)
 
-Required: WhatsApp onboarding, typed meal, multiple routine reminders, daily review, Convex persistence, run trace, live Vercel URL and GitHub push. Photo and voice are built on the same shared ingestion route, but neither may break the typed path.
+Required: three-question WhatsApp onboarding, typed meal, check-in, daily review, live Vercel URL and GitHub push. Photo and voice may be tested through Hermes, but neither may delay a real-user test.
 
-Acceptance test: a fresh user completes onboarding, saves at least two different commitments, logs a typed meal, receives both scheduled reminders and gets a daily review at the live URL/messaging surface without explanation.
+Acceptance test: a fresh user answers the three onboarding questions, logs a typed meal, receives a check-in and gets a useful review in the real WhatsApp thread.
 
 If behind: one WhatsApp user, typed meals, two fixed routine reminders and a text daily review; hardcode everything else. Use the Hermes-paired account and label simulated versus real evidence accurately.
 
 ### M2 — media completion and first users (Mon 31 Aug, stop building at 5:00 PM)
 
-Required before 5:00 PM: verify the Hermes session remains connected, then invite Ankita, Richa, Khushboo and Arpit. Attempt photo and voice through the same saved meal flow. At 5:00 PM hide any broken input type and stop building. That evening, the four users use the working product; each creates a real first-use row; note where each stops.
+Required before invitations: add the three-question opener and disclosure to Ted's `SOUL.md`, send the tester invitation, and verify the Hermes session remains connected. Attempt photo and voice in the real thread, but stop building before these delay invitations. That evening, the invited users try the working product and Vandy records one sentence about where each person stops.
 
-Acceptance test: four non-builder users complete the available core flow and one sentence per user records the biggest stop; Hermes remains connected throughout the test.
+Acceptance test: at least three non-builder users answer the opener and send one real update; one sentence per user records the biggest stop, and Hermes remains connected throughout the test.
 
 If behind: one user on screen share using typed meals. Do not delay testing for photo or voice.
 
@@ -499,38 +496,9 @@ Any change requires a written decision in section 15.
 | Weekly report | Retention | Cannot gather a full week before launch | Build Week |
 | Repeated or escalating reminders for one missed commitment | Stronger follow-through | Can become noisy or annoying | 3 users retain |
 | Voice calls | Strong accountability | Consent, cost and telephony risk | Messaging loop proven |
+| Ted mascot | Stronger identity across WhatsApp and the website | Current priority is testing the product with users | V2 |
 
-## 14. current state
-
-### active milestone
-
-M0 — feasibility and setup.
-
-### implemented
-
-- Nothing in the new Build Week product.
-
-### working locally
-
-- Nothing yet.
-
-### live
-
-- Nothing yet.
-
-### verified
-
-- Hermes is selected as the local QR-paired WhatsApp bridge; its installed interface and end-to-end delivery remain unverified.
-
-### current blocker
-
-Hermes has not yet been started, QR-paired and tested end to end with the local WhatsApp worker. The public Vercel site cannot call a Hermes process bound to a laptop's `localhost`, so messaging runs locally beside Hermes. Vercel, Convex and OpenAI setup are available for the rest of the product.
-
-### next single action
-
-Start Hermes in its own terminal, pair the ordinary WhatsApp account by QR code, and record the exact local receive/send interface without saving session secrets in Git.
-
-## 15. decision log
+## 14. decision log
 
 | Time | Decision | Evidence/reason | Scope impact |
 |---|---|---|---|

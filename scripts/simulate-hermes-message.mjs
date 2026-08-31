@@ -2,7 +2,7 @@ const adapterUrl =
   process.env.TED_HERMES_ADAPTER_URL ??
   "http://localhost:3000/api/hermes/messages";
 
-const text = process.argv.slice(2).join(" ") || "Okay, let’s do this 🫡";
+const text = process.argv.slice(2).join(" ") || "Okay Ted, let's do this 🫡";
 
 const payload = {
   event: "message.received",

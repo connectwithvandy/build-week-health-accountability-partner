@@ -45,7 +45,7 @@ Build the polished mobile-first page with benefits, WhatsApp examples, how it wo
 
 ## Milestone 2 — WhatsApp handoff
 
-Connect every call-to-action to WhatsApp with the exact pre-filled message “Okay, let’s do this 🫡”.
+Connect every call-to-action to WhatsApp with the exact pre-filled message “Okay Ted, let's do this 🫡”.
 
 **Pass check:** Each button opens the correct WhatsApp conversation with the exact message ready to send.
 

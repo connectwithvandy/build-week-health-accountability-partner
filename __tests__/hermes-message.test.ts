@@ -10,7 +10,7 @@ const textPayload = {
     id: "hermes.local-test",
     from: "919999999999",
     timestamp: "2026-08-30T17:30:00.000Z",
-    text: "Okay, let’s do this 🫡",
+    text: "Okay Ted, let's do this 🫡",
   },
 };
 
@@ -32,7 +32,7 @@ describe("local Hermes adapter", () => {
         messageId: "hermes.local-test",
         chatId: "919999999999",
         from: "919999999999",
-        text: "Okay, let’s do this 🫡",
+        text: "Okay Ted, let's do this 🫡",
         reply: FIRST_REPLY,
       },
     });

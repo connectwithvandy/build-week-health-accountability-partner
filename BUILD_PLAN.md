@@ -11,11 +11,10 @@ This plan implements the complete V1 defined in `SCOPING.md`. No V1 requirement 
 | Mobile-first landing page | Users need to understand the product before opening WhatsApp. |
 | “Start on WhatsApp” button | This is the shortest path from interest to first use. |
 | Pre-filled starting message | Removes friction and makes onboarding predictable. |
-| Privacy and medical disclaimer consent | Health information should not be stored before clear consent. |
+| Disclosure plus answer-based beta consent | One short opening message explains storage, medical limits, and deletion before the user shares a goal. |
 | WhatsApp number as identity | Avoids building a separate login system. |
-| Basic conversational setup | The coach needs goals and preferred times to give useful replies. |
-| All setup fields mandatory | V1 setup is complete only after every scoped field is provided. |
-| Resume abandoned setup | Ted must remember the last unanswered setup question. |
+| Three-question beta setup | Ted asks only the goal, name, and check-in time plus city before coaching starts. |
+| Contextual profile questions | Ted asks for other details only when they become useful. |
 | Custom commitments | Users can track routines written in their own words. |
 | Existing health plans by text, photo, voice note, or PDF | Ted must use a user's existing plan; PDFs are limited to this flow. |
 | Mifflin–St Jeor maintenance estimate | Gives an optional estimate without prescribing a calorie deficit. |
@@ -51,7 +50,10 @@ This plan implements the complete V1 defined in `SCOPING.md`. No V1 requirement 
 
 | Feature | One-line reason |
 |---|---|
-| No additional product features | Anything absent from `SCOPING.md` requires discussion before it is added. |
+| Full profile collection before first value | Thirteen setup questions would delay the real-user test and increase drop-off. |
+| Resume-from-field onboarding engine | Three beta questions can be recovered naturally in the conversation. |
+| Convex-backed onboarding writes | Hermes conversation memory is sufficient for the first few beta testers; revisit after observed use. |
+| Automated multi-user onboarding state | Validate the conversation before building a state machine around it. |
 
 ### NOT THIS WEEK
 
@@ -85,9 +87,9 @@ This plan implements the complete V1 defined in `SCOPING.md`. No V1 requirement 
 | # | Milestone | Layer |
 |---:|---|---|
 | 1 | I can open the landing page on my phone and understand the product in 10 seconds. | Frontend |
-| 2 | I can tap “Start on WhatsApp” and see a pre-filled message ready to send. | Frontend / Integration |
-| 3 | I can send that message and receive “Chalo, scene set karte hain 😌 First things first: what are we trying to fix?” in WhatsApp. | Backend / Integration |
-| 4 | I can accept the privacy and medical disclaimer and complete every required setup field: name, age, height, weight, time zone, goal, meal and nutrition targets, step, water and workout targets, custom commitments, reminder and daily-review times, quiet hours, and the morning commitment. If I leave, setup resumes at the field where I stopped. I can also upload an existing health plan through text, photo, voice note, or PDF. | Backend / Integration |
+| 2 | I can tap “Start on WhatsApp” and see “Okay Ted, let's do this 🫡” pre-filled and ready to send. | Frontend / Integration |
+| 3 | I can send that message and receive the short storage, medical-boundary, and deletion disclosure followed by the goal question. | Backend / Integration |
+| 4 | I can answer the goal, name, and daily check-in time plus city questions, then start using Ted without completing a long profile. | Backend / Integration |
 | 5 | I can send a text or voice-note meal such as “I ate two rotis and paneer,” then see it logged with estimated nutrition. | Backend / Integration |
 | 6 | I can send a clear meal photo and receive detected foods plus estimated calories, protein, carbs, fat, and fiber. | Backend / Integration |
 | 7 | I can log water, steps, exercise, or a commitment using a text or voice WhatsApp message. | Backend / Integration |
