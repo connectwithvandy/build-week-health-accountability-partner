@@ -73,6 +73,13 @@ http.route({
       return json(result);
     }
 
+    if (input.action === "delete") {
+      const result = await ctx.runMutation(internal.ted.deleteUserMemory, {
+        whatsappUserId: input.whatsappUserId,
+      });
+      return json(result);
+    }
+
     return json({ success: false, error: "Unsupported action" }, 400);
   }),
 });

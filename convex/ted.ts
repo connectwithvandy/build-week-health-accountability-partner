@@ -99,3 +99,24 @@ export const saveUserFacts = internalMutation({
     return { success: true, saved };
   },
 });
+
+export const deleteUserMemory = internalMutation({
+  args: { whatsappUserId: v.string() },
+  handler: async (ctx, { whatsappUserId }) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    if (!user) return { success: true, deleted: false };
+
+    const facts = await ctx.db
+      .query("userFacts")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .collect();
+    for (const fact of facts) await ctx.db.delete(fact._id);
+    await ctx.db.delete(user._id);
+    return { success: true, deleted: true };
+  },
+});
