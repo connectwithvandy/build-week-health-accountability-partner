@@ -6,12 +6,13 @@ from unittest.mock import patch
 from hermes import ted_safety_gates as gates
 from hermes.ted_safety_gates import (
     DISCLOSURE_MESSAGE,
+    GOAL_QUESTION,
     action_claim_gate,
     calorie_gate,
     consent_gate,
     transform_response,
     _capture_turn,
-    _load_disclosure_sessions,
+    _load_disclosure_state,
     _log_disclosure,
     _record_tool_success,
     _transform_live_response,
@@ -72,6 +73,13 @@ class TedSafetyGatesTest(unittest.TestCase):
 
         history.append(message("assistant", DISCLOSURE_MESSAGE))
         self.assertIsNone(consent_gate(history, "What is your goal?"))
+
+    def test_disclosure_is_one_short_message_without_the_goal(self) -> None:
+        self.assertLess(len(DISCLOSURE_MESSAGE.split()), 25)
+        self.assertNotIn(GOAL_QUESTION, DISCLOSURE_MESSAGE)
+        self.assertIn("profile, messages, plans, logs and uploads", DISCLOSURE_MESSAGE)
+        self.assertIn("not a doctor", DISCLOSURE_MESSAGE)
+        self.assertIn("delete my data", DISCLOSURE_MESSAGE)
 
     def test_calorie_gate_does_not_skip_name_or_disclosure(self) -> None:
         first_turn = [message("user", "Track calories")]
@@ -218,7 +226,9 @@ class TedSafetyGatesTest(unittest.TestCase):
 
     def test_disclosure_is_not_repeated_when_transformed_text_is_missing_from_history(self) -> None:
         session_id = "disclosure-state-test"
-        gates._DISCLOSURE_SENT_SESSIONS.discard(session_id)
+        sender_id = "disclosure-state-test@s.whatsapp.net"
+        user_key = gates._user_state_key("whatsapp", sender_id, session_id)
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
         named_history = [
             message("assistant", "What should I call you?"),
             message("user", "Vandy"),
@@ -226,6 +236,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         _capture_turn(
             platform="whatsapp",
             session_id=session_id,
+            sender_id=sender_id,
             conversation_history=named_history,
             user_message="Vandy",
         )
@@ -238,12 +249,21 @@ class TedSafetyGatesTest(unittest.TestCase):
             DISCLOSURE_MESSAGE,
         )
 
-        with patch.object(gates, "_persist_disclosure_sessions"):
+        with (
+            patch.object(gates, "_persist_disclosure_state"),
+            patch.object(gates, "_schedule_goal_question") as schedule,
+        ):
             _log_disclosure(
                 platform="whatsapp",
                 session_id=session_id,
                 assistant_response=DISCLOSURE_MESSAGE,
             )
+            _log_disclosure(
+                platform="whatsapp",
+                session_id=session_id,
+                assistant_response=DISCLOSURE_MESSAGE,
+            )
+            schedule.assert_called_once_with(sender_id, user_key)
 
         history_without_transformed_reply = named_history + [
             message("assistant", "What do you want to change?"),
@@ -252,6 +272,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         _capture_turn(
             platform="whatsapp",
             session_id=session_id,
+            sender_id=sender_id,
             conversation_history=history_without_transformed_reply,
             user_message="Routine",
         )
@@ -262,7 +283,125 @@ class TedSafetyGatesTest(unittest.TestCase):
                 response_text="routine is broad—what should look different?",
             )
         )
-        gates._DISCLOSURE_SENT_SESSIONS.discard(session_id)
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+
+    def test_disclosure_flag_follows_the_user_across_sessions(self) -> None:
+        sender_id = "same-user@s.whatsapp.net"
+        first_session = "first-session"
+        second_session = "second-session"
+        user_key = gates._user_state_key("whatsapp", sender_id, first_session)
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+        named_history = [
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+        ]
+
+        with (
+            patch.object(gates, "_persist_disclosure_state"),
+            patch.object(gates, "_schedule_goal_question"),
+        ):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=first_session,
+                sender_id=sender_id,
+                conversation_history=named_history,
+                user_message="Vandy",
+            )
+            self.assertEqual(
+                _transform_live_response(
+                    platform="whatsapp",
+                    session_id=first_session,
+                    response_text=GOAL_QUESTION,
+                ),
+                DISCLOSURE_MESSAGE,
+            )
+            _log_disclosure(
+                platform="whatsapp",
+                session_id=first_session,
+                assistant_response=DISCLOSURE_MESSAGE,
+            )
+
+            _capture_turn(
+                platform="whatsapp",
+                session_id=second_session,
+                sender_id=sender_id,
+                conversation_history=[],
+                user_message="Routine",
+            )
+            self.assertIsNone(
+                _transform_live_response(
+                    platform="whatsapp",
+                    session_id=second_session,
+                    response_text="routine is broad—what should look different?",
+                )
+            )
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+
+    def test_replays_the_four_message_onboarding_loop_once(self) -> None:
+        session_id = "four-message-replay"
+        sender_id = "four-message-replay@s.whatsapp.net"
+        user_key = gates._user_state_key("whatsapp", sender_id, session_id)
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+        history = [message("assistant", "What should I call you?")]
+        model_replies = (
+            GOAL_QUESTION,
+            "routine is broad—what should look different day to day?",
+            "what’s one small routine you want to make consistent first?",
+            "chalo, what’s one small routine you want to make consistent first?",
+        )
+        visible_replies: list[str] = []
+
+        with (
+            patch.object(gates, "_persist_disclosure_state"),
+            patch.object(
+                gates,
+                "_schedule_goal_question",
+                side_effect=lambda _chat_id, _user_key: visible_replies.append(
+                    GOAL_QUESTION
+                ),
+            ),
+        ):
+            for user_text, model_reply in zip(
+                ("Vandy", "Routine", "routine", "okay understood"),
+                model_replies,
+            ):
+                history.append(message("user", user_text))
+                _capture_turn(
+                    platform="whatsapp",
+                    session_id=session_id,
+                    sender_id=sender_id,
+                    conversation_history=history,
+                    user_message=user_text,
+                )
+                transformed = _transform_live_response(
+                    platform="whatsapp",
+                    session_id=session_id,
+                    response_text=model_reply,
+                )
+                visible_reply = transformed or model_reply
+                visible_replies.append(visible_reply)
+                _log_disclosure(
+                    platform="whatsapp",
+                    session_id=session_id,
+                    assistant_response=visible_reply,
+                )
+                # Hermes stores the model's original reply internally even
+                # when the delivery gate replaces what WhatsApp receives.
+                history.append(message("assistant", model_reply))
+
+        self.assertEqual(visible_replies.count(DISCLOSURE_MESSAGE), 1)
+        self.assertEqual(visible_replies.count(GOAL_QUESTION), 1)
+        self.assertEqual(
+            visible_replies,
+            [
+                DISCLOSURE_MESSAGE,
+                GOAL_QUESTION,
+                model_replies[1],
+                model_replies[2],
+                model_replies[3],
+            ],
+        )
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_disclosure_state_recovers_existing_sends_from_agent_log(self) -> None:
         with TemporaryDirectory() as directory:
@@ -277,9 +416,27 @@ class TedSafetyGatesTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(
-                _load_disclosure_sessions(state_path, log_path),
+                _load_disclosure_state(state_path, log_path),
                 {"saved-session", "logged-session"},
             )
+
+    def test_hashed_user_flag_survives_a_restart_reload(self) -> None:
+        with TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            missing_log = Path(directory) / "missing.log"
+            user_key = gates._user_state_key(
+                "whatsapp", "restart-user@s.whatsapp.net", "old-session"
+            )
+            gates._DISCLOSURE_SENT_KEYS.add(user_key)
+            try:
+                with patch.object(gates, "_DISCLOSURE_STATE_PATH", state_path):
+                    gates._persist_disclosure_state()
+                self.assertIn(
+                    user_key,
+                    _load_disclosure_state(state_path, missing_log),
+                )
+            finally:
+                gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
 
 if __name__ == "__main__":

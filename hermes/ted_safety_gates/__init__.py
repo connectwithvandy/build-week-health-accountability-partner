@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import logging
+import hashlib
 import json
+import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,12 +16,10 @@ from typing import Any, Iterable
 LOGGER = logging.getLogger("ted.safety_gates")
 PRIVACY_URL = "https://heyted.vercel.app/privacy"
 DISCLOSURE_MESSAGE = (
-    "I remember what you share for coaching, Ted and the services that run it "
-    "store your profile, messages, plans, logs, and uploads until you ask to "
-    "delete them, and I’m a coach, not a doctor. Read how your data works at "
-    f"{PRIVACY_URL} and message “delete my data” to remove it—what’s one thing "
-    "you want to change?"
+    "Ted stores your profile, messages, plans, logs and uploads. I’m not a "
+    f"doctor. {PRIVACY_URL} — send “delete my data” to delete them."
 )
+GOAL_QUESTION = "what’s one thing you want to change?"
 
 _TURN_CONTEXT: dict[str, dict[str, Any]] = {}
 _TURN_LOCK = threading.Lock()
@@ -30,37 +30,39 @@ _AGENT_LOG_PATH = Path.home() / ".hermes" / "logs" / "agent.log"
 _DISCLOSURE_LOG_PATTERN = re.compile(r"consent_disclosure_sent session=([^\s]+)")
 
 
-def _load_disclosure_sessions(
+def _load_disclosure_state(
     state_path: Path = _DISCLOSURE_STATE_PATH,
     agent_log_path: Path = _AGENT_LOG_PATH,
 ) -> set[str]:
     """Load durable disclosure state and recover older sends from the log."""
-    sessions: set[str] = set()
+    keys: set[str] = set()
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
-        sessions.update(str(value) for value in payload.get("session_ids", []))
+        keys.update(str(value) for value in payload.get("user_keys", []))
+        # Keep older per-session records long enough to migrate active users.
+        keys.update(str(value) for value in payload.get("session_ids", []))
     except (OSError, TypeError, ValueError, AttributeError):
         pass
     try:
-        sessions.update(
+        keys.update(
             _DISCLOSURE_LOG_PATTERN.findall(
                 agent_log_path.read_text(encoding="utf-8", errors="replace")
             )
         )
     except OSError:
         pass
-    return {session_id for session_id in sessions if session_id}
+    return {key for key in keys if key}
 
 
-_DISCLOSURE_SENT_SESSIONS = _load_disclosure_sessions()
+_DISCLOSURE_SENT_KEYS = _load_disclosure_state()
 
 
-def _persist_disclosure_sessions() -> None:
+def _persist_disclosure_state() -> None:
     _DISCLOSURE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary = _DISCLOSURE_STATE_PATH.with_suffix(".tmp")
     temporary.write_text(
         json.dumps(
-            {"session_ids": sorted(_DISCLOSURE_SENT_SESSIONS)},
+            {"user_keys": sorted(_DISCLOSURE_SENT_KEYS)},
             ensure_ascii=False,
             indent=2,
         )
@@ -70,17 +72,67 @@ def _persist_disclosure_sessions() -> None:
     temporary.replace(_DISCLOSURE_STATE_PATH)
 
 
-def _mark_disclosure_sent(session_id: str) -> None:
-    if not session_id:
-        return
+def _user_state_key(platform: str, sender_id: str, session_id: str) -> str:
+    """Return a stable, non-readable key for one messaging user."""
+    if sender_id:
+        identity = f"{platform}:{sender_id}".encode("utf-8")
+        return f"{platform}:sha256:{hashlib.sha256(identity).hexdigest()}"
+    return session_id
+
+
+def _mark_disclosure_sent(user_key: str, session_id: str = "") -> bool:
+    if not user_key:
+        return False
     with _TURN_LOCK:
-        if session_id in _DISCLOSURE_SENT_SESSIONS:
-            return
-        _DISCLOSURE_SENT_SESSIONS.add(session_id)
+        if user_key in _DISCLOSURE_SENT_KEYS:
+            return False
+        _DISCLOSURE_SENT_KEYS.add(user_key)
         context = _TURN_CONTEXT.get(session_id)
         if context is not None:
             context["disclosure_sent"] = True
-        _persist_disclosure_sessions()
+        _persist_disclosure_state()
+    return True
+
+
+def _send_goal_question(chat_id: str) -> bool:
+    """Send the second onboarding bubble through Hermes' live adapter."""
+    try:
+        from tools.send_message_tool import send_message_tool
+
+        raw_result = send_message_tool(
+            {
+                "action": "send",
+                "target": f"whatsapp:{chat_id}",
+                "message": GOAL_QUESTION,
+            }
+        )
+        payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        return isinstance(payload, dict) and payload.get("success") is True
+    except Exception:
+        LOGGER.exception("consent_goal_question_send_failed")
+        return False
+
+
+def _schedule_goal_question(chat_id: str, user_key: str) -> None:
+    """Send the goal as its own bubble after the transformed reply lands."""
+    if not chat_id or not user_key:
+        LOGGER.error("consent_goal_question_missing_chat user_key=%s", user_key)
+        return
+
+    def _deliver() -> None:
+        # post_llm_call runs just before Hermes delivers the transformed reply.
+        # This small delay preserves disclosure-first ordering on WhatsApp.
+        time.sleep(1.0)
+        if _send_goal_question(chat_id):
+            LOGGER.info("consent_goal_question_sent user_key=%s", user_key)
+        else:
+            LOGGER.error("consent_goal_question_delivery_failed user_key=%s", user_key)
+
+    threading.Thread(
+        target=_deliver,
+        name="ted-consent-goal-question",
+        daemon=True,
+    ).start()
 
 
 @dataclass(frozen=True)
@@ -416,19 +468,33 @@ def transform_response(
 def _capture_turn(**kwargs: Any) -> None:
     if kwargs.get("platform") != "whatsapp":
         return None
+    platform = str(kwargs.get("platform") or "")
     session_id = str(kwargs.get("session_id") or "")
     if not session_id:
         return None
+    sender_id = str(kwargs.get("sender_id") or "")
+    user_key = _user_state_key(platform, sender_id, session_id)
     history = list(kwargs.get("conversation_history") or [])
+    disclosure_sent = (
+        user_key in _DISCLOSURE_SENT_KEYS
+        or session_id in _DISCLOSURE_SENT_KEYS
+        or _disclosure_was_sent(history)
+    )
+
+    # Migrate a prior session/log record to the stable user key on first sight.
+    if disclosure_sent and user_key not in _DISCLOSURE_SENT_KEYS:
+        _mark_disclosure_sent(user_key)
+
     with _TURN_LOCK:
         _TURN_CONTEXT[session_id] = {
             "history": history,
             "user_message": str(kwargs.get("user_message") or ""),
             "successful_actions": set(),
-            "disclosure_sent": (
-                session_id in _DISCLOSURE_SENT_SESSIONS
-                or _disclosure_was_sent(history)
-            ),
+            "disclosure_sent": disclosure_sent,
+            "user_key": user_key,
+            # Hermes passes the WhatsApp sender JID as sender_id. It is also
+            # the direct-chat delivery target for the follow-up bubble.
+            "chat_id": sender_id,
         }
     return None
 
@@ -490,10 +556,19 @@ def _log_disclosure(**kwargs: Any) -> None:
         return None
     if PRIVACY_URL in str(kwargs.get("assistant_response") or ""):
         session_id = str(kwargs.get("session_id") or "")
-        _mark_disclosure_sent(session_id)
+        with _TURN_LOCK:
+            context = dict(_TURN_CONTEXT.get(session_id, {}))
+        user_key = str(context.get("user_key") or session_id)
+        first_send = _mark_disclosure_sent(user_key, session_id)
+        if first_send:
+            _schedule_goal_question(
+                str(context.get("chat_id") or ""),
+                user_key,
+            )
         LOGGER.info(
-            "consent_disclosure_sent session=%s privacy_url=%s",
+            "consent_disclosure_sent session=%s user_key=%s privacy_url=%s",
             session_id,
+            user_key,
             PRIVACY_URL,
         )
     return None
