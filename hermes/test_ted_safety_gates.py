@@ -75,14 +75,15 @@ class TedSafetyGatesTest(unittest.TestCase):
         self.assertIsNone(consent_gate(history, "What is your goal?"))
 
     def test_disclosure_is_one_short_message_without_the_goal(self) -> None:
-        self.assertEqual(len(DISCLOSURE_MESSAGE.split()), 18)
+        self.assertEqual(len(DISCLOSURE_MESSAGE.split()), 20)
         self.assertEqual(
             DISCLOSURE_MESSAGE,
-            "i’ll remember what you tell me so i can coach you. not a doctor. "
-            "details and delete: https://heyted.vercel.app/privacy",
+            "Ted stores your profile, messages, plans, logs and uploads. Not a "
+            "doctor. Details: https://heyted.vercel.app/privacy — send "
+            "“delete my data” anytime!",
         )
         self.assertNotIn(GOAL_QUESTION, DISCLOSURE_MESSAGE)
-        self.assertIn("not a doctor", DISCLOSURE_MESSAGE)
+        self.assertIn("not a doctor", DISCLOSURE_MESSAGE.lower())
 
     def test_calorie_gate_does_not_skip_name_or_disclosure(self) -> None:
         first_turn = [message("user", "Track calories")]

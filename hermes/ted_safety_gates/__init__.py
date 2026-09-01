@@ -16,8 +16,8 @@ from typing import Any, Iterable
 LOGGER = logging.getLogger("ted.safety_gates")
 PRIVACY_URL = "https://heyted.vercel.app/privacy"
 DISCLOSURE_MESSAGE = (
-    "i’ll remember what you tell me so i can coach you. not a doctor. "
-    f"details and delete: {PRIVACY_URL}"
+    "Ted stores your profile, messages, plans, logs and uploads. Not a doctor. "
+    f"Details: {PRIVACY_URL} — send “delete my data” anytime!"
 )
 GOAL_QUESTION = "what’s one thing you want to change?"
 
