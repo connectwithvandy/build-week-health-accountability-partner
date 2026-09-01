@@ -18,15 +18,15 @@ Existing tools also require her to remember to open them. They record isolated n
 
 ## 3. WHAT V1 DOES — full user flow, step by step
 
-1. The user visits a polished, mobile-first landing page inspired by [Hooly](https://hooly.in/) and [Rex](https://www.rex.fit/).
+1. The user visits a polished, mobile-first or web landing page
 
 2. The page explains the product through benefits, WhatsApp chat examples, how it works, privacy information, and repeated “Start on WhatsApp” buttons. There is no product dashboard.
 
 3. Pressing the button opens WhatsApp with the pre-filled message: “Okay Ted, let's do this 🫡” There is no payment, waitlist, email, password, or separate account. The WhatsApp number identifies the user.
 
-4. Ted gives a short disclosure and asks the first useful question in the same message: “Quick heads-up: I’ll keep what you share so I can remember your day, I’m not a doctor, and you can say ‘delete my data’ anytime. If that works for you, what’s the one thing you want to change?” Answering that question records consent for the beta.
+4. Ted opens conversationally: “Chalo, done. What should I call you?” After the name, Ted gives the short disclosure and asks the goal question in the same message. Answering the goal question records consent for the beta.
 
-5. Beta setup has only two more questions: “What should I call you?” and “What time should I check in each day? Send your city too, so I get the time right.”
+5. Beta setup has only two more questions after the name: the one thing the user wants to change, then “What time should I check in each day? Send your city too, so I get the time right.”
 
 6. Ted then starts coaching. It asks for height, weight, age, calorie target, diet plan, steps, water, workouts, quiet hours, and custom commitments only when that information becomes relevant in a real conversation.
 

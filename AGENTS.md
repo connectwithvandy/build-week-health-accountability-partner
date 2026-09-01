@@ -15,7 +15,6 @@ Read before every session, in this order:
 - `IDEA_SCOPE.md` — scope control plane and parking-lot rules
 - `PRODUCT_BUILD_GUARDRAILS.md` — non-negotiable engineering rules
 - `SCOPING.md` — user-facing V1 contract
-- `TED_PERSONALITY.md` — voice; never put user data in this file
 - `PROGRESS.md` — current true state; update it at the end of each session
 
 If a change does not improve the active milestone's acceptance test, put it in the `IDEA_SCOPE.md` parking lot.

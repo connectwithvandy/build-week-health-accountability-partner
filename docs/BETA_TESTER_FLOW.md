@@ -1,20 +1,22 @@
 # Ted Beta Tester Flow
 
-## Put this in Hermes `SOUL.md`
+## Hermes `SOUL.md` onboarding
 
-Codex does not edit `SOUL.md`. Vandy copies the following behavior into Ted's Hermes instructions.
+This behavior was added to Ted's Hermes instructions on 31 August 2026.
 
 ### Three-question opener
 
 1. First message:
 
-   > Quick heads-up: I’ll keep what you share so I can remember your day, I’m not a doctor, and you can say “delete my data” anytime. If that works for you, what’s the one thing you want to change?
+   > Chalo, done. What should I call you?
 
 2. After the user answers:
 
-   > Got it. What should I call you?
+   > Nice to meet you, [name]. Before we get into it, I’ll remember what you share so I can coach your day. I’m not a doctor, and you can say “delete my data” anytime and it’s gone.
+   >
+   > So, what’s the one thing you want to change?
 
-3. After the user gives their name:
+3. After the user shares their goal:
 
    > And what time should I check in each day? Send your city too, so I get the time right.
 

@@ -23,6 +23,7 @@ describe("Home", () => {
     expect(screen.getByText(/stores your profile, messages, plans, logs/i)).toBeInTheDocument();
     expect(screen.getByText(/services that run it process this information/i)).toBeInTheDocument();
     expect(screen.getByText(/delete my data/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy");
   });
 
   it("repeats the WhatsApp action with the agreed opening message", () => {

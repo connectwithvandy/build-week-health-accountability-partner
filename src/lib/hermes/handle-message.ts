@@ -1,6 +1,5 @@
-import { FIRST_REPLY } from "@/lib/coach/ted-personality";
-
-export { FIRST_REPLY } from "@/lib/coach/ted-personality";
+export const FIRST_REPLY =
+  "Chalo, scene set karte hain 😌 First things first: what are we trying to fix?";
 
 export type HandledHermesMessage = {
   messageId: string;

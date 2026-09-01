@@ -92,7 +92,7 @@ Later: website login, a personal web dashboard, blog, payments, complex animatio
 #### onboarding choices
 
 - Keep beta onboarding to three questions: the one thing the user wants to change, what Ted should call them, and their daily check-in time plus city.
-- Put the storage, medical boundary, and deletion disclosure in the same message as the goal question. Answering after that disclosure records beta consent.
+- Open with the name question so the exchange feels conversational. Put the storage, medical boundary, and deletion disclosure in the following message with the goal question. Answering after that disclosure records beta consent.
 - Ask for age, height, weight, diet plan, calorie target, step, water, workout, quiet-hours, and custom-commitment details only when they become relevant during coaching.
 - Ask the 18+ question immediately before first discussing or calculating a calorie target. Invite only known adults to the beta.
 - If the user has no calorie target when nutrition coaching becomes relevant, offer a Mifflin–St Jeor maintenance-calorie estimate and clearly label it as an estimate, not a prescribed diet.

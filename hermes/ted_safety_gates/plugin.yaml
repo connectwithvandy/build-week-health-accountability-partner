@@ -1,0 +1,8 @@
+name: ted-safety-gates
+version: "0.1.0"
+description: "Hard-gates Ted's calorie calculations and onboarding disclosure."
+hooks:
+  - pre_llm_call
+  - post_tool_call
+  - transform_llm_output
+  - post_llm_call

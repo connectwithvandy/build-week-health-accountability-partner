@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600" role="img" aria-labelledby="title desc">
+  <title id="title">Ted WhatsApp cover</title>
+  <desc id="desc">Your day slipped away. You can still turn it around, in Ted's website style.</desc>
+  <rect width="1600" height="1600" fill="#f5f2f7"/>
+  <circle cx="1335" cy="510" r="245" fill="#ded5e6" opacity="0.55"/>
+  <circle cx="1370" cy="480" r="72" fill="#ff6b5f"/>
+  <text x="800" y="740" fill="#201326" font-family="Space Grotesk, Manrope, Arial, sans-serif" font-size="118" font-weight="700" letter-spacing="-6" text-anchor="middle">Your day slipped away.</text>
+  <text x="800" y="880" fill="#ff6b5f" font-family="Space Grotesk, Manrope, Arial, sans-serif" font-size="118" font-weight="700" letter-spacing="-6" text-anchor="middle">You can still turn it around.</text>
+</svg>

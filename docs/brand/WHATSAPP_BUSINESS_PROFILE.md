@@ -24,6 +24,10 @@ https://heyted.vercel.app
 
 Use `ted-profile-picture.png` from this folder.
 
+## Cover photo
+
+Use `ted-whatsapp-cover.png` from this folder.
+
 ## Notes
 
 Free during beta.

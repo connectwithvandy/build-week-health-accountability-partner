@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { POST } from "@/app/api/hermes/messages/route";
-import { loadTedPersonality } from "@/lib/coach/ted-personality";
 import { FIRST_REPLY } from "@/lib/hermes/handle-message";
 
 const textPayload = {
@@ -61,15 +60,6 @@ describe("local Hermes adapter", () => {
       text: "Okay let's do this",
       reply: FIRST_REPLY,
     });
-  });
-
-  it("loads the agreed Ted personality", async () => {
-    const personality = await loadTedPersonality();
-
-    expect(personality).toContain("One question at a time");
-    expect(personality).toContain("I never count their failures back at them");
-    expect(personality).toContain("I never write during quiet hours");
-    expect(personality).toContain("I do not diagnose");
   });
 
   it("does not handle payloads without a supported text message", async () => {

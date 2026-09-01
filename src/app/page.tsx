@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const openingMessage = "Okay Ted, let's do this";
 
 function getWhatsAppUrl() {
@@ -60,7 +62,7 @@ export default function Home() {
       </section>
 
       <section className="final-cta"><div className="page-shell final-grid"><p className="final-time">Today, whenever you’re ready</p><h2>One message starts the conversation.</h2><WhatsAppLink /></div></section>
-      <footer className="site-footer page-shell"><a className="brand" href="#top"><TedLogo /></a><p>Fitness accountability in WhatsApp.</p><p>© 2026 Ted</p></footer>
+      <footer className="site-footer page-shell"><a className="brand" href="#top"><TedLogo /></a><p>Fitness accountability in WhatsApp.</p><Link href="/privacy">Privacy</Link><p>© 2026 Ted</p></footer>
     </main>
   );
 }
