@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import Home from "@/app/page";
 
-const openingMessage = "Okay Ted, let's do this";
+const openingMessage = "Okay Ted, let's do this!";
 
 describe("Home", () => {
   it("explains Ted's core promise", () => {

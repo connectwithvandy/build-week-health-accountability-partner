@@ -5,7 +5,7 @@ Last updated: Tue 1 Sep 2026, Asia/Kolkata
 ## What we decided
 
 - The product name is Ted.
-- The pre-filled user message is “Okay Ted, let's do this”.
+- The pre-filled user message is “Okay Ted, let's do this!”.
 - Beta onboarding is three questions: the one thing the user wants to change, what Ted should call them, and their daily check-in time plus city.
 - Ted's first reply combines a short storage, medical-boundary, and deletion disclosure with the goal question. Answering it records consent for the invited beta.
 - The Hermes built-in WhatsApp agent is the product; there is no separate Ted worker.
@@ -54,7 +54,7 @@ Last updated: Tue 1 Sep 2026, Asia/Kolkata
 - A secret-free `.env.example` documents Convex, OpenAI, Hermes and Vercel settings without containing credentials.
 - The redesigned mobile-first landing page is intentionally short: one promise, one clearly labelled example day centered on the 7:42 PM recovery moment, one evening review, a plain privacy/safety note, and repeated WhatsApp handoff.
 - The warmer, playful design experiment was rejected and removed. The previous local landing design is restored. Reduced-motion settings are respected.
-- The WhatsApp buttons pre-fill “Okay Ted, let's do this” and read Ted's number from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER`; the number is configured locally and on Vercel.
+- The WhatsApp buttons pre-fill “Okay Ted, let's do this!” and read Ted's number from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER`; the number is configured locally and on Vercel.
 - The website-matched Ted profile picture and cover image are saved in `docs/brand/` and have been uploaded to the WhatsApp Business profile.
 - The latest landing page is live in production at `https://whatsapp-accountability-partner-ted.vercel.app`. It uses the shorter four-section story, the WhatsApp conversation hero, the new split `Message Ted` action, and no visible dash punctuation in user-facing copy.
 - Current official OpenAI documentation confirms support for typed text, meal photos, voice-note transcription and health-plan PDFs. The chosen starting models are `gpt-5.6-terra` for Responses API inputs and `gpt-transcribe` for voice notes.
