@@ -341,8 +341,9 @@ def _name_was_given(history: Iterable[dict[str, Any]]) -> bool:
 
 def _personalized_disclosure(history: Iterable[dict[str, Any]]) -> str:
     name = _given_name(history)
-    prefix = f"{name}, quick note: " if name else "quick note: "
-    return prefix + DISCLOSURE_MESSAGE
+    if name:
+        return f"hey {name} 🙂\n\n{DISCLOSURE_MESSAGE}"
+    return DISCLOSURE_MESSAGE
 
 
 def _asks_for_name(text: str) -> bool:

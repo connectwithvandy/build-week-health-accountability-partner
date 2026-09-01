@@ -24,7 +24,7 @@ def message(role: str, content: str) -> dict[str, str]:
     return {"role": role, "content": content}
 
 
-VANDY_DISCLOSURE = f"Vandy, quick note: {DISCLOSURE_MESSAGE}"
+VANDY_DISCLOSURE = f"hey Vandy 🙂\n\n{DISCLOSURE_MESSAGE}"
 
 
 class TedSafetyGatesTest(unittest.TestCase):
