@@ -23,6 +23,9 @@ def message(role: str, content: str) -> dict[str, str]:
     return {"role": role, "content": content}
 
 
+VANDY_DISCLOSURE = f"Vandy, quick note: {DISCLOSURE_MESSAGE}"
+
+
 class TedSafetyGatesTest(unittest.TestCase):
     def test_replays_calorie_failure_without_returning_a_number(self) -> None:
         history: list[dict[str, str]] = []
@@ -69,10 +72,17 @@ class TedSafetyGatesTest(unittest.TestCase):
             message("assistant", "What should I call you?"),
             message("user", "Vandy"),
         ]
-        self.assertEqual(consent_gate(history, "What is your goal?"), DISCLOSURE_MESSAGE)
+        self.assertEqual(consent_gate(history, "What is your goal?"), VANDY_DISCLOSURE)
 
-        history.append(message("assistant", DISCLOSURE_MESSAGE))
+        history.append(message("assistant", VANDY_DISCLOSURE))
         self.assertIsNone(consent_gate(history, "What is your goal?"))
+
+    def test_disclosure_uses_a_name_given_in_a_sentence(self) -> None:
+        history = [
+            message("assistant", "What should I call you?"),
+            message("user", "call me Vandy"),
+        ]
+        self.assertEqual(consent_gate(history, GOAL_QUESTION), VANDY_DISCLOSURE)
 
     def test_disclosure_is_one_short_message_without_the_goal(self) -> None:
         self.assertEqual(len(DISCLOSURE_MESSAGE.split()), 20)
@@ -105,7 +115,7 @@ class TedSafetyGatesTest(unittest.TestCase):
                 user_message="Vandy",
                 response_text="What is your goal?",
             ),
-            DISCLOSURE_MESSAGE,
+            VANDY_DISCLOSURE,
         )
 
     def test_new_chat_cannot_return_calories_before_the_name(self) -> None:
@@ -250,7 +260,7 @@ class TedSafetyGatesTest(unittest.TestCase):
                 session_id=session_id,
                 response_text="What do you want to change?",
             ),
-            DISCLOSURE_MESSAGE,
+            VANDY_DISCLOSURE,
         )
 
         with (
@@ -260,12 +270,12 @@ class TedSafetyGatesTest(unittest.TestCase):
             _log_disclosure(
                 platform="whatsapp",
                 session_id=session_id,
-                assistant_response=DISCLOSURE_MESSAGE,
+                assistant_response=VANDY_DISCLOSURE,
             )
             _log_disclosure(
                 platform="whatsapp",
                 session_id=session_id,
-                assistant_response=DISCLOSURE_MESSAGE,
+                assistant_response=VANDY_DISCLOSURE,
             )
             schedule.assert_called_once_with(sender_id, user_key)
 
@@ -317,12 +327,12 @@ class TedSafetyGatesTest(unittest.TestCase):
                     session_id=first_session,
                     response_text=GOAL_QUESTION,
                 ),
-                DISCLOSURE_MESSAGE,
+                VANDY_DISCLOSURE,
             )
             _log_disclosure(
                 platform="whatsapp",
                 session_id=first_session,
-                assistant_response=DISCLOSURE_MESSAGE,
+                assistant_response=VANDY_DISCLOSURE,
             )
 
             _capture_turn(
@@ -393,12 +403,12 @@ class TedSafetyGatesTest(unittest.TestCase):
                 # when the delivery gate replaces what WhatsApp receives.
                 history.append(message("assistant", model_reply))
 
-        self.assertEqual(visible_replies.count(DISCLOSURE_MESSAGE), 1)
+        self.assertEqual(visible_replies.count(VANDY_DISCLOSURE), 1)
         self.assertEqual(visible_replies.count(GOAL_QUESTION), 1)
         self.assertEqual(
             visible_replies,
             [
-                DISCLOSURE_MESSAGE,
+                VANDY_DISCLOSURE,
                 GOAL_QUESTION,
                 model_replies[1],
                 model_replies[2],

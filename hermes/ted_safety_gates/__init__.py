@@ -172,7 +172,7 @@ def _disclosure_was_sent(history: Iterable[dict[str, Any]]) -> bool:
     )
 
 
-def _name_was_given(history: Iterable[dict[str, Any]]) -> bool:
+def _given_name(history: Iterable[dict[str, Any]]) -> str | None:
     waiting_for_name = False
     for role, text in _messages(history):
         lowered = text.lower()
@@ -189,8 +189,26 @@ def _name_was_given(history: Iterable[dict[str, Any]]) -> bool:
             waiting_for_name = True
             continue
         if waiting_for_name and role == "user" and text:
-            return True
-    return False
+            name = re.sub(
+                r"^(?:i(?:'m| am)|my name is|call me)\s+",
+                "",
+                text.strip(),
+                flags=re.IGNORECASE,
+            )
+            name = re.sub(r"\s+", " ", name).strip(" .,!?")
+            if name:
+                return name[:40]
+    return None
+
+
+def _name_was_given(history: Iterable[dict[str, Any]]) -> bool:
+    return _given_name(history) is not None
+
+
+def _personalized_disclosure(history: Iterable[dict[str, Any]]) -> str:
+    name = _given_name(history)
+    prefix = f"{name}, quick note: " if name else "quick note: "
+    return prefix + DISCLOSURE_MESSAGE
 
 
 def _asks_for_name(text: str) -> bool:
@@ -214,7 +232,7 @@ def consent_gate(
     if _disclosure_was_sent(history):
         return None
     if _name_was_given(history):
-        return DISCLOSURE_MESSAGE
+        return _personalized_disclosure(history)
     if not _asks_for_name(response_text) or _response_has_calorie_number(response_text):
         return "What should I call you?"
     return None
