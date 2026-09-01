@@ -87,9 +87,9 @@ class TedSafetyGatesTest(unittest.TestCase):
     def test_disclosure_is_one_short_message_without_the_goal(self) -> None:
         self.assertEqual(
             DISCLOSURE_MESSAGE,
-            "Ted stores your profile, messages, plans, logs and uploads. You "
-            "can view for more details https://heyted.vercel.app/privacy — "
-            "send “delete my data” to delete them anytime!",
+            "Ted stores your profile, messages, plans, logs and uploads. Read "
+            "more: https://heyted.vercel.app/privacy. Send “delete my data” "
+            "anytime to delete everything.",
         )
         self.assertNotIn(GOAL_QUESTION, DISCLOSURE_MESSAGE)
 
