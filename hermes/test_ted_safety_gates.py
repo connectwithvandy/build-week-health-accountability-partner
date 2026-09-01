@@ -1,5 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from hermes import ted_safety_gates as gates
 from hermes.ted_safety_gates import (
     DISCLOSURE_MESSAGE,
     action_claim_gate,
@@ -7,6 +11,8 @@ from hermes.ted_safety_gates import (
     consent_gate,
     transform_response,
     _capture_turn,
+    _load_disclosure_sessions,
+    _log_disclosure,
     _record_tool_success,
     _transform_live_response,
 )
@@ -209,6 +215,71 @@ class TedSafetyGatesTest(unittest.TestCase):
             ),
             "I haven’t completed that action.",
         )
+
+    def test_disclosure_is_not_repeated_when_transformed_text_is_missing_from_history(self) -> None:
+        session_id = "disclosure-state-test"
+        gates._DISCLOSURE_SENT_SESSIONS.discard(session_id)
+        named_history = [
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+        ]
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            conversation_history=named_history,
+            user_message="Vandy",
+        )
+        self.assertEqual(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=session_id,
+                response_text="What do you want to change?",
+            ),
+            DISCLOSURE_MESSAGE,
+        )
+
+        with patch.object(gates, "_persist_disclosure_sessions"):
+            _log_disclosure(
+                platform="whatsapp",
+                session_id=session_id,
+                assistant_response=DISCLOSURE_MESSAGE,
+            )
+
+        history_without_transformed_reply = named_history + [
+            message("assistant", "What do you want to change?"),
+            message("user", "Routine"),
+        ]
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            conversation_history=history_without_transformed_reply,
+            user_message="Routine",
+        )
+        self.assertIsNone(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=session_id,
+                response_text="routine is broad—what should look different?",
+            )
+        )
+        gates._DISCLOSURE_SENT_SESSIONS.discard(session_id)
+
+    def test_disclosure_state_recovers_existing_sends_from_agent_log(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_path = root / "state.json"
+            log_path = root / "agent.log"
+            state_path.write_text(
+                '{"session_ids": ["saved-session"]}', encoding="utf-8"
+            )
+            log_path.write_text(
+                "INFO consent_disclosure_sent session=logged-session privacy_url=x\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _load_disclosure_sessions(state_path, log_path),
+                {"saved-session", "logged-session"},
+            )
 
 
 if __name__ == "__main__":

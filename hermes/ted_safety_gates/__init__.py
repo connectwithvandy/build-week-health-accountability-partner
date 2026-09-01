@@ -7,6 +7,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable
 
 
@@ -22,6 +23,64 @@ DISCLOSURE_MESSAGE = (
 
 _TURN_CONTEXT: dict[str, dict[str, Any]] = {}
 _TURN_LOCK = threading.Lock()
+_DISCLOSURE_STATE_PATH = (
+    Path.home() / ".hermes" / "state" / "ted-safety-gates-disclosures.json"
+)
+_AGENT_LOG_PATH = Path.home() / ".hermes" / "logs" / "agent.log"
+_DISCLOSURE_LOG_PATTERN = re.compile(r"consent_disclosure_sent session=([^\s]+)")
+
+
+def _load_disclosure_sessions(
+    state_path: Path = _DISCLOSURE_STATE_PATH,
+    agent_log_path: Path = _AGENT_LOG_PATH,
+) -> set[str]:
+    """Load durable disclosure state and recover older sends from the log."""
+    sessions: set[str] = set()
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        sessions.update(str(value) for value in payload.get("session_ids", []))
+    except (OSError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        sessions.update(
+            _DISCLOSURE_LOG_PATTERN.findall(
+                agent_log_path.read_text(encoding="utf-8", errors="replace")
+            )
+        )
+    except OSError:
+        pass
+    return {session_id for session_id in sessions if session_id}
+
+
+_DISCLOSURE_SENT_SESSIONS = _load_disclosure_sessions()
+
+
+def _persist_disclosure_sessions() -> None:
+    _DISCLOSURE_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = _DISCLOSURE_STATE_PATH.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {"session_ids": sorted(_DISCLOSURE_SENT_SESSIONS)},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(_DISCLOSURE_STATE_PATH)
+
+
+def _mark_disclosure_sent(session_id: str) -> None:
+    if not session_id:
+        return
+    with _TURN_LOCK:
+        if session_id in _DISCLOSURE_SENT_SESSIONS:
+            return
+        _DISCLOSURE_SENT_SESSIONS.add(session_id)
+        context = _TURN_CONTEXT.get(session_id)
+        if context is not None:
+            context["disclosure_sent"] = True
+        _persist_disclosure_sessions()
 
 
 @dataclass(frozen=True)
@@ -360,11 +419,16 @@ def _capture_turn(**kwargs: Any) -> None:
     session_id = str(kwargs.get("session_id") or "")
     if not session_id:
         return None
+    history = list(kwargs.get("conversation_history") or [])
     with _TURN_LOCK:
         _TURN_CONTEXT[session_id] = {
-            "history": list(kwargs.get("conversation_history") or []),
+            "history": history,
             "user_message": str(kwargs.get("user_message") or ""),
             "successful_actions": set(),
+            "disclosure_sent": (
+                session_id in _DISCLOSURE_SENT_SESSIONS
+                or _disclosure_was_sent(history)
+            ),
         }
     return None
 
@@ -375,8 +439,11 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     session_id = str(kwargs.get("session_id") or "")
     with _TURN_LOCK:
         context = _TURN_CONTEXT.get(session_id, {})
+    history = list(context.get("history", []))
+    if context.get("disclosure_sent") and not _disclosure_was_sent(history):
+        history.insert(0, {"role": "assistant", "content": DISCLOSURE_MESSAGE})
     return transform_response(
-        history=context.get("history", []),
+        history=history,
         user_message=str(context.get("user_message", "")),
         response_text=str(kwargs.get("response_text") or ""),
         successful_actions=set(context.get("successful_actions", set())),
@@ -422,9 +489,11 @@ def _log_disclosure(**kwargs: Any) -> None:
     if kwargs.get("platform") != "whatsapp":
         return None
     if PRIVACY_URL in str(kwargs.get("assistant_response") or ""):
+        session_id = str(kwargs.get("session_id") or "")
+        _mark_disclosure_sent(session_id)
         LOGGER.info(
             "consent_disclosure_sent session=%s privacy_url=%s",
-            kwargs.get("session_id") or "",
+            session_id,
             PRIVACY_URL,
         )
     return None
