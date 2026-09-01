@@ -38,6 +38,52 @@ class TedSafetyGatesTest(unittest.TestCase):
             self.assertNotRegex(reply or "", r"\b120\b")
             history.append(message("assistant", reply or ""))
 
+    def test_accepts_a_bare_age_reply_from_the_current_turn(self) -> None:
+        history = [
+            message("user", "Meal and steps"),
+            message("assistant", "I need your age before I can give calorie numbers."),
+        ]
+        self.assertIsNone(
+            calorie_gate(history, "33", "Got it — what are your steps today?")
+        )
+
+    def test_golden_path_reaches_past_the_age_gate(self) -> None:
+        history = [message("user", "Okay Ted, let's do this!")]
+        opener = (
+            "here's the deal: you tell me what you ate or got done, "
+            "i keep score and close out the day with a recap. "
+            "what should i call you?"
+        )
+        self.assertIsNone(
+            transform_response(
+                history=history,
+                user_message=history[0]["content"],
+                response_text=opener,
+            )
+        )
+        history.extend([message("assistant", opener), message("user", "Vandy")])
+        disclosure = transform_response(
+            history=history,
+            user_message="Vandy",
+            response_text="what's one thing you want to change?",
+        )
+        self.assertEqual(disclosure, VANDY_DISCLOSURE)
+        history.extend([message("assistant", disclosure or ""), message("user", "Meal and steps")])
+        meal_gate = transform_response(
+            history=history,
+            user_message="Meal and steps",
+            response_text="roughly 280 calories, 14g protein.",
+        )
+        self.assertEqual(meal_gate, "I need your age before I can give calorie numbers.")
+        history.append(message("assistant", meal_gate or ""))
+        self.assertIsNone(
+            transform_response(
+                history=history,
+                user_message="33",
+                response_text="got it — what's your daily step target?",
+            )
+        )
+
     def test_blocks_under_18(self) -> None:
         history = [message("user", "I am 17 and want to track calories")]
         self.assertEqual(

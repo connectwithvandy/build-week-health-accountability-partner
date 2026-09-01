@@ -434,10 +434,24 @@ def _age_from_answer_context(history: Iterable[dict[str, Any]]) -> int | None:
     return None
 
 
-def extract_calorie_profile(history: Iterable[dict[str, Any]]) -> CalorieProfile:
+def extract_calorie_profile(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> CalorieProfile:
+    history = list(history)
     texts = _user_turns(history)
+    if current_user_message.strip():
+        texts.append(current_user_message.strip())
+    age = _find_age(texts) or _age_from_answer_context(history)
+    # A bare number is a valid answer to the gate's preceding age question.
+    # Transformed gate replies are delivered to WhatsApp but are not always
+    # persisted in Hermes' durable history, so there may be no assistant text
+    # left to anchor the answer-context parser.
+    if age is None:
+        bare_age = re.fullmatch(r"\s*(\d{1,2})\s*", current_user_message)
+        if bare_age and 10 <= int(bare_age.group(1)) <= 99:
+            age = int(bare_age.group(1))
     return CalorieProfile(
-        age=_find_age(texts) or _age_from_answer_context(history),
+        age=age,
         height_cm=_find_height_cm(texts),
         weight_kg=_find_weight_kg(texts),
         sex=_find_sex(texts),
@@ -514,7 +528,7 @@ def calorie_gate(
     if not active and not _response_has_calorie_number(response_text):
         return None
 
-    profile = extract_calorie_profile(history)
+    profile = extract_calorie_profile(history, user_message)
     if profile.age is None:
         return "I need your age before I can give calorie numbers."
     if profile.age < 18:
