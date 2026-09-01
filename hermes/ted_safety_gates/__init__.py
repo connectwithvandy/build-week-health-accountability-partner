@@ -18,6 +18,14 @@ from typing import Any, Iterable
 
 LOGGER = logging.getLogger("ted.safety_gates")
 PRIVACY_URL = "https://heyted.vercel.app/privacy"
+OPENING_MESSAGE = (
+    "hey! good energy, let's set this up right.\n\n"
+    "here's the deal: you tell me what you ate or what you got done, i keep "
+    "score, nudge you when it's useful, and close out the day with a quick "
+    "recap — like \"protein: on track, steps: short by 2k, one thing for "
+    "tomorrow.\"\n\n"
+    "first things first — what should i call you?"
+)
 DISCLOSURE_MESSAGE = (
     "Ted stores your profile, messages, plans, logs and uploads. "
     f"Read more: {PRIVACY_URL}. Send “delete my data” anytime to delete "
@@ -351,6 +359,16 @@ def _asks_for_name(text: str) -> bool:
     )
 
 
+def _is_prepared_start(history: Iterable[dict[str, Any]], user_message: str) -> bool:
+    """Identify the prepared start message whose copy must stay exact."""
+    turns = _messages(history)
+    return (
+        not any(role == "assistant" for role, _ in turns)
+        and "okay ted" in user_message.lower()
+        and len(user_message) <= 80
+    )
+
+
 def consent_gate(
     history: Iterable[dict[str, Any]], response_text: str
 ) -> str | None:
@@ -608,6 +626,9 @@ def transform_response(
     action_succeeded: bool = False,
     successful_actions: set[str] | None = None,
 ) -> str | None:
+    history = list(history)
+    if _is_prepared_start(history, user_message):
+        return OPENING_MESSAGE
     disclosure = consent_gate(history, response_text)
     if disclosure:
         return disclosure

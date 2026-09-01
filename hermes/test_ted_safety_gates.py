@@ -7,6 +7,7 @@ from hermes import ted_safety_gates as gates
 from hermes.ted_safety_gates import (
     DISCLOSURE_MESSAGE,
     GOAL_QUESTION,
+    OPENING_MESSAGE,
     action_claim_gate,
     calorie_gate,
     consent_gate,
@@ -27,6 +28,16 @@ VANDY_DISCLOSURE = f"Vandy, quick note: {DISCLOSURE_MESSAGE}"
 
 
 class TedSafetyGatesTest(unittest.TestCase):
+    def test_prepared_start_uses_exact_lowercase_copy(self) -> None:
+        self.assertEqual(
+            transform_response(
+                history=[message("user", "Okay Ted, let's do this!")],
+                user_message="Okay Ted, let's do this!",
+                response_text="A different model-generated opener.",
+            ),
+            OPENING_MESSAGE,
+        )
+
     def test_replays_calorie_failure_without_returning_a_number(self) -> None:
         history: list[dict[str, str]] = []
         expected = "I need your age before I can give calorie numbers."
@@ -54,12 +65,13 @@ class TedSafetyGatesTest(unittest.TestCase):
             "i keep score and close out the day with a recap. "
             "what should i call you?"
         )
-        self.assertIsNone(
+        self.assertEqual(
             transform_response(
                 history=history,
                 user_message=history[0]["content"],
                 response_text=opener,
-            )
+            ),
+            OPENING_MESSAGE,
         )
         history.extend([message("assistant", opener), message("user", "Vandy")])
         disclosure = transform_response(
