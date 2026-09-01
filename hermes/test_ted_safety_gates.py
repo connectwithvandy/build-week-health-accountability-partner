@@ -450,6 +450,94 @@ class TedSafetyGatesTest(unittest.TestCase):
             finally:
                 gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
+    def test_convex_memory_is_loaded_only_for_the_current_sender(self) -> None:
+        seen_user_keys: list[str] = []
+
+        def fake_request(action: str, user_key: str, facts=None):
+            self.assertEqual(action, "get")
+            self.assertIsNone(facts)
+            seen_user_keys.append(user_key)
+            return {
+                "success": True,
+                "facts": [{"key": "owner", "value": user_key[-8:]}],
+            }
+
+        with patch.object(gates, "_convex_request", side_effect=fake_request):
+            first = _capture_turn(
+                platform="whatsapp",
+                session_id="sender-a-session",
+                sender_id="sender-a@s.whatsapp.net",
+                conversation_history=[],
+                user_message="hello",
+            )
+            second = _capture_turn(
+                platform="whatsapp",
+                session_id="sender-b-session",
+                sender_id="sender-b@s.whatsapp.net",
+                conversation_history=[],
+                user_message="hello",
+            )
+
+        self.assertEqual(len(seen_user_keys), 2)
+        self.assertNotEqual(seen_user_keys[0], seen_user_keys[1])
+        self.assertNotIn("sender-a", seen_user_keys[0])
+        self.assertIn(seen_user_keys[0][-8:], (first or {}).get("context", ""))
+        self.assertNotIn(seen_user_keys[0][-8:], (second or {}).get("context", ""))
+
+    def test_convex_memory_save_is_bound_to_the_active_sender(self) -> None:
+        session_id = "bound-save-session"
+        sender_id = "bound-save@s.whatsapp.net"
+        expected_user_key = gates._user_state_key("whatsapp", sender_id, session_id)
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id=sender_id,
+            conversation_history=[],
+            user_message="call me Vandy",
+        )
+
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={"success": True, "saved": 1},
+        ) as request:
+            result = gates._save_user_facts(
+                {"facts": [{"key": "name", "value": "Vandy"}]},
+                session_id=session_id,
+            )
+
+        self.assertEqual(result, '{"success": true, "saved": 1}')
+        request.assert_called_once_with(
+            "save",
+            expected_user_key,
+            [{"key": "name", "value": "Vandy"}],
+        )
+
+    def test_successful_convex_memory_save_unlocks_a_save_claim(self) -> None:
+        session_id = "convex-memory-success"
+        history = [message("assistant", DISCLOSURE_MESSAGE)]
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="convex-memory-success@s.whatsapp.net",
+            conversation_history=history,
+            user_message="My target is 9000 steps.",
+        )
+        _record_tool_success(
+            session_id=session_id,
+            status="ok",
+            tool_name="ted_memory_save",
+            args={"facts": [{"key": "steps", "value": "9000"}]},
+            result='{"success": true, "saved": 1}',
+        )
+        self.assertIsNone(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=session_id,
+                response_text="Your step target is saved.",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

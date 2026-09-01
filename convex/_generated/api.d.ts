@@ -8,13 +8,21 @@
  * @module
  */
 
+import type * as http from "../http.js";
+import type * as model from "../model.js";
+import type * as ted from "../ted.js";
+
 import type {
   ApiFromModules,
   FilterApi,
   FunctionReference,
 } from "convex/server";
 
-declare const fullApi: ApiFromModules<{}>;
+declare const fullApi: ApiFromModules<{
+  http: typeof http;
+  model: typeof model;
+  ted: typeof ted;
+}>;
 
 /**
  * A utility for referencing Convex functions in your app's public API.

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="A private design experiment for Ted, the fitness coach in WhatsApp." />
+    <title>Ted recovery-led landing experiment</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header shell">
+      <a class="brand" href="#top" aria-label="Ted experiment home">Ted<span>.</span></a>
+      <p>Your day, remembered.</p>
+      <a class="small-action" href="#start">Message Ted <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main id="main">
+      <section class="hero shell" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="section-label">Fitness accountability in WhatsApp</p>
+          <h1 id="hero-title">Your day slipped away. <em>You can still turn it around.</em></h1>
+          <p class="hero-lede">Ted remembers your meals, movement, water, and commitments. Then it messages you with the one useful thing you can still do today.</p>
+          <div class="hero-actions">
+            <a class="primary-action" href="#start"><span>Message Ted</span><i aria-hidden="true">↗</i></a>
+            <p>Nothing to download.<br />It starts in your chat.</p>
+          </div>
+          <p class="audience-note"><strong>Made for long desk days</strong> and people who already care, but do not need another tracker to maintain.</p>
+        </div>
+
+        <aside class="recovery-card" aria-label="Example recovery message from Ted">
+          <div class="card-heading"><span>Today</span><time datetime="19:42">7:42 PM</time></div>
+          <div class="coach-line">
+            <span class="coach-avatar" aria-hidden="true">t</span>
+            <div><strong>Ted</strong><small>WhatsApp</small></div>
+          </div>
+          <div class="coach-message">
+            <p>You’re 2,100 steps short. A 19-minute walk closes the gap.</p>
+            <strong>Shoes on?</strong>
+          </div>
+          <div class="user-message">Going now</div>
+          <p class="no-guilt">One useful move. No guilt trip.</p>
+          <div class="step-change">
+            <span><small>Before</small><strong>5,900</strong></span>
+            <b aria-hidden="true">→</b>
+            <span><small>After the walk</small><strong>8,214 steps</strong></span>
+          </div>
+        </aside>
+      </section>
+
+      <section class="proof shell" aria-labelledby="proof-title">
+        <div class="proof-intro">
+          <p class="section-label">The part a tracker cannot do</p>
+          <h2 id="proof-title">Ted remembers the correction, then keeps the whole day straight.</h2>
+          <p>One conversation joins the meal you sent, what you corrected, and what is still possible tonight.</p>
+        </div>
+
+        <div class="memory-thread" aria-label="Example WhatsApp conversation showing meal photo understanding, a correction, and daily memory">
+          <div class="thread-bar">
+            <div class="coach-line"><span class="coach-avatar" aria-hidden="true">t</span><div><strong>Ted</strong><small>online</small></div></div>
+            <span class="thread-label">Example conversation</span>
+          </div>
+
+          <div class="message-row from-user">
+            <div class="meal-photo" role="img" aria-label="Illustrated meal with paneer, rice, salad, and chutney">
+              <span class="plate"><i class="paneer one"></i><i class="paneer two"></i><i class="paneer three"></i><i class="rice"></i><i class="salad"></i><i class="chutney"></i></span>
+            </div>
+            <p>Lunch</p>
+          </div>
+
+          <div class="message-row from-ted">
+            <p>I see chicken tikka, rice, salad, and chutney. Rough estimate: 610 calories and 42g protein. Tell me if I misread anything.</p>
+            <time datetime="13:08">1:08 PM</time>
+          </div>
+
+          <div class="message-row from-user compact">
+            <p>That was paneer, not chicken.</p>
+          </div>
+
+          <div class="message-row from-ted correction">
+            <p><span class="done-mark" aria-hidden="true">✓</span> Fixed. Paneer tikka brings lunch to about 720 calories and 31g protein. I’ll use paneer in today’s totals.</p>
+            <time datetime="13:09">1:09 PM</time>
+          </div>
+
+          <div class="day-divider"><span>Later today</span></div>
+
+          <div class="message-row from-user compact">
+            <p>How am I doing today?</p>
+          </div>
+
+          <div class="message-row from-ted today-summary">
+            <p><strong>Here’s the honest version.</strong></p>
+            <ul>
+              <li><span>Protein</span><b>73g of 100g</b></li>
+              <li><span>Steps</span><b>5,900 of 8,000</b></li>
+              <li><span>Water</span><b class="complete">Done</b></li>
+            </ul>
+            <p>Dinner can close most of the protein gap. The walk gets the steps.</p>
+            <time datetime="19:41">7:41 PM</time>
+          </div>
+        </div>
+      </section>
+
+      <section class="review shell" aria-labelledby="review-title">
+        <div class="review-copy">
+          <p class="section-label">The evening close</p>
+          <h2 id="review-title">No pretending the day was perfect. Just an honest close.</h2>
+          <p>Ted brings the day together so you can see what happened, recover what is still possible, and stop carrying the rest in your head.</p>
+        </div>
+        <article class="review-card">
+          <p>Evening review · Tuesday</p>
+          <h3>Good recovery.</h3>
+          <ul>
+            <li><b aria-hidden="true">✓</b><span>3 meals logged</span></li>
+            <li><b aria-hidden="true">✓</b><span>Water target hit</span></li>
+            <li><b aria-hidden="true">✓</b><span>Evening walk done</span></li>
+            <li><b class="moved" aria-hidden="true">→</b><span>Workout moved, not forgotten</span></li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="privacy shell" aria-labelledby="privacy-title">
+        <p class="privacy-signature" aria-hidden="true">your health.<br /><em>your call.</em></p>
+        <div class="privacy-copy">
+          <p class="section-label">Before you start</p>
+          <h2 id="privacy-title">Health conversations are personal.</h2>
+          <p>Ted stores your profile, messages, plans, logs, and uploaded media so it can remember your day. Ted and the services that run it process this information.</p>
+          <p>To remove it, message <strong>“delete my data”</strong> in WhatsApp and confirm the request.</p>
+          <p class="safety-note">Ted is for adults 18+ during beta. It is a habit coach, not medical advice, and should not be used for emergencies, diagnosis, or treatment.</p>
+        </div>
+      </section>
+
+      <section class="final-cta" id="start" aria-labelledby="start-title">
+        <div class="shell final-grid">
+          <div>
+            <p class="section-label">Today, whenever you’re ready</p>
+            <h2 id="start-title">One message starts the conversation.</h2>
+            <p class="beta-note">Free during beta · No payment or separate account</p>
+          </div>
+          <a class="primary-action final-action" href="https://wa.me/?text=Okay%20Ted%2C%20let%27s%20do%20this%20%F0%9F%AB%A1" target="_blank" rel="noreferrer">
+            <span>Message Ted<small>Opens WhatsApp</small></span><i aria-hidden="true">↗</i>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer shell">
+      <a class="brand" href="#top" aria-label="Back to the top">Ted<span>.</span></a>
+      <p>Fitness accountability in WhatsApp.</p>
+      <a href="#privacy-title">Privacy &amp; safety</a>
+      <p>Independent beta operated by Vandana Agarwal.</p>
+      <p class="contact-needed">Public contact email needed before launch.</p>
+      <p>© 2026 Ted</p>
+    </footer>
+  </body>
+</html>

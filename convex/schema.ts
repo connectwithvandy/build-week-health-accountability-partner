@@ -36,6 +36,17 @@ export default defineSchema({
     updatedAt: timestamp,
   }).index("by_user", ["userId"]),
 
+  userFacts: defineTable({
+    userId: v.id("users"),
+    key: v.string(),
+    value: v.string(),
+    sourceMessageId: v.optional(v.string()),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_and_key", ["userId", "key"]),
+
   targets: defineTable({
     userId: v.id("users"),
     nutritionSource: v.optional(
