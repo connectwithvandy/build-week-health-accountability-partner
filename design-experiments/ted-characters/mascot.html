@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ted mascot</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet">
+<style>
+  body { margin:0; padding:56px 40px 90px; background:#f8f4f2; color:#211e1d;
+         font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-family:Fraunces,Georgia,serif; font-size:2.4rem; font-weight:600; margin:0 0 10px; letter-spacing:-.02em; }
+  p.lede { max-width:62ch; margin:0 0 44px; color:#847e7c; line-height:1.6; }
+  .row { display:flex; align-items:flex-end; gap:44px; flex-wrap:wrap; }
+  .size { text-align:center; }
+  .size svg { display:block; border-radius:50%; }
+  .size span { display:block; margin-top:12px; font-size:.66rem; font-weight:700;
+               letter-spacing:.1em; text-transform:uppercase; color:#847e7c; }
+  h2 { font-family:Fraunces,Georgia,serif; font-size:1.05rem; font-weight:600; margin:0 0 18px; }
+</style>
+</head>
+<body>
+
+<h1>Ted</h1>
+<p class="lede">Capybara. Front-facing bust, soft rounded fur, small ears set high, broad blunt
+muzzle with the wide nose pad on it, half-lidded eyes, blush, striped tee, flat yellow disc.
+Nothing in hand.</p>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <radialGradient id="m-fur" cx="36%" cy="24%" r="86%">
+    <stop offset="0%" stop-color="#eccb9f"/><stop offset="52%" stop-color="#cda071"/><stop offset="100%" stop-color="#9a6f47"/>
+  </radialGradient>
+  <radialGradient id="m-furdark" cx="38%" cy="26%" r="84%">
+    <stop offset="0%" stop-color="#d8b184"/><stop offset="60%" stop-color="#b3865b"/><stop offset="100%" stop-color="#8a6240"/>
+  </radialGradient>
+  <radialGradient id="m-muzzle" cx="40%" cy="26%" r="82%">
+    <stop offset="0%" stop-color="#fbeed8"/><stop offset="60%" stop-color="#edd3b0"/><stop offset="100%" stop-color="#d9b78d"/>
+  </radialGradient>
+  <filter id="m-soft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="9"/></filter>
+  <filter id="m-soft2" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="16"/></filter>
+  <filter id="m-edge" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="4.5"/></filter>
+  <clipPath id="m-disc"><circle cx="200" cy="200" r="200"/></clipPath>
+  <clipPath id="m-tee"><path d="M80 400 C80 356 126 326 200 326 C274 326 320 356 320 400 Z"/></clipPath>
+
+  <g id="ted-mascot">
+    <circle cx="200" cy="200" r="200" fill="#f6c93e"/>
+    <g clip-path="url(#m-disc)">
+      <g transform="translate(0,-14) translate(200,218) scale(1.15) translate(-200,-218)">
+      <!-- small round ears, high on the sides -->
+      <ellipse cx="122" cy="192" rx="20" ry="18" fill="url(#m-furdark)"/>
+      <ellipse cx="278" cy="192" rx="20" ry="18" fill="url(#m-furdark)"/>
+      <!-- striped tee -->
+      <path d="M80 400 C80 356 126 326 200 326 C274 326 320 356 320 400 Z" fill="#fdfbf6"/>
+      <g clip-path="url(#m-tee)">
+        <rect x="74" y="342" width="252" height="10" fill="#4674cf"/>
+        <rect x="74" y="360" width="252" height="10" fill="#4674cf"/>
+        <rect x="74" y="378" width="252" height="10" fill="#4674cf"/>
+        <rect x="74" y="396" width="252" height="10" fill="#4674cf"/>
+      </g>
+      <!-- head: flat-topped capybara loaf, straight sides -->
+      <path d="M116 234 C116 188 142 166 200 166 C258 166 284 188 284 234 L284 274 C284 314 254 332 200 332 C146 332 116 314 116 274 Z" fill="url(#m-fur)"/>
+      <!-- inner ears -->
+      <ellipse cx="110" cy="191" rx="8.5" ry="7.5" fill="#a8735a" opacity="0.8"/>
+      <ellipse cx="290" cy="191" rx="8.5" ry="7.5" fill="#a8735a" opacity="0.8"/>
+      <!-- broad, blunt, squared muzzle -->
+      <rect x="140" y="252" width="120" height="72" rx="34" fill="url(#m-muzzle)" filter="url(#m-edge)"/>
+      <!-- blush -->
+      <ellipse cx="132" cy="276" rx="20" ry="11" fill="#e08a72" opacity="0.5" filter="url(#m-soft)"/>
+      <ellipse cx="268" cy="276" rx="20" ry="11" fill="#e08a72" opacity="0.5" filter="url(#m-soft)"/>
+      <!-- brows -->
+      <path d="M142 208 Q154 202 166 207" fill="none" stroke="#5a4230" stroke-width="4.5" stroke-linecap="round"/>
+      <path d="M234 207 Q246 202 258 208" fill="none" stroke="#5a4230" stroke-width="4.5" stroke-linecap="round"/>
+      <!-- small half-lidded eyes, set wide and high -->
+      <path d="M142 223 Q154 220 166 223 Q167 237 154 237 Q141 237 142 223 Z" fill="#2f2319"/>
+      <path d="M234 223 Q246 220 258 223 Q259 237 246 237 Q233 237 234 223 Z" fill="#2f2319"/>
+      <circle cx="148" cy="228" r="3" fill="#fff" opacity="0.9"/>
+      <circle cx="240" cy="228" r="3" fill="#fff" opacity="0.9"/>
+      <!-- wide blunt nose pad -->
+      <ellipse cx="200" cy="272" rx="30" ry="17" fill="#3a2a20"/>
+      <ellipse cx="188" cy="267" rx="5" ry="3" fill="#fff" opacity="0.35"/>
+      <!-- mouth -->
+      <path d="M200 289 L200 297" fill="none" stroke="#6b4f38" stroke-width="4" stroke-linecap="round"/>
+      <path d="M181 299 Q200 311 219 299" fill="none" stroke="#6b4f38" stroke-width="4.5" stroke-linecap="round"/>
+      <!-- soft light -->
+      <ellipse cx="160" cy="206" rx="42" ry="28" fill="#fff6e6" opacity="0.2" filter="url(#m-soft2)"/>
+      </g>
+    </g>
+  </g>
+</defs></svg>
+
+<h2>At size</h2>
+<div class="row">
+  <div class="size"><svg viewBox="0 0 400 400" width="320" height="320"><use href="#ted-mascot"/></svg><span>320 px</span></div>
+  <div class="size"><svg viewBox="0 0 400 400" width="120" height="120"><use href="#ted-mascot"/></svg><span>120 px</span></div>
+  <div class="size"><svg viewBox="0 0 400 400" width="56" height="56"><use href="#ted-mascot"/></svg><span>56 px · card avatar</span></div>
+  <div class="size"><svg viewBox="0 0 400 400" width="32" height="32"><use href="#ted-mascot"/></svg><span>32 px</span></div>
+</div>
+</body>
+</html>

@@ -24,38 +24,28 @@ body { margin: 0; padding: 56px 40px 96px; background: var(--paper); color: var(
 .axis.col { padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .axis.row { padding-top: 150px; text-align: right; }
 
-/* ---- the card ---- */
-.card { padding: 26px 26px 22px; border: 1px solid var(--line); border-radius: 22px; background: var(--card); box-shadow: 0 10px 30px rgba(33,30,29,0.06); }
+/* ---- the card: TBH restraint — big type, few elements, lots of air ---- */
+.card { padding: 34px 32px 30px; border: 1px solid var(--line); border-radius: 20px; background: var(--card); }
 
-.card-head { display: flex; align-items: center; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
-.avatar { width: 52px; height: 52px; flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; border-radius: 50%; background: #f1ebe7; }
-.avatar img, .avatar svg { width: 100%; height: 100%; object-fit: cover; display: block; }
-.who { display: flex; flex-direction: column; gap: 2px; }
-.who b { font-family: var(--display); font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; }
-.who span { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.card-head { display: flex; align-items: center; gap: 11px; margin-bottom: 28px; }
+.avatar { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; border-radius: 50%; background: #f1ebe7; }
+.avatar svg, .avatar img { width: 100%; height: 100%; display: block; }
+.card-head b { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+.card-head .date { margin-left: auto; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 
-.headline { margin: 20px 0 22px; font-family: var(--display); font-size: 1.72rem; font-weight: 600; line-height: 1.15; letter-spacing: -0.02em; }
+.headline { margin: 0 0 32px; font-family: var(--display); font-size: 2.35rem; font-weight: 600; line-height: 1.06; letter-spacing: -0.03em; }
 
-.rows { display: flex; flex-direction: column; gap: 13px; margin-bottom: 22px; }
-.row-label { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 5px; }
-.row-label b { font-size: 0.86rem; font-weight: 600; }
-.row-label span { font-size: 0.78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-.bar { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
-.bar i { display: block; height: 100%; border-radius: 3px; background: var(--ink); }
+.figures { display: flex; gap: 30px; margin-bottom: 24px; }
+.fig b { display: block; font-family: var(--display); font-size: 1.95rem; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.fig b i { margin-left: 1px; font-size: 0.95rem; font-style: normal; color: var(--muted); }
+.fig span { display: block; margin-top: 8px; font-size: 0.64rem; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.fig.short b { color: var(--accent-ink); }
 
-.meals { margin: 0 0 22px; padding: 14px 16px; border-radius: 12px; background: #f4efec; font-size: 0.82rem; line-height: 1.6; color: #4d4744; }
-.meals b { display: block; margin-bottom: 4px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+.meals-line { margin: 0 0 26px; padding-top: 22px; border-top: 1px solid var(--line); font-size: 0.83rem; line-height: 1.6; color: var(--muted); }
 
-.commit { list-style: none; margin: 0 0 22px; padding: 0; display: flex; flex-direction: column; gap: 9px; }
-.commit li { display: flex; gap: 10px; align-items: flex-start; font-size: 0.86rem; line-height: 1.45; }
-.commit i { flex: 0 0 auto; width: 15px; font-style: normal; color: var(--muted); }
-.commit li.done i { color: var(--ink); }
-
-.action { padding: 16px 18px; border-radius: 14px; background: #fff1ea; border: 1px solid #ffd9c8; }
-.action b { display: block; margin-bottom: 6px; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--accent-ink); }
-.action p { margin: 0; font-size: 0.9rem; line-height: 1.55; }
-
-.foot { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 0.7rem; color: var(--muted); text-align: center; }
+.action { padding-top: 24px; border-top: 1px solid var(--line); }
+.action b { display: block; margin-bottom: 10px; font-size: 0.64rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-ink); }
+.action p { margin: 0; font-family: var(--display); font-size: 1.18rem; font-weight: 400; line-height: 1.42; }
 
 @media (max-width: 900px) {
   .matrix { grid-template-columns: 1fr; }

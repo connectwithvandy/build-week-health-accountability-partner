@@ -30,7 +30,7 @@ Read and apply `PRODUCT_BUILD_GUARDRAILS.md` alongside this document before maki
 | Decision | Locked answer |
 |---|---|
 | Product name | Ted |
-| One-sentence product | Ted is a personal fitness coach on WhatsApp that learns each user's goals, logs meals and progress from supported inputs, sends selected reminders and gives a daily progress review. |
+| One-sentence product | Ted is a personal health accountability partner on WhatsApp that learns each user's goals, logs meals and progress from supported inputs, sends selected reminders and gives a daily progress review. |
 | The one person | Vandy, 33, a sales professional working 9–10 hour desk-based days who already tries to exercise, eat well and follow a health routine. |
 | The one moment | Around dinner, when Vandy realizes that steps, protein or another commitment slipped and there is little time left to recover the day. |
 | Current workaround | Separate alarms, calorie apps, notes and repeated manual checking of a diet plan. |
