@@ -306,6 +306,7 @@ def _convex_request(
     action: str,
     user_key: str,
     facts: list[dict[str, str]] | None = None,
+    body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     site_url = os.environ.get("TED_CONVEX_SITE_URL", "").rstrip("/")
     secret = os.environ.get("TED_HERMES_SHARED_SECRET", "")
@@ -318,6 +319,16 @@ def _convex_request(
     }
     if facts is not None:
         payload["facts"] = facts
+    if body:
+        # action and whatsappUserId are set from the live turn above and are
+        # not the model's to override.
+        payload.update(
+            {
+                key: value
+                for key, value in body.items()
+                if key not in ("action", "whatsappUserId") and value is not None
+            }
+        )
     request = urllib.request.Request(
         f"{site_url}/ted-memory",
         data=json.dumps(payload).encode("utf-8"),
@@ -1168,6 +1179,14 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
             # Hermes passes the WhatsApp sender JID as sender_id. It is also
             # the direct-chat delivery target for the follow-up bubble.
             "chat_id": sender_id,
+            # Only used to collapse a re-delivered message into one entry.
+            # The documented pre_llm_call payload carries no message id, so
+            # this is opportunistic: when it is absent every entry gets a
+            # unique key, which is the right answer — a re-delivery we cannot
+            # identify is not one we should silently merge.
+            "message_id": _first_present(
+                kwargs, ("message_id", "external_message_id", "wa_message_id", "msg_id")
+            ),
         }
     result = _convex_request("get", user_key)
     _remember_name_from_facts(user_key, result)
@@ -1224,6 +1243,14 @@ def _record_tool_success(**kwargs: Any) -> None:
         proven.add("memory")
     elif tool_name == "ted_memory_delete":
         proven.update({"delete", "memory"})
+    elif tool_name in ("ted_log_entry", "ted_set_target", "ted_save_onboarding"):
+        proven.add("memory")
+    elif tool_name == "ted_set_reminder":
+        # Deliberately NOT "cron". This stores the user's reminder preference;
+        # the ping itself is a Hermes cronjob. Proving "cron" here would let
+        # "8pm check-in is set" through on the strength of a row that schedules
+        # nothing, which is the exact false claim the gate exists to stop.
+        proven.add("memory")
     if not proven:
         return None
 
@@ -1258,6 +1285,390 @@ def _log_disclosure(**kwargs: Any) -> None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Structured writes.
+#
+# ted_memory_save writes loose key/value strings. These five tools write the
+# tables the schema actually models, so a meal survives a gateway restart
+# instead of living only in the conversation window.
+#
+# Every handler takes the user from _TURN_CONTEXT, exactly as _save_user_facts
+# does. A user id in the model's arguments is ignored, so no phrasing can make
+# Ted write to somebody else's row.
+
+_ENTRY_TYPES = ("meal", "water", "steps", "workout", "commitment")
+_INPUT_SOURCES = ("text", "voice", "photo", "pdf", "system")
+_ONBOARDING_FIELDS = (
+    "consent", "name", "age", "height", "weight", "timeZone", "goal",
+    "nutrition", "steps", "water", "workouts", "customCommitments",
+    "reminders", "dailyReview", "quietHours", "morningCommitment",
+    "confirmation", "complete",
+)
+_GOALS = ("maintainWeight", "loseWeight", "gainWeight", "improveConsistency")
+
+
+def _first_present(source: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = source.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _turn_message_id(context_id: str) -> str:
+    with _TURN_LOCK:
+        context = dict(_TURN_CONTEXT.get(context_id, {}))
+    return str(context.get("message_id") or "")
+
+
+def _active_user_key(session_id: str, task_id: str) -> str:
+    with _TURN_LOCK:
+        context = dict(_TURN_CONTEXT.get(session_id or task_id, {}))
+    return str(context.get("user_key") or "")
+
+
+def _today() -> str:
+    return time.strftime("%Y-%m-%d")
+
+
+def _refused(message: str) -> str:
+    return json.dumps({"success": False, "error": message}, ensure_ascii=False)
+
+
+# Whose row this is comes from the live turn, never from the model. Dropped
+# here as well as in _convex_request so no handler can pass it on by accident.
+_IDENTITY_KEYS = frozenset(
+    {
+        "action",
+        "whatsappuserid",
+        "whatsapp_user_id",
+        "userid",
+        "user_id",
+        "user_key",
+        "userkey",
+    }
+)
+
+
+def _camel(payload: dict[str, Any]) -> dict[str, Any]:
+    """snake_case from the model, camelCase for Convex."""
+    converted: dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None or key.lower() in _IDENTITY_KEYS:
+            continue
+        head, *tail = key.split("_")
+        converted[head + "".join(part.title() for part in tail)] = value
+    return converted
+
+
+TED_LOG_ENTRY_SCHEMA = {
+    "name": "ted_log_entry",
+    "description": (
+        "Record one thing the current WhatsApp user actually did today: a "
+        "meal, water, steps, a workout, or a commitment they kept. Call this "
+        "every time they tell you about one, before you reply about it. To "
+        "replace an entry they corrected, pass corrects_dedupe_key with the "
+        "dedupe_key returned when you logged the original."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "entry_type": {"type": "string", "enum": list(_ENTRY_TYPES)},
+            "source": {"type": "string", "enum": list(_INPUT_SOURCES)},
+            "local_date": {
+                "type": "string",
+                "description": "YYYY-MM-DD in the user's own timezone. Omit for today.",
+            },
+            "note": {"type": "string", "maxLength": 500},
+            "meal": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "calories": {"type": "number"},
+                    "protein_grams": {"type": "number"},
+                    "carbohydrate_grams": {"type": "number"},
+                    "fat_grams": {"type": "number"},
+                    "fiber_grams": {"type": "number"},
+                },
+                "required": ["items", "calories"],
+                "additionalProperties": False,
+            },
+            "water_ml": {"type": "number"},
+            "steps": {"type": "number"},
+            "workout_minutes": {"type": "number"},
+            "commitment_id": {"type": "string"},
+            "state": {
+                "type": "string",
+                "enum": ["confirmed", "pendingClarification"],
+                "description": (
+                    "pendingClarification when you are not sure yet and are "
+                    "about to ask. It is kept out of the day's totals."
+                ),
+            },
+            "corrects_dedupe_key": {"type": "string"},
+        },
+        "required": ["entry_type"],
+        "additionalProperties": False,
+    },
+}
+
+TED_DAY_SUMMARY_SCHEMA = {
+    "name": "ted_day_summary",
+    "description": (
+        "Read back what the current WhatsApp user has actually logged for a "
+        "day, with their targets. Call this before answering \"how am I doing "
+        "today?\" or writing the evening review - never answer those from "
+        "memory of the conversation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "local_date": {
+                "type": "string",
+                "description": "YYYY-MM-DD in the user's own timezone. Omit for today.",
+            }
+        },
+        "additionalProperties": False,
+    },
+}
+
+TED_SET_TARGET_SCHEMA = {
+    "name": "ted_set_target",
+    "description": (
+        "Save a target the user has agreed: calories, protein, steps, water, "
+        "workouts a week, or their custom commitments. Only send the fields "
+        "that changed. Never invent a calorie target, and never set one below "
+        "estimated maintenance."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "nutrition_source": {
+                "type": "string",
+                "enum": ["healthPlan", "userProvided", "maintenanceEstimate"],
+            },
+            "calories": {"type": "number"},
+            "protein_grams": {"type": "number"},
+            "carbohydrate_grams": {"type": "number"},
+            "fat_grams": {"type": "number"},
+            "fiber_grams": {"type": "number"},
+            "steps": {"type": "number"},
+            "water_ml": {"type": "number"},
+            "workouts_per_week": {"type": "number"},
+            "custom_commitments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "commitmentId": {"type": "string"},
+                        "label": {"type": "string"},
+                        "active": {"type": "boolean"},
+                    },
+                    "required": ["commitmentId", "label", "active"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+TED_SET_REMINDER_SCHEMA = {
+    "name": "ted_set_reminder",
+    "description": (
+        "Save the user's reminder settings: quiet hours, the daily review "
+        "time, how many nudges a day they want, and the individual reminders. "
+        "This stores the preference. It does not schedule the message, so do "
+        "not tell the user a reminder is set on the strength of this call."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "max_per_day": {"type": "number"},
+            "morning_commitment_id": {"type": "string"},
+            "daily_review_time": {"type": "string", "description": "24-hour HH:MM"},
+            "quiet_hours_start": {"type": "string", "description": "24-hour HH:MM"},
+            "quiet_hours_end": {"type": "string", "description": "24-hour HH:MM"},
+            "paused_until": {
+                "type": ["number", "null"],
+                "description": "Epoch milliseconds, or null to un-pause.",
+            },
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "reminderId": {"type": "string"},
+                        "commitmentId": {"type": "string"},
+                        "localTime": {"type": "string"},
+                        "enabled": {"type": "boolean"},
+                        "followUpAfterMinutes": {"type": "number"},
+                    },
+                    "required": ["reminderId", "commitmentId", "localTime", "enabled"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "additionalProperties": False,
+    },
+}
+
+TED_SAVE_ONBOARDING_SCHEMA = {
+    "name": "ted_save_onboarding",
+    "description": (
+        "Record how far onboarding has got and any profile detail the user "
+        "just gave. Call it as each answer arrives, so a restart resumes from "
+        "the right question instead of starting again."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "current_field": {"type": "string", "enum": list(_ONBOARDING_FIELDS)},
+            "completed_field": {"type": "string", "enum": list(_ONBOARDING_FIELDS)},
+            "profile": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "maxLength": 80},
+                    "age": {"type": "number"},
+                    "height_cm": {"type": "number"},
+                    "weight_kg": {"type": "number"},
+                    "time_zone": {"type": "string"},
+                    "goal": {"type": "string", "enum": list(_GOALS)},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "required": ["current_field"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _log_daily_entry(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    if not isinstance(args, dict):
+        return _refused("Invalid arguments")
+
+    entry_type = str(args.get("entry_type") or "")
+    if entry_type not in _ENTRY_TYPES:
+        return _refused(f"entry_type must be one of {', '.join(_ENTRY_TYPES)}")
+
+    body: dict[str, Any] = {
+        "localDate": str(args.get("local_date") or _today()),
+        "entryType": entry_type,
+        "source": (
+            str(args.get("source")) if args.get("source") in _INPUT_SOURCES else "text"
+        ),
+        "occurredAt": int(time.time() * 1000),
+    }
+    for key in ("note", "commitment_id", "state", "corrects_dedupe_key"):
+        if args.get(key) is not None:
+            body[_camel({key: args[key]}).popitem()[0]] = args[key]
+    for key in ("water_ml", "steps", "workout_minutes"):
+        if args.get(key) is not None:
+            try:
+                body[_camel({key: 0}).popitem()[0]] = float(args[key])
+            except (TypeError, ValueError):
+                return _refused(f"{key} must be a number")
+
+    meal = args.get("meal")
+    if entry_type == "meal":
+        if not isinstance(meal, dict) or not isinstance(meal.get("items"), list):
+            return _refused("A meal entry needs meal.items and meal.calories")
+        body["meal"] = {
+            "items": [str(item)[:120] for item in meal["items"] if str(item).strip()],
+            "calories": float(meal.get("calories") or 0),
+            "proteinGrams": float(meal.get("protein_grams") or 0),
+            "carbohydrateGrams": float(meal.get("carbohydrate_grams") or 0),
+            "fatGrams": float(meal.get("fat_grams") or 0),
+            "fiberGrams": float(meal.get("fiber_grams") or 0),
+        }
+
+    message_id = _turn_message_id(session_id or task_id)
+    if message_id:
+        body["externalMessageId"] = message_id
+
+    result = _convex_request("log", user_key, body=body)
+    if result.get("success"):
+        LOGGER.info(
+            "ted_entry_logged user_key=%s type=%s duplicate=%s",
+            user_key,
+            entry_type,
+            result.get("duplicate"),
+        )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _day_summary(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    local_date = ""
+    if isinstance(args, dict):
+        local_date = str(args.get("local_date") or "")
+    body = {"localDate": local_date or _today()}
+    return json.dumps(_convex_request("day", user_key, body=body), ensure_ascii=False)
+
+
+def _set_target(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    if not isinstance(args, dict) or not args:
+        return _refused("Send at least one target field")
+    return json.dumps(
+        _convex_request("target", user_key, body=_camel(args)), ensure_ascii=False
+    )
+
+
+def _set_reminder(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    if not isinstance(args, dict) or not args:
+        return _refused("Send at least one reminder setting")
+    body = _camel(args)
+    if "pausedUntil" not in body and args.get("paused_until", "missing") is None:
+        body["pausedUntil"] = None
+    return json.dumps(
+        _convex_request("reminder", user_key, body=body), ensure_ascii=False
+    )
+
+
+def _save_onboarding(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    if not isinstance(args, dict):
+        return _refused("Invalid arguments")
+    current_field = str(args.get("current_field") or "")
+    if current_field not in _ONBOARDING_FIELDS:
+        return _refused("current_field is not an onboarding step")
+
+    body: dict[str, Any] = {"currentField": current_field}
+    completed = args.get("completed_field")
+    if completed in _ONBOARDING_FIELDS:
+        body["completedField"] = completed
+    profile = args.get("profile")
+    if isinstance(profile, dict) and profile:
+        body["profile"] = _camel(profile)
+    return json.dumps(
+        _convex_request("onboarding", user_key, body=body), ensure_ascii=False
+    )
+
+
 def register(ctx: Any) -> None:
     ctx.register_tool(
         name="ted_memory_save",
@@ -1273,6 +1684,20 @@ def register(ctx: Any) -> None:
         handler=_delete_user_data,
         check_fn=_convex_available,
     )
+    for name, schema, handler in (
+        ("ted_log_entry", TED_LOG_ENTRY_SCHEMA, _log_daily_entry),
+        ("ted_day_summary", TED_DAY_SUMMARY_SCHEMA, _day_summary),
+        ("ted_set_target", TED_SET_TARGET_SCHEMA, _set_target),
+        ("ted_set_reminder", TED_SET_REMINDER_SCHEMA, _set_reminder),
+        ("ted_save_onboarding", TED_SAVE_ONBOARDING_SCHEMA, _save_onboarding),
+    ):
+        ctx.register_tool(
+            name=name,
+            toolset="ted",
+            schema=schema,
+            handler=handler,
+            check_fn=_convex_available,
+        )
     ctx.register_hook("pre_llm_call", _capture_turn)
     ctx.register_hook("post_tool_call", _record_tool_success)
     ctx.register_hook("transform_llm_output", _transform_live_response)

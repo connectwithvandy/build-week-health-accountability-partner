@@ -80,6 +80,64 @@ http.route({
       return json(result);
     }
 
+    // The structured writes. Every one of these takes its user from
+    // whatsappUserId above, which the gate binds from the live turn - the
+    // model never gets to name whose row it is writing to.
+    const payload = body as Record<string, unknown>;
+    const rest = { ...payload };
+    delete rest.action;
+    delete rest.whatsappUserId;
+
+    try {
+      if (input.action === "log") {
+        const result = await ctx.runMutation(internal.ted.logDailyEntry, {
+          whatsappUserId: input.whatsappUserId,
+          ...rest,
+        } as Parameters<typeof ctx.runMutation>[1]);
+        return json(result);
+      }
+
+      if (input.action === "day") {
+        const result = await ctx.runQuery(internal.ted.getDaySummary, {
+          whatsappUserId: input.whatsappUserId,
+          localDate: String(payload.localDate ?? ""),
+        });
+        return json({ success: true, ...result });
+      }
+
+      if (input.action === "target") {
+        const result = await ctx.runMutation(internal.ted.setTarget, {
+          whatsappUserId: input.whatsappUserId,
+          ...rest,
+        } as Parameters<typeof ctx.runMutation>[1]);
+        return json(result);
+      }
+
+      if (input.action === "reminder") {
+        const result = await ctx.runMutation(internal.ted.setReminder, {
+          whatsappUserId: input.whatsappUserId,
+          ...rest,
+        } as Parameters<typeof ctx.runMutation>[1]);
+        return json(result);
+      }
+
+      if (input.action === "onboarding") {
+        const result = await ctx.runMutation(internal.ted.saveOnboarding, {
+          whatsappUserId: input.whatsappUserId,
+          ...rest,
+        } as Parameters<typeof ctx.runMutation>[1]);
+        return json(result);
+      }
+    } catch (error) {
+      // Convex argument validation and the explicit throws in ted.ts both land
+      // here. The gate turns this into one plain sentence for the user; the
+      // detail stays in the response for the log.
+      return json(
+        { success: false, error: error instanceof Error ? error.message : "Write rejected" },
+        400,
+      );
+    }
+
     return json({ success: false, error: "Unsupported action" }, 400);
   }),
 });

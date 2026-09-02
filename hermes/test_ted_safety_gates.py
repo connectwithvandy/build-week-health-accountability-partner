@@ -1058,6 +1058,189 @@ class CalorieGateReachTest(unittest.TestCase):
 
 
 
+class StructuredWriteToolsTest(unittest.TestCase):
+    """Order 10: the tools that finally write the modelled tables."""
+
+    SESSION = "session-structured-writes"
+    USER_KEY = "whatsapp:sha256:owner"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": self.USER_KEY,
+                "chat_id": "owner@s.whatsapp.net",
+                "message_id": "wamid.LIVE",
+            }
+        self.addCleanup(self._drop_context)
+
+    def _drop_context(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def _capture(self, handler, args):
+        """Run a tool handler, returning the payload it would send to Convex."""
+        sent: dict[str, object] = {}
+
+        def fake_request(action, user_key, facts=None, body=None):
+            sent.update({"action": action, "user_key": user_key, "body": body or {}})
+            return {"success": True}
+
+        with patch.object(gates, "_convex_request", fake_request):
+            raw = handler(args, session_id=self.SESSION)
+        return sent, json.loads(raw)
+
+    def test_a_meal_is_written_with_the_bound_user_key(self) -> None:
+        sent, result = self._capture(
+            gates._log_daily_entry,
+            {
+                "entry_type": "meal",
+                "meal": {"items": ["paneer roll"], "calories": 380, "protein_grams": 19},
+            },
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(sent["action"], "log")
+        self.assertEqual(sent["user_key"], self.USER_KEY)
+        body = sent["body"]
+        self.assertEqual(body["entryType"], "meal")
+        self.assertEqual(body["meal"]["calories"], 380)
+        self.assertEqual(body["meal"]["fiberGrams"], 0)
+        self.assertEqual(body["externalMessageId"], "wamid.LIVE")
+
+    def test_the_model_cannot_name_another_users_row(self) -> None:
+        for handler, args in (
+            (
+                gates._log_daily_entry,
+                {
+                    "entry_type": "water",
+                    "water_ml": 250,
+                    "whatsappUserId": "whatsapp:sha256:someone-else",
+                    "user_key": "whatsapp:sha256:someone-else",
+                },
+            ),
+            (
+                gates._set_target,
+                {"steps": 8000, "whatsappUserId": "whatsapp:sha256:someone-else"},
+            ),
+            (
+                gates._day_summary,
+                {"whatsappUserId": "whatsapp:sha256:someone-else"},
+            ),
+        ):
+            with self.subTest(tool=handler.__name__):
+                sent, _ = self._capture(handler, args)
+                self.assertEqual(sent["user_key"], self.USER_KEY)
+                self.assertNotIn("whatsappUserId", sent["body"])
+
+    def test_the_http_payload_carries_only_the_bound_user(self) -> None:
+        captured: dict[str, object] = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"success": true}'
+
+        def fake_urlopen(request, timeout=None):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return _Response()
+
+        with patch.dict(
+            gates.os.environ,
+            {
+                "TED_CONVEX_SITE_URL": "https://example.convex.site",
+                "TED_HERMES_SHARED_SECRET": "shh",
+            },
+        ):
+            with patch.object(gates.urllib.request, "urlopen", fake_urlopen):
+                gates._convex_request(
+                    "log",
+                    self.USER_KEY,
+                    body={
+                        "whatsappUserId": "whatsapp:sha256:someone-else",
+                        "action": "delete",
+                        "steps": 8000,
+                    },
+                )
+
+        payload = captured["payload"]
+        self.assertEqual(payload["whatsappUserId"], self.USER_KEY)
+        self.assertEqual(payload["action"], "log")
+        self.assertEqual(payload["steps"], 8000)
+
+    def test_a_tool_refuses_when_no_whatsapp_user_is_active(self) -> None:
+        for handler in (
+            gates._log_daily_entry,
+            gates._day_summary,
+            gates._set_target,
+            gates._set_reminder,
+            gates._save_onboarding,
+        ):
+            with self.subTest(tool=handler.__name__):
+                raw = handler({"entry_type": "water"}, session_id="no-such-session")
+                self.assertFalse(json.loads(raw)["success"])
+
+    def test_a_meal_without_items_is_refused_before_convex(self) -> None:
+        sent, result = self._capture(gates._log_daily_entry, {"entry_type": "meal"})
+        self.assertFalse(result["success"])
+        self.assertEqual(sent, {})
+
+    def test_snake_case_arguments_reach_convex_as_camel_case(self) -> None:
+        sent, _ = self._capture(
+            gates._set_reminder,
+            {"quiet_hours_start": "22:00", "daily_review_time": "21:00", "max_per_day": 3},
+        )
+        self.assertEqual(
+            sent["body"],
+            {"quietHoursStart": "22:00", "dailyReviewTime": "21:00", "maxPerDay": 3},
+        )
+
+    def test_onboarding_rejects_a_step_that_is_not_in_the_flow(self) -> None:
+        sent, result = self._capture(
+            gates._save_onboarding, {"current_field": "not-a-step"}
+        )
+        self.assertFalse(result["success"])
+        self.assertEqual(sent, {})
+
+    def test_a_logged_entry_proves_the_claim_gate(self) -> None:
+        _record_tool_success(
+            tool_name="ted_log_entry",
+            status="ok",
+            args={},
+            result=json.dumps({"success": True}),
+            session_id=self.SESSION,
+        )
+        with gates._TURN_LOCK:
+            proven = set(gates._TURN_CONTEXT[self.SESSION]["successful_actions"])
+        self.assertIn("memory", proven)
+
+    def test_saving_a_reminder_preference_does_not_prove_a_schedule(self) -> None:
+        _record_tool_success(
+            tool_name="ted_set_reminder",
+            status="ok",
+            args={},
+            result=json.dumps({"success": True}),
+            session_id=self.SESSION,
+        )
+        with gates._TURN_LOCK:
+            proven = set(gates._TURN_CONTEXT[self.SESSION]["successful_actions"])
+        self.assertIn("memory", proven)
+        self.assertNotIn("cron", proven)
+        # So the false claim is still stripped.
+        self.assertNotIn(
+            "8pm check-in is set",
+            action_claim_gate("chalo, 8pm check-in is set.", successful_actions=proven),
+        )
+
+
 class TestRunIsolationTest(unittest.TestCase):
     """Order 07: nothing in a test run may reach the live machine state."""
 
