@@ -903,6 +903,81 @@ class DeleteMyDataTest(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertIn("confirm", result["error"].lower())
 
+    def test_a_typo_no_longer_wipes_a_users_history(self) -> None:
+        """On 2 Sep 2026 "Ges" deleted a tester's data. It must not again."""
+        for reply in ("Ges", "yess", "ys", "gez", "yesss", "ye s"):
+            with self.subTest(reply=reply):
+                session_id = f"delete-typo-{reply}"
+                _capture_turn(
+                    platform="whatsapp",
+                    session_id=session_id,
+                    sender_id="typo@s.whatsapp.net",
+                    conversation_history=[
+                        message("user", "delete my data"),
+                        message("assistant", "this wipes everything, no undo. delete?"),
+                    ],
+                    user_message=reply,
+                )
+                result = json.loads(
+                    gates._delete_user_data({"confirmed": True}, session_id=session_id)
+                )
+                self.assertFalse(result["success"])
+                self.assertIn("nothing has been deleted", result["error"].lower())
+
+    def test_the_request_cannot_double_as_its_own_confirmation(self) -> None:
+        """Otherwise "delete my data" wipes on the first message, unasked."""
+        session_id = "delete-self-confirm"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="self@s.whatsapp.net",
+            conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="delete my data",
+        )
+        result = json.loads(
+            gates._delete_user_data({"confirmed": True}, session_id=session_id)
+        )
+
+        self.assertFalse(result["success"])
+
+    def test_a_yes_that_ted_never_asked_for_is_refused(self) -> None:
+        session_id = "delete-unasked"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="unasked@s.whatsapp.net",
+            conversation_history=[message("assistant", "nice, 39g protein in that.")],
+            user_message="yes",
+        )
+        result = json.loads(
+            gates._delete_user_data({"confirmed": True}, session_id=session_id)
+        )
+
+        self.assertFalse(result["success"])
+
+    def test_a_real_confirmation_still_goes_through(self) -> None:
+        for reply in ("yes", "Yes!", "confirm", "delete it", "haan", "y"):
+            with self.subTest(reply=reply):
+                self.assertTrue(gates._is_delete_confirmation(reply))
+
+    def test_the_refusal_never_tells_the_user_their_data_is_gone(self) -> None:
+        """A refusal the model paraphrases as success is worse than no gate."""
+        session_id = "delete-wording"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="wording@s.whatsapp.net",
+            conversation_history=[
+                message("assistant", "this wipes everything, no undo. delete?"),
+            ],
+            user_message="Ges",
+        )
+        error = json.loads(
+            gates._delete_user_data({"confirmed": True}, session_id=session_id)
+        )["error"].lower()
+
+        self.assertIn("do not tell them anything is gone", error)
+
     def test_the_tool_refuses_when_no_user_is_active(self) -> None:
         result = json.loads(
             gates._delete_user_data({"confirmed": True}, session_id="no-such-session")

@@ -243,6 +243,44 @@ def _forget_user(user_key: str) -> None:
     LOGGER.info("ted_user_state_forgotten user_key=%s", user_key)
 
 
+# The exact replies a person types to confirm an irreversible wipe. Matched
+# whole and never fuzzily. On 2 Sep 2026 a tester's entire history went on the
+# typo "Ges": the model read it as "yes", set confirmed=True, and nothing else
+# looked. A near-miss must fail closed and be asked again — one more question
+# costs a sentence, a wrong match costs everything the user has ever logged.
+#
+# "delete my data" is deliberately absent. That is how the request is phrased,
+# and a request must never double as its own confirmation.
+_DELETE_CONFIRMATIONS = frozenset(
+    {
+        "yes", "y", "yeah", "yep", "yes please",
+        "yes delete", "yes delete it", "yes delete everything",
+        "delete it", "delete everything",
+        "confirm", "confirmed", "i confirm",
+        "go ahead", "yes go ahead",
+        "haan", "haan delete", "haan yes",
+        "ok delete", "okay delete",
+    }
+)
+
+
+def _normalise_reply(text: str) -> str:
+    """Lowercase, drop punctuation and emoji, collapse runs of space."""
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", str(text or "").lower())
+    return " ".join(cleaned.split())
+
+
+def _is_delete_confirmation(text: str) -> bool:
+    """Whole-message match only. "Ges", "yess", "ys" are all refusals."""
+    return _normalise_reply(text) in _DELETE_CONFIRMATIONS
+
+
+def _ted_asked_about_deletion(history: Iterable[dict[str, Any]]) -> bool:
+    """An answer only confirms something that was actually asked."""
+    asked = _last_assistant_turn(history).lower()
+    return "delete" in asked and "?" in asked
+
+
 def _delete_user_data(
     args: dict[str, Any],
     session_id: str = "",
@@ -260,6 +298,32 @@ def _delete_user_data(
             {
                 "success": False,
                 "error": "Ask the user to confirm the deletion first, then call again",
+            }
+        )
+
+    # `confirmed` is the model's opinion of the conversation. Below is what the
+    # user actually typed, and what Ted actually asked. Both have to hold.
+    if not _ted_asked_about_deletion(context.get("history") or []):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Nothing has been deleted. Ask the user once, in your own "
+                    "words, whether they want everything deleted, and call this "
+                    "again only after they have answered. Do not tell them "
+                    "anything is gone."
+                ),
+            }
+        )
+    if not _is_delete_confirmation(context.get("user_message") or ""):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Nothing has been deleted: that reply is not an explicit "
+                    "confirmation. Ask them to reply with the single word "
+                    "'delete' if they mean it. Do not tell them anything is gone."
+                ),
             }
         )
 
