@@ -1,0 +1,15 @@
+@import url('https://fonts.googleapis.com/css2?family=Baloo+2:wght@800&family=Caveat:wght@700&family=Fraunces:opsz,wght@9..144,900&family=Outfit:wght@400;500;600;700;800&display=swap');
+:root{--paper:#fbf9f5;--ink:#111317;--ink-2:#494f57;--orange:#ff7e3e;--line:#e6e1d8;
+      --display:Fraunces,Georgia,serif;--body:Outfit,system-ui,sans-serif}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#fff}
+.card{position:relative;overflow:hidden;font-family:var(--body);color:var(--ink)}
+.grain::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)'/%3E%3C/svg%3E")}
+.wm{display:inline-flex;font-family:"Baloo 2",var(--body);font-weight:800;letter-spacing:-.045em;color:var(--ink);line-height:1}
+.wm b{display:inline-block;font-weight:800}
+.wm b:nth-child(1){transform:rotate(-5deg);margin-right:.045em}
+.wm b:nth-child(2){transform:rotate(4deg) translateY(.03em);margin-right:.055em}
+.wm b:nth-child(3){transform:rotate(-3deg)}
+.logo{display:inline-flex;align-items:center;gap:.11em;line-height:1}
+.script{font-family:Caveat,cursive;font-weight:700;color:var(--orange)}
