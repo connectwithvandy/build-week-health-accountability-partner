@@ -78,7 +78,7 @@ Last updated: Wed 2 Sep 2026, Asia/Kolkata
 - Uncommitted and therefore **not live**: `src/app` now says "Health accountability" and the title is "Ted. Your day, remembered". Both URLs still serve the old "fitness" copy until this is pushed.
 - The current design experiment is `design-experiments/ted-landing-v5-editorial/` — a separate white / near-black / orange system, scroll-scrubbed WhatsApp threads, not imported by `src/app` and not deployed. It shares no colour tokens with the live site, by design.
 - A Next.js 16 TypeScript application exists and passes lint and production builds.
-- The public GitHub repository is `connectwithvandy/whatsapp-accountability-partner-ted`.
+- The public GitHub repository is `connectwithvandy/build-week-health-accountability-partner`. An earlier note here named `whatsapp-accountability-partner-ted`, which is the Vercel project name, not the repo.
 - GitHub `main` is connected to Vercel and deploys automatically.
 - Two public Vercel URLs serve the same deployment: `https://heyted.vercel.app` (the one to share) and `https://whatsapp-accountability-partner-ted.vercel.app`. Both returned 200 on 3 Sep 2026.
 - Convex is connected to the Next.js application.
