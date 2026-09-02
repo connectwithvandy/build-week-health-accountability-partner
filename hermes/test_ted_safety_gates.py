@@ -1058,6 +1058,39 @@ class CalorieGateReachTest(unittest.TestCase):
 
 
 
+class TestRunIsolationTest(unittest.TestCase):
+    """Order 07: nothing in a test run may reach the live machine state."""
+
+    def _assert_not_in_hermes(self, path: Path, label: str) -> None:
+        hermes = Path.home() / ".hermes"
+        self.assertFalse(
+            path == hermes or hermes in path.parents,
+            f"{label} points into the live gateway state: {path}",
+        )
+
+    def test_no_gate_path_points_into_the_live_gateway(self) -> None:
+        for label in (
+            "_STATE_DIR",
+            "_DISCLOSURE_STATE_PATH",
+            "_ONBOARDING_STATE_PATH",
+            "_AGENT_LOG_PATH",
+        ):
+            with self.subTest(path=label):
+                self._assert_not_in_hermes(getattr(gates, label), label)
+
+    def test_writing_state_lands_in_the_sandbox(self) -> None:
+        gates._record_name_ask("fixture-key-that-must-not-escape")
+        written = gates._ONBOARDING_STATE_PATH.read_text(encoding="utf-8")
+        self.assertIn("fixture-key-that-must-not-escape", written)
+        self._assert_not_in_hermes(gates._ONBOARDING_STATE_PATH, "onboarding state")
+
+    def test_convex_credentials_are_not_inherited_by_the_suite(self) -> None:
+        self.assertEqual(
+            gates._missing_convex_env(),
+            ["TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET"],
+        )
+
+
 class RegistrationVisibilityTest(unittest.TestCase):
     """Order 06: a dropped memory tool must never be silent."""
 
