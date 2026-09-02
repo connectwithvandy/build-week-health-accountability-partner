@@ -24,13 +24,13 @@
 
 **Files:**
 - Modify: `AGENTS.md`
-- Keep: `CLAUDE.md`
+- Confirm `AGENTS.md` is the only repository instruction source
 
 **Interfaces:**
 - Consumes: the existing generated Next.js rules marker
 - Produces: a fixed reading order below the generated marker
 
-- [x] **Step 1: Confirm `CLAUDE.md` contains only `@AGENTS.md` and keep it as a non-duplicating compatibility pointer**
+- [x] **Step 1: Confirm no duplicate compatibility pointer remains and keep `AGENTS.md` as the single instruction source**
 - [x] **Step 2: Append the project reading order and secret-handling rules below the generated Next.js block**
 - [x] **Step 3: Verify the new rules are outside the generated markers**
 
