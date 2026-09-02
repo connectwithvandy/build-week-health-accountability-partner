@@ -61,3 +61,15 @@ matched and suppressed on chat surfaces (raw text still goes to
 Ted's wording lives in `~/.hermes/config.yaml` under `display.provider_messages`,
 which is why the copy is config rather than code: SOUL.md forbids exposing model
 and provider names, and SCOPING.md #27 wants a plain "that didn't go through".
+
+## 03 — the voice-note "Listening…" acknowledgement
+
+Not part of an order. It was already sitting uncommitted in the Hermes checkout
+when order 09 started, and `SOUL.md` documents the behaviour it provides — "the
+gateway sends one short `Listening…` acknowledgement while it transcribes" —
+so it is real, wanted, and was surviving only in a working tree that
+`hermes update` would have stashed away.
+
+Exported here so it is saved and re-appliable like the other two, and added to
+the guard so its disappearance is noticed rather than discovered later by a
+voice note going quiet.

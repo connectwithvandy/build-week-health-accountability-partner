@@ -51,6 +51,17 @@ PATCHES = (
         ),
     },
     {
+        "file": "03-voice-listening-ack.patch",
+        "what": "the voice-note 'Listening…' acknowledgement",
+        "checks": (
+            {
+                "path": "gateway/run.py",
+                "present": ("_gateway_voice_listening_sent",),
+                "absent": (),
+            },
+        ),
+    },
+    {
         "file": "02-plain-language-provider-errors.patch",
         "what": "plain-language provider errors",
         "checks": (
@@ -123,7 +134,11 @@ def report() -> list[str]:
             )
         )
     if not lines:
-        lines.append(_ok(f"both Hermes gateway patches are applied in {HERMES_AGENT}"))
+        lines.append(
+            _ok(
+                f"all {len(PATCHES)} Hermes gateway patches are applied in {HERMES_AGENT}"
+            )
+        )
     return lines
 
 

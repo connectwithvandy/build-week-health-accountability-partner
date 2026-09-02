@@ -1,0 +1,51 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -11818,6 +11818,23 @@
+                         )
+ 
+             if audio_paths:
++                _listening_adapter = self._adapter_for_source(source)
++                if _listening_adapter and not getattr(event, "_gateway_voice_listening_sent", False):
++                    setattr(event, "_gateway_voice_listening_sent", True)
++                    try:
++                        await _listening_adapter.send(
++                            source.chat_id,
++                            "Listening…",
++                            metadata=self._thread_metadata_for_source(
++                                source,
++                                self._reply_anchor_for_event(event),
++                            ),
++                        )
++                    except Exception as _listening_exc:
++                        logger.debug(
++                            "Voice listening acknowledgement failed (non-fatal): %s",
++                            _listening_exc,
++                        )
+                 message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+                     message_text,
+                     audio_paths,
+@@ -16969,6 +16986,24 @@
+         if not self._pending_event_audio_paths(event):
+             return text, []
+         try:
++            if adapter is not None and not getattr(event, "_gateway_voice_listening_sent", False):
++                setattr(event, "_gateway_voice_listening_sent", True)
++                listening_meta = self._thread_metadata_for_source(
++                    source,
++                    self._reply_anchor_for_event(event),
++                ) if metadata is _UNSET else metadata
++                try:
++                    await adapter.send(
++                        source.chat_id,
++                        "Listening…",
++                        metadata=listening_meta,
++                    )
++                except Exception as listening_exc:
++                    logger.debug(
++                        "%s listening acknowledgement failed (non-fatal): %s",
++                        log_context,
++                        listening_exc,
++                    )
+             enriched_text, transcripts = await self._transcribe_pending_audio_event_once(
+                 event,
+                 text,
