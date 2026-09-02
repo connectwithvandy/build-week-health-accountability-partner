@@ -45,10 +45,19 @@ _MEMORY_CONTEXT_HEADER = (
 
 _TURN_CONTEXT: dict[str, dict[str, Any]] = {}
 _TURN_LOCK = threading.Lock()
-_DISCLOSURE_STATE_PATH = (
-    Path.home() / ".hermes" / "state" / "ted-safety-gates-disclosures.json"
+# Every path that touches the machine is overridable, so a test run can never
+# reach ~/.hermes. Unit-test fixtures once ended up in the live consent file;
+# a fixture key that collided with a real user key would mark that user as
+# already-disclosed and skip a disclosure they are owed.
+_STATE_DIR = Path(
+    os.environ.get("TED_GATES_STATE_DIR", str(Path.home() / ".hermes" / "state"))
 )
-_AGENT_LOG_PATH = Path.home() / ".hermes" / "logs" / "agent.log"
+_DISCLOSURE_STATE_PATH = _STATE_DIR / "ted-safety-gates-disclosures.json"
+_AGENT_LOG_PATH = Path(
+    os.environ.get(
+        "TED_GATES_AGENT_LOG", str(Path.home() / ".hermes" / "logs" / "agent.log")
+    )
+)
 _DISCLOSURE_LOG_PATTERN = re.compile(r"consent_disclosure_sent session=([^\s]+)")
 
 
@@ -82,11 +91,7 @@ _DISCLOSURE_SENT_KEYS = _load_disclosure_state()
 # re-derived by pattern-matching model prose. SOUL.md tells the model to vary
 # its wording, so any phrase match will eventually fail — and when the name
 # question is the thing being matched, that failure loops onboarding forever.
-_ONBOARDING_STATE_PATH = Path(
-    os.environ.get(
-        "TED_GATES_STATE_DIR", str(Path.home() / ".hermes" / "state")
-    )
-) / "ted-safety-gates-onboarding.json"
+_ONBOARDING_STATE_PATH = _STATE_DIR / "ted-safety-gates-onboarding.json"
 _ONBOARDING_LOCK = threading.Lock()
 _MAX_NAME_ASKS = 3
 
