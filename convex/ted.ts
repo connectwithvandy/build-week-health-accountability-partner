@@ -1,8 +1,20 @@
 import { v } from "convex/values";
 
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 
 import { internalMutation, internalQuery } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import {
+  buildDedupeKey,
+  dailyEntryStateValidator,
+  dailyEntryTypeValidator,
+  goalValidator,
+  inputSourceValidator,
+  isLocalDateKey,
+  isLocalTimeKey,
+  onboardingFieldValidator,
+  summariseDay,
+} from "./model";
 
 const factValidator = v.object({
   key: v.string(),
@@ -168,5 +180,400 @@ export const deleteUserMemory = internalMutation({
     await ctx.db.delete(user._id);
     removed.users = 1;
     return { success: true, deleted: true, removed };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Structured writes.
+//
+// Until now the only rows Ted ever created were a stub `users` record and
+// loose key/value strings in `userFacts`. dailyEntries, targets, reminders and
+// onboarding were modelled correctly and never written to, so today's meals
+// and corrections lived in the conversation window and nowhere else.
+
+async function ensureUser(
+  ctx: { db: MutationCtx["db"] },
+  whatsappUserId: string,
+): Promise<Doc<"users">> {
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("users")
+    .withIndex("by_whatsapp_user_id", (query) =>
+      query.eq("whatsappUserId", whatsappUserId),
+    )
+    .unique();
+  if (existing) return existing;
+
+  const userId = await ctx.db.insert("users", {
+    whatsappUserId,
+    status: "onboarding",
+    createdAt: now,
+    updatedAt: now,
+  });
+  const created = await ctx.db.get(userId);
+  if (!created) throw new Error("Could not create Ted user");
+  return created;
+}
+
+const mealValidator = v.object({
+  items: v.array(v.string()),
+  calories: v.number(),
+  proteinGrams: v.number(),
+  carbohydrateGrams: v.number(),
+  fatGrams: v.number(),
+  fiberGrams: v.number(),
+});
+
+export const logDailyEntry = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    localDate: v.string(),
+    entryType: dailyEntryTypeValidator,
+    source: inputSourceValidator,
+    state: v.optional(dailyEntryStateValidator),
+    occurredAt: v.optional(v.number()),
+    externalMessageId: v.optional(v.string()),
+    note: v.optional(v.string()),
+    meal: v.optional(mealValidator),
+    waterMl: v.optional(v.number()),
+    steps: v.optional(v.number()),
+    workoutMinutes: v.optional(v.number()),
+    commitmentId: v.optional(v.string()),
+    correctsDedupeKey: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (!isLocalDateKey(args.localDate)) {
+      throw new Error("localDate must be YYYY-MM-DD in the user's own timezone");
+    }
+    const user = await ensureUser(ctx, args.whatsappUserId);
+    const now = Date.now();
+    const occurredAt = args.occurredAt ?? now;
+    const dedupeKey = buildDedupeKey({
+      localDate: args.localDate,
+      entryType: args.entryType,
+      externalMessageId: args.externalMessageId,
+      occurredAt,
+      meal: args.meal,
+      waterMl: args.waterMl,
+      steps: args.steps,
+      workoutMinutes: args.workoutMinutes,
+      commitmentId: args.commitmentId,
+    });
+
+    // A message Ted has already logged is a re-delivery, not a second meal.
+    const existing = await ctx.db
+      .query("dailyEntries")
+      .withIndex("by_user_and_dedupe_key", (query) =>
+        query.eq("userId", user._id).eq("dedupeKey", dedupeKey),
+      )
+      .unique();
+    if (existing) {
+      return {
+        success: true,
+        duplicate: true,
+        entryId: existing._id,
+        dedupeKey,
+      };
+    }
+
+    // A correction supersedes the entry it replaces rather than deleting it,
+    // so the day's totals stay honest and the original is still auditable.
+    let correctedEntryId: Id<"dailyEntries"> | undefined;
+    if (args.correctsDedupeKey) {
+      const superseded = await ctx.db
+        .query("dailyEntries")
+        .withIndex("by_user_and_dedupe_key", (query) =>
+          query.eq("userId", user._id).eq("dedupeKey", args.correctsDedupeKey!),
+        )
+        .unique();
+      if (superseded) {
+        await ctx.db.patch(superseded._id, { state: "corrected", updatedAt: now });
+        correctedEntryId = superseded._id;
+      }
+    }
+
+    const entryId = await ctx.db.insert("dailyEntries", {
+      userId: user._id,
+      localDate: args.localDate,
+      entryType: args.entryType,
+      source: args.source,
+      state: args.state ?? "confirmed",
+      occurredAt,
+      externalMessageId: args.externalMessageId ?? "",
+      dedupeKey,
+      note: args.note,
+      meal: args.meal,
+      waterMl: args.waterMl,
+      steps: args.steps,
+      workoutMinutes: args.workoutMinutes,
+      commitmentId: args.commitmentId,
+      correctedEntryId,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await ctx.db.patch(user._id, { updatedAt: now });
+    return { success: true, duplicate: false, entryId, dedupeKey };
+  },
+});
+
+export const getDaySummary = internalQuery({
+  args: { whatsappUserId: v.string(), localDate: v.string() },
+  handler: async (ctx, { whatsappUserId, localDate }) => {
+    if (!isLocalDateKey(localDate)) {
+      throw new Error("localDate must be YYYY-MM-DD in the user's own timezone");
+    }
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    if (!user) {
+      return { summary: summariseDay(localDate, []), entries: [], target: null };
+    }
+
+    const entries = await ctx.db
+      .query("dailyEntries")
+      .withIndex("by_user_and_date", (query) =>
+        query.eq("userId", user._id).eq("localDate", localDate),
+      )
+      .collect();
+
+    const target = await ctx.db
+      .query("targets")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    return {
+      summary: summariseDay(localDate, entries),
+      entries: entries.map((entry) => ({
+        entryType: entry.entryType,
+        state: entry.state,
+        occurredAt: entry.occurredAt,
+        dedupeKey: entry.dedupeKey,
+        note: entry.note,
+        meal: entry.meal,
+        waterMl: entry.waterMl,
+        steps: entry.steps,
+        workoutMinutes: entry.workoutMinutes,
+        commitmentId: entry.commitmentId,
+      })),
+      target: target
+        ? {
+            calories: target.calories,
+            proteinGrams: target.proteinGrams,
+            steps: target.steps,
+            waterMl: target.waterMl,
+            workoutsPerWeek: target.workoutsPerWeek,
+            nutritionSource: target.nutritionSource,
+          }
+        : null,
+    };
+  },
+});
+
+export const setTarget = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    nutritionSource: v.optional(
+      v.union(
+        v.literal("healthPlan"),
+        v.literal("userProvided"),
+        v.literal("maintenanceEstimate"),
+      ),
+    ),
+    calories: v.optional(v.number()),
+    proteinGrams: v.optional(v.number()),
+    carbohydrateGrams: v.optional(v.number()),
+    fatGrams: v.optional(v.number()),
+    fiberGrams: v.optional(v.number()),
+    steps: v.optional(v.number()),
+    waterMl: v.optional(v.number()),
+    workoutsPerWeek: v.optional(v.number()),
+    customCommitments: v.optional(
+      v.array(
+        v.object({
+          commitmentId: v.string(),
+          label: v.string(),
+          active: v.boolean(),
+        }),
+      ),
+    ),
+  },
+  handler: async (ctx, { whatsappUserId, customCommitments, ...fields }) => {
+    const user = await ensureUser(ctx, whatsappUserId);
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("targets")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    // Only the fields actually supplied are written, so setting a step goal
+    // never silently clears a calorie target the user already agreed.
+    const patch: Record<string, unknown> = { updatedAt: now };
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) patch[key] = value;
+    }
+    if (customCommitments !== undefined) patch.customCommitments = customCommitments;
+
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      await ctx.db.patch(user._id, { updatedAt: now });
+      return { success: true, created: false, targetId: existing._id };
+    }
+
+    const targetId = await ctx.db.insert("targets", {
+      userId: user._id,
+      customCommitments: customCommitments ?? [],
+      ...fields,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(user._id, { updatedAt: now });
+    return { success: true, created: true, targetId };
+  },
+});
+
+export const setReminder = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    maxPerDay: v.optional(v.number()),
+    morningCommitmentId: v.optional(v.string()),
+    dailyReviewTime: v.optional(v.string()),
+    quietHoursStart: v.optional(v.string()),
+    quietHoursEnd: v.optional(v.string()),
+    pausedUntil: v.optional(v.union(v.number(), v.null())),
+    items: v.optional(
+      v.array(
+        v.object({
+          reminderId: v.string(),
+          commitmentId: v.string(),
+          localTime: v.string(),
+          enabled: v.boolean(),
+          followUpAfterMinutes: v.optional(v.number()),
+        }),
+      ),
+    ),
+  },
+  handler: async (ctx, { whatsappUserId, pausedUntil, items, ...fields }) => {
+    for (const [key, value] of Object.entries(fields)) {
+      if (typeof value === "string" && key.endsWith("Time") && !isLocalTimeKey(value)) {
+        throw new Error(`${key} must be a 24-hour HH:MM local time`);
+      }
+      if (
+        typeof value === "string" &&
+        key.startsWith("quietHours") &&
+        !isLocalTimeKey(value)
+      ) {
+        throw new Error(`${key} must be a 24-hour HH:MM local time`);
+      }
+    }
+    for (const item of items ?? []) {
+      if (!isLocalTimeKey(item.localTime)) {
+        throw new Error("Each reminder needs a 24-hour HH:MM local time");
+      }
+    }
+
+    const user = await ensureUser(ctx, whatsappUserId);
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    const patch: Record<string, unknown> = { updatedAt: now };
+    for (const [key, value] of Object.entries(fields)) {
+      if (value !== undefined) patch[key] = value;
+    }
+    if (items !== undefined) patch.items = items;
+    // null is how "un-pause" arrives over HTTP; undefined means "leave it".
+    if (pausedUntil !== undefined) {
+      patch.pausedUntil = pausedUntil === null ? undefined : pausedUntil;
+    }
+
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      await ctx.db.patch(user._id, { updatedAt: now });
+      return { success: true, created: false, reminderId: existing._id };
+    }
+
+    const reminderId = await ctx.db.insert("reminders", {
+      userId: user._id,
+      maxPerDay: fields.maxPerDay ?? 3,
+      morningCommitmentId: fields.morningCommitmentId ?? "",
+      dailyReviewTime: fields.dailyReviewTime ?? "21:00",
+      quietHoursStart: fields.quietHoursStart ?? "22:00",
+      quietHoursEnd: fields.quietHoursEnd ?? "07:00",
+      pausedUntil: pausedUntil ?? undefined,
+      items: items ?? [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.patch(user._id, { updatedAt: now });
+    return { success: true, created: true, reminderId };
+  },
+});
+
+export const saveOnboarding = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    currentField: onboardingFieldValidator,
+    completedField: v.optional(onboardingFieldValidator),
+    profile: v.optional(
+      v.object({
+        name: v.optional(v.string()),
+        age: v.optional(v.number()),
+        heightCm: v.optional(v.number()),
+        weightKg: v.optional(v.number()),
+        timeZone: v.optional(v.string()),
+        goal: v.optional(goalValidator),
+      }),
+    ),
+  },
+  handler: async (ctx, { whatsappUserId, currentField, completedField, profile }) => {
+    const user = await ensureUser(ctx, whatsappUserId);
+    const now = Date.now();
+
+    if (profile) {
+      const patch: Record<string, unknown> = { updatedAt: now };
+      for (const [key, value] of Object.entries(profile)) {
+        if (value !== undefined) patch[key] = value;
+      }
+      if (currentField === "complete") patch.status = "active";
+      await ctx.db.patch(user._id, patch);
+    } else if (currentField === "complete") {
+      await ctx.db.patch(user._id, { status: "active", updatedAt: now });
+    }
+
+    const existing = await ctx.db
+      .query("onboarding")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    if (!existing) {
+      const onboardingId = await ctx.db.insert("onboarding", {
+        userId: user._id,
+        currentField,
+        completedFields: completedField ? [completedField] : [],
+        startedAt: now,
+        completedAt: currentField === "complete" ? now : undefined,
+        updatedAt: now,
+      });
+      return { success: true, created: true, onboardingId };
+    }
+
+    const completedFields = [...existing.completedFields];
+    if (completedField && !completedFields.includes(completedField)) {
+      completedFields.push(completedField);
+    }
+    await ctx.db.patch(existing._id, {
+      currentField,
+      completedFields,
+      completedAt:
+        currentField === "complete" ? (existing.completedAt ?? now) : existing.completedAt,
+      updatedAt: now,
+    });
+    return { success: true, created: false, onboardingId: existing._id };
   },
 });
