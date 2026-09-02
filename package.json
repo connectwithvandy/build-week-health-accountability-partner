@@ -9,7 +9,8 @@
     "lint": "eslint",
     "simulate:hermes": "node scripts/simulate-hermes-message.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "gates:guard": "python3 scripts/ted-gate-guard.py"
   },
   "dependencies": {
     "convex": "^1.45.0",

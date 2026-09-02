@@ -286,11 +286,15 @@ TED_MEMORY_SAVE_SCHEMA = {
 }
 
 
+_REQUIRED_CONVEX_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
+
+
+def _missing_convex_env() -> list[str]:
+    return [name for name in _REQUIRED_CONVEX_ENV if not os.environ.get(name)]
+
+
 def _convex_available() -> bool:
-    return bool(
-        os.environ.get("TED_CONVEX_SITE_URL")
-        and os.environ.get("TED_HERMES_SHARED_SECRET")
-    )
+    return not _missing_convex_env()
 
 
 def _convex_request(
@@ -1276,9 +1280,11 @@ def register(ctx: Any) -> None:
         __file__,
         "on" if _convex_available() else "OFF",
     )
-    if not _convex_available():
+    missing = _missing_convex_env()
+    if missing:
         LOGGER.warning(
-            "ted_memory_tool_not_registered missing=%s — Ted will chat but "
+            "ted_memory_tool_not_registered missing=%s — set these in "
+            "~/.hermes/.env, which the gateway reads. Ted will chat but "
             "remember nothing across sessions, and no other error will say so",
-            "TED_CONVEX_SITE_URL and/or TED_HERMES_SHARED_SECRET",
+            ", ".join(missing),
         )

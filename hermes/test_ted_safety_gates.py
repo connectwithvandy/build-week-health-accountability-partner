@@ -1058,5 +1058,52 @@ class CalorieGateReachTest(unittest.TestCase):
 
 
 
+class RegistrationVisibilityTest(unittest.TestCase):
+    """Order 06: a dropped memory tool must never be silent."""
+
+    class _Ctx:
+        def __init__(self) -> None:
+            self.tools: list[str] = []
+            self.hooks: list[str] = []
+
+        def register_tool(self, **kwargs: object) -> None:
+            self.tools.append(str(kwargs.get("name")))
+
+        def register_hook(self, name: str, _handler: object) -> None:
+            self.hooks.append(name)
+
+    def test_a_missing_variable_is_named_at_warning_level(self) -> None:
+        ctx = self._Ctx()
+        with patch.dict(
+            gates.os.environ,
+            {"TED_CONVEX_SITE_URL": "https://example.convex.site"},
+            clear=True,
+        ):
+            with self.assertLogs("ted.safety_gates", level="WARNING") as captured:
+                gates.register(ctx)
+
+        joined = "\n".join(captured.output)
+        self.assertIn("TED_HERMES_SHARED_SECRET", joined)
+        self.assertNotIn("TED_CONVEX_SITE_URL", joined)
+        self.assertIn("~/.hermes/.env", joined)
+
+    def test_a_healthy_boot_still_announces_itself(self) -> None:
+        ctx = self._Ctx()
+        with patch.dict(
+            gates.os.environ,
+            {
+                "TED_CONVEX_SITE_URL": "https://example.convex.site",
+                "TED_HERMES_SHARED_SECRET": "shh",
+            },
+            clear=True,
+        ):
+            with self.assertLogs("ted.safety_gates", level="INFO") as captured:
+                gates.register(ctx)
+
+        self.assertIn("ted_safety_gates_registered", "\n".join(captured.output))
+        self.assertIn("ted_memory_save", ctx.tools)
+        self.assertIn("transform_llm_output", ctx.hooks)
+
+
 if __name__ == "__main__":
     unittest.main()
