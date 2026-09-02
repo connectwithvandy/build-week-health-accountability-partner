@@ -585,9 +585,30 @@ def _messages(history: Iterable[dict[str, Any]]) -> list[tuple[str, str]]:
     ]
 
 
-def _disclosure_was_sent(history: Iterable[dict[str, Any]]) -> bool:
+# The first words of DISCLOSURE_MESSAGE. Ted writes this sentence; the model
+# does not, which is what makes it usable as proof rather than a hint.
+_DISCLOSURE_MARKER = "Ted stores your profile"
+
+
+def _disclosure_was_sent(
+    history: Iterable[dict[str, Any]], user_key: str = ""
+) -> bool:
+    """Has the disclosure actually gone out to this user?
+
+    Recorded state first — `_log_disclosure` writes it only after a real send,
+    and it is the one answer the model cannot influence.
+
+    The transcript scan stays as the fallback for a turn with no user key and
+    for records that predate the durable state, but it now needs Ted's own
+    disclosure sentence rather than the privacy URL alone. The URL by itself
+    was never proof of anything: a model that helpfully volunteered the link
+    read as consent, and the disclosure — and the consent record with it —
+    would then be skipped for good.
+    """
+    if user_key and user_key in _DISCLOSURE_SENT_KEYS:
+        return True
     return any(
-        role == "assistant" and PRIVACY_URL in text
+        role == "assistant" and _DISCLOSURE_MARKER in text and PRIVACY_URL in text
         for role, text in _messages(history)
     )
 
@@ -696,7 +717,9 @@ def _is_prepared_start(history: Iterable[dict[str, Any]], user_message: str) -> 
 
 def _awaiting_name(history: Iterable[dict[str, Any]], user_key: str) -> bool:
     """Onboarding has not got past the name yet."""
-    return not _disclosure_was_sent(history) and not _given_name(history, user_key)
+    return not _disclosure_was_sent(history, user_key) and not _given_name(
+        history, user_key
+    )
 
 
 def _is_repeat_prepared_start(
@@ -721,7 +744,7 @@ def consent_gate(
     user_key: str = "",
 ) -> str | None:
     """Return the mandatory disclosure when onboarding has reached the name."""
-    if _disclosure_was_sent(history):
+    if _disclosure_was_sent(history, user_key):
         return None
 
     name = _given_name(history, user_key)
@@ -1228,7 +1251,19 @@ _MEMORY_CLAIM = re.compile(
     r"|\b\d[\d,.]*\s+(?:noted|saved|logged|recorded)\b"
     # "your target is saved", "your weight has been recorded"
     rf"|\byour\s+\w+(?:\s+\w+)?\s+(?:is|are|'s|has been|have been)\s+"
-    rf"(?:{_SAVE_VERB})\b",
+    rf"(?:{_SAVE_VERB})\b"
+    # "Done \u2713" — a tick is what separates the claim from "water done,
+    # walk done", which is Ted describing the user's day and must survive.
+    r"|\b(?:done|sorted)\b\s*[\u2713\u2714\u2705\u2611\ufe0f]"
+    # "consider it logged", "consider it in your log"
+    rf"|\bconsider\s+(?:it|that|this)\s+(?:{_SAVE_VERB}|done|in\b)"
+    # "that's in the system now", "it is in your log"
+    r"|\b(?:that's|this's|it's|that|this|it)\s*(?:is\s+)?in\s+"
+    r"(?:the\s+|your\s+)?(?:system|logs?|database|records?)\b"
+    # "your log is up to date" — a data noun, so "your target was updated
+    # last week" stays a description rather than a claim.
+    r"|\byour\s+(?:\w+\s+)?(?:logs?|data|records?|entr(?:y|ies))\s+"
+    r"(?:is|are|'s)\s+up\s+to\s+date\b",
     re.IGNORECASE,
 )
 # Gate the reminder claim on intent, not vocabulary. "8pm check-in is set" is
@@ -1251,7 +1286,11 @@ _CRON_CLAIM = re.compile(
     # "I've set", "I have scheduled"
     r"|\bI(?:'ve| have)\s+(?:set|scheduled)\b"
     # "that's on for tomorrow morning"
-    r"|\b(?:that's|it's|this is)\s+(?:set|scheduled|on)\s+for\b",
+    r"|\b(?:that's|it's|this is)\s+(?:set|scheduled|on)\s+for\b"
+    # "I'll keep that in mind for 8pm" — a promise to remember, pinned to a
+    # clock time, is a scheduling claim wearing softer words.
+    r"|\b(?:keep|bear)\s+(?:that|it|this)\s+in\s+mind\b[^.!?]{0,32}?"
+    r"\b(?:at|for)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b",
     re.IGNORECASE,
 )
 # Any confirmation that data is gone must be backed by a real deletion. The
@@ -1358,7 +1397,7 @@ def transform_response(
     disclosure = consent_gate(history, response_text, user_key)
     if disclosure:
         return disclosure
-    if not _disclosure_was_sent(history):
+    if not _disclosure_was_sent(history, user_key):
         return None
     calorie = calorie_gate(history, user_message, response_text)
     if calorie:

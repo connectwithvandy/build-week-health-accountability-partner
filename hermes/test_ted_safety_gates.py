@@ -2479,5 +2479,78 @@ class LoadBearingSafetyTest(unittest.TestCase):
         )
 
 
+class ProseMatchingHardeningTest(unittest.TestCase):
+    """The order 14 point 4 findings, fixed rather than only listed."""
+
+    def test_the_model_mentioning_the_privacy_link_is_not_consent(self) -> None:
+        """A helpful link is not a disclosure, and used to read as one."""
+        volunteered = [
+            message(
+                "assistant",
+                f"sure — you can read the privacy policy at {gates.PRIVACY_URL} anytime",
+            )
+        ]
+        self.assertFalse(gates._disclosure_was_sent(volunteered))
+        real = [message("assistant", gates._personalized_disclosure("Vandy"))]
+        self.assertTrue(gates._disclosure_was_sent(real))
+
+    def test_the_disclosure_still_goes_out_after_a_volunteered_link(self) -> None:
+        user_key = "volunteered-link"
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+        try:
+            history = [
+                message("assistant", "What should I call you?"),
+                message("user", "Vandy"),
+                message("assistant", f"btw our policy is at {gates.PRIVACY_URL}"),
+            ]
+            reply = consent_gate(history, "nice to meet you", user_key)
+            self.assertIn(gates._DISCLOSURE_MARKER, reply or "")
+            self.assertIn(GOAL_QUESTION, reply or "")
+        finally:
+            gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+
+    def test_recorded_state_beats_the_transcript(self) -> None:
+        """_log_disclosure writes this only after a real send."""
+        user_key = "recorded-beats-transcript"
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+        try:
+            self.assertFalse(gates._disclosure_was_sent([], user_key))
+            gates._DISCLOSURE_SENT_KEYS.add(user_key)
+            self.assertTrue(gates._disclosure_was_sent([], user_key))
+        finally:
+            gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+
+    def test_the_claims_that_used_to_slip_are_caught(self) -> None:
+        for reply in (
+            "Done \u2713",
+            "Sorted \u2705",
+            "consider it logged",
+            "consider it in your log",
+            "that's in the system now",
+            "your log is up to date",
+            "I'll keep that in mind for 8pm",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(action_claim_gate(reply), gates.CLAIM_NOT_DONE)
+
+    def test_descriptions_of_the_users_day_still_survive(self) -> None:
+        """The widened patterns must not eat the sentences carrying numbers."""
+        for reply in (
+            "3 meals logged, water done, walk done. tomorrow: protein at breakfast.",
+            "4 glasses recorded so far, 2 to go.",
+            "your target was updated last week, so this is measured against it.",
+            "2 workouts logged this week — same as last week.",
+            "2 meals logged, water done, steps short by 2k.",
+            "roughly 480 calories, 18g protein.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertIsNone(action_claim_gate(reply))
+
+    def test_a_proven_tool_still_lets_the_claim_through(self) -> None:
+        self.assertIsNone(
+            action_claim_gate("Done \u2713", successful_actions={"memory"})
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
