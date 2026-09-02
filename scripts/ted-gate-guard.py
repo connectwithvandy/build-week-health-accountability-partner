@@ -19,6 +19,7 @@ ungated; pass --check-only to report without touching anything.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
@@ -68,6 +69,22 @@ def shim_imports() -> str | None:
     return tail[-1] if tail else "plugin shim failed to import"
 
 
+def gate_source() -> Path | None:
+    """The repo file the shim loads, read straight out of the shim."""
+    try:
+        text = SHIM.read_text()
+    except OSError:
+        return None
+    match = re.search(r'^SOURCE\s*=|_CANDIDATES\s*=', text, re.MULTILINE)
+    if match is None:
+        return None
+    for candidate in re.findall(r'Path\.home\(\)\s*/\s*"([^"]+)"\s*/\s*"([^"]+)"', text):
+        source = Path.home() / candidate[0] / candidate[1] / "hermes" / "ted_safety_gates" / "__init__.py"
+        if source.is_file():
+            return source
+    return None
+
+
 def last_gateway_start() -> float | None:
     try:
         lines = [line for line in STARTS_LOG.read_text().splitlines() if line.strip()]
@@ -111,10 +128,34 @@ def missing_env() -> list[str]:
 
 
 def running_pid() -> int | None:
+    """The live gateway pid, or None.
+
+    ~/.hermes/gateway.pid holds a JSON record, not a bare integer. Reading it
+    as an int made this function answer "not running" for a gateway that was
+    running — the guard's worst possible lie, since it reports nothing is
+    serving while Ted answers real messages.
+    """
     try:
-        pid = int(PID_FILE.read_text().strip())
-    except (OSError, ValueError):
+        raw = PID_FILE.read_text().strip()
+    except OSError:
         return None
+
+    pid: int | None = None
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        record = None
+    if isinstance(record, dict):
+        try:
+            pid = int(record.get("pid"))
+        except (TypeError, ValueError):
+            pid = None
+    if pid is None:
+        try:
+            pid = int(raw)
+        except ValueError:
+            return None
+
     try:
         os.kill(pid, 0)
     except OSError:
@@ -133,6 +174,7 @@ def main() -> int:
 
     report: list[str] = []
     ungated: list[str] = []
+    stale = False
 
     import_error = shim_imports()
     if import_error:
@@ -162,6 +204,23 @@ def main() -> int:
         when = datetime.fromtimestamp(registered).strftime("%Y-%m-%d %H:%M:%S")
         report.append(_ok(f"gates loaded in the running gateway at {when}"))
 
+    # Loaded is not the same as current. The gate source is the repo file, so
+    # an edit after the last load means the running gateway is still serving
+    # the previous version of every gate.
+    if pid is not None and registered is not None:
+        source = gate_source()
+        if source is not None:
+            edited = source.stat().st_mtime
+            if edited > registered + 5:
+                when = datetime.fromtimestamp(edited).strftime("%Y-%m-%d %H:%M:%S")
+                report.append(
+                    _fail(
+                        f"STALE — the gate source changed at {when}, after the "
+                        "running gateway loaded it. Restart to pick it up."
+                    )
+                )
+                stale = True
+
     absent = missing_env()
     if absent:
         # Not ungated: Ted still refuses under-18s and never returns a deficit.
@@ -189,6 +248,12 @@ def main() -> int:
                 "then run this again."
             )
             return 3
+        if stale:
+            print(
+                "\nGates are on, but they are NOT the code in the repo — see the "
+                "STALE line above.\nRestart: hermes gateway restart"
+            )
+            return 1
         if absent:
             print("\nGates are on. Memory is off — see the FAIL line above.")
             return 1

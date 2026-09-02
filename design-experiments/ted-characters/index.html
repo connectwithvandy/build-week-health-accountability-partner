@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ted character experiment — 2×2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ===== character definitions, referenced by <use> ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="hedgehog-doodle">
+      <g fill="#fffdfc" stroke="#211e1d" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M138 88 L150 62 L118 78 L118 52 L96 72 L88 48 L76 74 L60 56 L60 84 L40 74 L50 100 L30 100 L48 120"/>
+        <path d="M172 122 C166 108 154 96 138 88 C116 78 84 80 66 96 C46 114 48 146 72 158 C96 170 138 166 156 146 C166 136 174 130 172 122 Z"/>
+        <path d="M84 163 Q88 173 97 168" fill="none"/>
+        <path d="M112 165 Q116 175 125 170" fill="none"/>
+        <path d="M122 88 Q128 81 134 89" fill="none"/>
+        <path d="M142 107 Q149 100 156 107" fill="none" stroke-width="4"/>
+        <path d="M138 138 L140 160 Q141 165 146 165 L159 165 Q164 165 165 160 L167 138 Z"/>
+        <path d="M167 143 Q177 145 175 152 Q173 158 166 157" fill="none"/>
+        <path d="M134 147 Q139 141 144 146" fill="none"/>
+        <path d="M161 146 Q166 141 170 148" fill="none"/>
+        <path d="M147 131 Q143 126 148 120" fill="none" stroke-width="3.5"/>
+        <path d="M157 131 Q153 126 158 120" fill="none" stroke-width="3.5"/>
+        <circle cx="170" cy="120" r="4.5" fill="#211e1d" stroke="none"/>
+      </g>
+    </g>
+
+    <g id="capybara-doodle">
+      <g fill="#fffdfc" stroke="#211e1d" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M76 92 Q73 78 84 78 Q93 79 91 90 Z"/>
+        <path d="M106 87 Q103 73 114 73 Q123 74 121 86 Z"/>
+        <path d="M36 152 C30 122 42 98 72 90 C100 82 134 84 156 92 C176 99 186 114 184 132 C182 150 168 164 144 164 L58 164 C44 164 38 160 36 152 Z"/>
+        <path d="M70 165 Q74 175 83 170" fill="none"/>
+        <path d="M104 165 Q108 175 117 170" fill="none"/>
+        <path d="M148 113 Q155 106 162 113" fill="none" stroke-width="4"/>
+        <path d="M169 133 Q175 139 181 133" fill="none" stroke-width="3.5"/>
+        <path d="M132 136 L134 158 Q135 163 140 163 L153 163 Q158 163 159 158 L161 136 Z"/>
+        <path d="M161 141 Q171 143 169 150 Q167 156 160 155" fill="none"/>
+        <path d="M128 145 Q133 139 138 144" fill="none"/>
+        <path d="M155 144 Q160 139 164 146" fill="none"/>
+        <path d="M141 129 Q137 124 142 118" fill="none" stroke-width="3.5"/>
+        <path d="M151 129 Q147 124 152 118" fill="none" stroke-width="3.5"/>
+        <ellipse cx="181" cy="113" rx="5.5" ry="4.5" fill="#211e1d" stroke="none"/>
+      </g>
+    </g>
+  </defs>
+</svg>
+
+<div class="page-head">
+  <h1>Ted, four ways</h1>
+  <p>One daily-review card, built four times. Copy, palette, layout and spacing are identical in all four — the character is the only thing that changes, so anything you feel is coming from the character.</p>
+  <p>Rows are the creature. Columns are the drawing style. Read across to compare style; read down to compare creature.</p>
+</div>
+
+<section class="sheet">
+  <h2>The characters on their own</h2>
+  <div class="sheet-grid" id="sheet"></div>
+</section>
+
+<div class="matrix">
+  <div></div>
+  <div class="axis col">Flat doodle</div>
+  <div class="axis col">3D render</div>
+
+  <div class="axis row">Hedgehog</div>
+  <div data-cell="hedgehog-doodle"></div>
+  <div data-cell="hedgehog-3d"></div>
+
+  <div class="axis row">Capybara</div>
+  <div data-cell="capybara-doodle"></div>
+  <div data-cell="capybara-3d"></div>
+</div>
+
+<!-- ===== one card, cloned four times ===== -->
+<template id="card">
+  <div class="card">
+    <div class="card-head">
+      <div class="avatar"></div>
+      <div class="who"><b>Ted</b><span>Daily review · Tue 2 Sep</span></div>
+    </div>
+
+    <p class="headline">You held the plan. Steps got away from you.</p>
+
+    <div class="rows">
+      <div>
+        <div class="row-label"><b>Protein</b><span>68 g of 90 g</span></div>
+        <div class="bar"><i style="width:76%"></i></div>
+      </div>
+      <div>
+        <div class="row-label"><b>Water</b><span>1.8 L of 3 L</span></div>
+        <div class="bar"><i style="width:60%"></i></div>
+      </div>
+      <div>
+        <div class="row-label"><b>Steps</b><span>4,210 of 8,000</span></div>
+        <div class="bar"><i style="width:53%"></i></div>
+      </div>
+    </div>
+
+    <p class="meals"><b>3 meals logged</b>Poha with peanuts · Dal, two rotis, salad · Paneer bhurji</p>
+
+    <ul class="commit">
+      <li class="done"><i>✓</i><span>Logged every meal, including the one you nearly skipped</span></li>
+      <li class="done"><i>✓</i><span>Rest day taken, exactly as you planned it</span></li>
+      <li><i>–</i><span>Steps short by 3,790</span></li>
+    </ul>
+
+    <div class="action">
+      <b>Still possible tonight</b>
+      <p>A 20-minute walk after dinner puts you past 6,000 — ahead of yesterday, and the plan survives.</p>
+    </div>
+
+    <p class="foot">No streaks. No guilt. Just tomorrow.</p>
+  </div>
+</template>
+
+<script>
+const CHARS = {
+  "hedgehog-doodle": { kind: "svg", ref: "#hedgehog-doodle", label: "Hedgehog · doodle" },
+  "capybara-doodle": { kind: "svg", ref: "#capybara-doodle", label: "Capybara · doodle" },
+  "hedgehog-3d":     { kind: "img", src: "art/hedgehog-3d.png", label: "Hedgehog · 3D" },
+  "capybara-3d":     { kind: "img", src: "art/capybara-3d.png", label: "Capybara · 3D" },
+};
+
+function art(key) {
+  const c = CHARS[key];
+  if (c.kind === "svg") {
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("viewBox", "18 40 172 140");
+    const u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    u.setAttribute("href", c.ref);
+    s.appendChild(u);
+    return s;
+  }
+  const i = new Image();
+  i.src = c.src; i.alt = c.label;
+  i.onerror = () => { const d = document.createElement("div"); d.className = "pending"; d.textContent = "not generated yet"; i.replaceWith(d); };
+  return i;
+}
+
+// character sheet
+const sheet = document.getElementById("sheet");
+for (const key of Object.keys(CHARS)) {
+  const fig = document.createElement("figure");
+  fig.className = "sheet-item";
+  const box = document.createElement("div");
+  box.className = "sheet-art";
+  box.appendChild(art(key));
+  const cap = document.createElement("figcaption");
+  cap.textContent = CHARS[key].label;
+  fig.append(box, cap);
+  sheet.appendChild(fig);
+}
+
+// cards
+const tpl = document.getElementById("card");
+for (const cell of document.querySelectorAll("[data-cell]")) {
+  const node = tpl.content.cloneNode(true);
+  node.querySelector(".avatar").appendChild(art(cell.dataset.cell));
+  cell.appendChild(node);
+}
+</script>
+</body>
+</html>
