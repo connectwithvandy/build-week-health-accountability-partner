@@ -286,11 +286,15 @@ TED_MEMORY_SAVE_SCHEMA = {
 }
 
 
+_REQUIRED_CONVEX_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
+
+
+def _missing_convex_env() -> list[str]:
+    return [name for name in _REQUIRED_CONVEX_ENV if not os.environ.get(name)]
+
+
 def _convex_available() -> bool:
-    return bool(
-        os.environ.get("TED_CONVEX_SITE_URL")
-        and os.environ.get("TED_HERMES_SHARED_SECRET")
-    )
+    return not _missing_convex_env()
 
 
 def _convex_request(
@@ -594,15 +598,47 @@ def _user_turns(history: Iterable[dict[str, Any]]) -> list[str]:
     return [text for role, text in _messages(history) if role == "user" and text]
 
 
+# A number followed by one of these is a quantity, not an age. The old
+# parser read "i'm having 2 rotis" as age 2 and then refused the user as a
+# minor for the rest of the conversation.
+_NOT_AN_AGE_AFTER = (
+    r"kgs?|kilos?|kilograms?|lbs?|pounds?|"
+    r"cm|centimet\w*|ft|feet|foot|inch|inches|"
+    r"gms?|grams?|ml|litres?|liters?|glass\w*|cups?|bottles?|"
+    r"kcal|cals?|calories?|protein|carbs?|fats?|"
+    r"steps?|kms?|miles?|reps?|sets?|floors?|rounds?|"
+    r"mins?|minutes?|hrs?|hours?|days?|weeks?|months?|years?|times?|"
+    r"rotis?|chapatis?|parathas?|idlis?|dosas?|eggs?|meals?|"
+    r"slices?|pieces?|bowls?|plates?|scoops?|servings?|bananas?|apples?"
+)
+# The plausible band. Deliberately starts at 10, not 18: an age below 18 has
+# to stay readable or the under-18 refusal never fires.
+_MIN_AGE, _MAX_AGE = 10, 99
+
+_AGE_WITH_YEAR_MARKER = re.compile(
+    r"\b(\d{1,2})\s*(?:years?\s*old|years?\s*of\s*age|yrs?\.?\s*old|yrs?\b|y\.?\s*/?\s*o\.?\b)",
+    re.IGNORECASE,
+)
+_AGE_LABELLED = re.compile(r"\bage\b\s*(?:is|:|=|of)?\s*(\d{1,2})\b", re.IGNORECASE)
+# "i am 33", "i'm 33", "im 33" — but never when a unit or a food follows.
+_AGE_SELF_REPORT = re.compile(
+    rf"\bi\s*(?:am|'m|m)\s+(\d{{1,2}})\b(?!\s*(?:{_NOT_AN_AGE_AFTER})\b)",
+    re.IGNORECASE,
+)
+
+
 def _find_age(texts: list[str]) -> int | None:
     joined = "\n".join(texts)
-    labelled = re.search(
-        r"(?:\bage\b|\bi\s*(?:am|'m)\b)\D{0,12}(\d{1,2})\b",
-        joined,
-        re.IGNORECASE,
-    )
+    marked = _AGE_WITH_YEAR_MARKER.search(joined)
+    if marked:
+        return int(marked.group(1))
+    labelled = _AGE_LABELLED.search(joined)
     if labelled:
         return int(labelled.group(1))
+    for match in _AGE_SELF_REPORT.finditer(joined):
+        value = int(match.group(1))
+        if _MIN_AGE <= value <= _MAX_AGE:
+            return value
     return None
 
 
@@ -637,27 +673,158 @@ def _find_sex(texts: list[str]) -> str | None:
     return None
 
 
+# Nobody answers "how active are you?" with the word "sedentary". Longest and
+# most specific phrases first, so "not very active" never matches "very active".
+_ACTIVITY_PHRASES: tuple[tuple[str, str], ...] = (
+    ("not very active", "light"),
+    ("not that active", "light"),
+    ("not active", "sedentary"),
+    ("very active", "very active"),
+    ("sitting all day", "sedentary"),
+    ("mostly sitting", "sedentary"),
+    ("desk all day", "sedentary"),
+    ("at a desk", "sedentary"),
+    ("at my desk", "sedentary"),
+    ("desk job", "sedentary"),
+    ("office job", "sedentary"),
+    ("hardly move", "sedentary"),
+    ("barely move", "sedentary"),
+    ("on my feet", "light"),
+    ("walk a lot", "light"),
+    ("walking a lot", "light"),
+    ("sedentary", "sedentary"),
+    ("moderate", "moderate"),
+    ("light", "light"),
+    ("active", "active"),
+)
+
+
 def _find_activity(texts: list[str]) -> str | None:
     joined = "\n".join(texts).lower()
-    for activity in ("very active", "moderate", "light", "sedentary", "active"):
-        if re.search(rf"\b{re.escape(activity)}\b", joined):
+    for phrase, activity in _ACTIVITY_PHRASES:
+        if re.search(rf"\b{re.escape(phrase)}\b", joined):
             return activity
     return None
 
 
-def _age_from_answer_context(history: Iterable[dict[str, Any]]) -> int | None:
+_HEIGHT_RANGE_CM = (120.0, 220.0)
+_WEIGHT_RANGE_KG = (30.0, 250.0)
+
+
+def _answer_after_question(
+    history: Iterable[dict[str, Any]],
+    asked: tuple[str, ...],
+    current_user_message: str = "",
+) -> str | None:
+    """The user's reply to the most recent Ted turn that asked for a field.
+
+    A bare "170" is a perfectly good answer to "how tall are you?" and a
+    meaningless string anywhere else, so every loose parser below is anchored
+    to the question rather than scanning the whole conversation.
+    """
     turns = _messages(history)
-    for index, (role, text) in enumerate(turns[:-1]):
-        if role != "assistant" or "age" not in text.lower():
+    current = current_user_message.strip()
+    if current and turns and turns[-1][0] == "assistant":
+        lowered = turns[-1][1].lower()
+        if any(term in lowered for term in asked):
+            return current
+    for index in range(len(turns) - 2, -1, -1):
+        role, text = turns[index]
+        if role != "assistant":
+            continue
+        if not any(term in text.lower() for term in asked):
             continue
         next_role, answer = turns[index + 1]
-        if next_role != "user":
-            continue
-        candidates = [int(value) for value in re.findall(r"\b(\d{1,2})\b", answer)]
-        candidates = [value for value in candidates if 10 <= value <= 99]
-        if candidates:
-            return candidates[0]
+        if next_role == "user" and answer.strip():
+            return answer.strip()
     return None
+
+
+def _age_from_answer_context(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> int | None:
+    answer = _answer_after_question(
+        history, ("age", "how old"), current_user_message
+    )
+    if answer is None:
+        return None
+    marked = _AGE_WITH_YEAR_MARKER.search(answer)
+    if marked:
+        return int(marked.group(1))
+    for value in (int(found) for found in re.findall(r"\b(\d{1,3})\b", answer)):
+        if _MIN_AGE <= value <= _MAX_AGE:
+            return value
+    return None
+
+
+def _height_from_answer_context(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> float | None:
+    answer = _answer_after_question(
+        history, ("height", "how tall"), current_user_message
+    )
+    if answer is None:
+        return None
+    explicit = _find_height_cm([answer])
+    if explicit is not None:
+        return explicit
+    bare = re.search(r"\b(\d{2,3}(?:\.\d+)?)\b", answer)
+    if bare:
+        value = float(bare.group(1))
+        if _HEIGHT_RANGE_CM[0] <= value <= _HEIGHT_RANGE_CM[1]:
+            return value
+    return None
+
+
+def _weight_from_answer_context(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> float | None:
+    answer = _answer_after_question(
+        history, ("weight", "how much do you weigh", "how heavy"), current_user_message
+    )
+    if answer is None:
+        return None
+    explicit = _find_weight_kg([answer])
+    if explicit is not None:
+        return explicit
+    bare = re.search(r"\b(\d{2,3}(?:\.\d+)?)\b", answer)
+    if bare:
+        value = float(bare.group(1))
+        if _WEIGHT_RANGE_KG[0] <= value <= _WEIGHT_RANGE_KG[1]:
+            return value
+    return None
+
+
+def _sex_from_answer_context(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> str | None:
+    answer = _answer_after_question(
+        history,
+        ("male or female", "sex", "gender", "formula"),
+        current_user_message,
+    )
+    if answer is None:
+        return None
+    explicit = _find_sex([answer])
+    if explicit:
+        return explicit
+    lowered = answer.strip().lower().rstrip(".!")
+    if lowered in ("f", "fem", "girl", "lady", "w"):
+        return "female"
+    if lowered in ("m", "guy", "boy", "dude"):
+        return "male"
+    return None
+
+
+def _activity_from_answer_context(
+    history: Iterable[dict[str, Any]], current_user_message: str = ""
+) -> str | None:
+    answer = _answer_after_question(
+        history, ("activity", "how active", "normal day"), current_user_message
+    )
+    if answer is None:
+        return None
+    return _find_activity([answer])
 
 
 def extract_calorie_profile(
@@ -667,31 +834,58 @@ def extract_calorie_profile(
     texts = _user_turns(history)
     if current_user_message.strip():
         texts.append(current_user_message.strip())
-    age = _find_age(texts) or _age_from_answer_context(history)
+    current = current_user_message.strip()
+    # The answer to a question Ted just asked beats anything scraped out of
+    # free text — that is the one place the user is definitely stating a field.
+    age = _age_from_answer_context(history, current) or _find_age(texts)
     # A bare number is a valid answer to the gate's preceding age question.
     # Transformed gate replies are delivered to WhatsApp but are not always
     # persisted in Hermes' durable history, so there may be no assistant text
     # left to anchor the answer-context parser.
     if age is None:
         bare_age = re.fullmatch(r"\s*(\d{1,2})\s*", current_user_message)
-        if bare_age and 10 <= int(bare_age.group(1)) <= 99:
+        if bare_age and _MIN_AGE <= int(bare_age.group(1)) <= _MAX_AGE:
             age = int(bare_age.group(1))
     return CalorieProfile(
         age=age,
-        height_cm=_find_height_cm(texts),
-        weight_kg=_find_weight_kg(texts),
-        sex=_find_sex(texts),
-        activity=_find_activity(texts),
+        height_cm=_height_from_answer_context(history, current)
+        or _find_height_cm(texts),
+        weight_kg=_weight_from_answer_context(history, current)
+        or _find_weight_kg(texts),
+        sex=_sex_from_answer_context(history, current) or _find_sex(texts),
+        activity=_activity_from_answer_context(history, current)
+        or _find_activity(texts),
     )
+
+
+# SCOPING.md 7: the 18+ check belongs immediately before Ted first calculates
+# or discusses a calorie TARGET. The bare word "calorie" is not that — asking
+# how many calories are in a roti is a general nutrition question.
+_TARGET_FLOW_TERMS = (
+    "maintenance",
+    "deficit",
+    "surplus",
+    "tdee",
+    "bmr",
+    "calorie target",
+    "calorie goal",
+    "calorie budget",
+    "track calories",
+    "tracking calories",
+    "counting calories",
+    "count calories",
+    "calories a day",
+    "calories per day",
+    "daily calories",
+    "how many calories should",
+    "how many calories do i need",
+)
 
 
 def _calorie_flow_active(history: Iterable[dict[str, Any]], user_message: str) -> bool:
     recent = _user_turns(history)[-6:] + [user_message]
     joined = " ".join(recent).lower()
-    return any(
-        term in joined
-        for term in ("calorie", "kcal", "maintenance", "deficit", "track calories")
-    )
+    return any(term in joined for term in _TARGET_FLOW_TERMS)
 
 
 def _response_has_calorie_number(response_text: str) -> bool:
@@ -707,15 +901,27 @@ def _response_has_calorie_number(response_text: str) -> bool:
 
 def _maintenance_or_target_flow(user_message: str, response_text: str) -> bool:
     joined = f"{user_message}\n{response_text}".lower()
-    return any(term in joined for term in ("maintenance", "deficit", "calorie target"))
+    return any(term in joined for term in _TARGET_FLOW_TERMS)
+
+
+# Every gate reply is Ted talking, not a form validator. SOUL.md: casual,
+# lowercase, and it says why it is asking.
+AGE_QUESTION = "quick one before i do calorie maths — how old are you? beta's 18+"
+UNDER_18_REFUSAL = (
+    "I can’t provide calorie numbers because this beta is only for adults."
+)
 
 
 def _missing_profile_reply(profile: CalorieProfile) -> str | None:
     missing = (
-        (profile.height_cm, "I need your height before I can estimate maintenance calories."),
-        (profile.weight_kg, "I need your weight before I can estimate maintenance calories."),
-        (profile.sex, "I need the sex you want used in the formula before I can estimate maintenance calories."),
-        (profile.activity, "I need your activity level before I can estimate maintenance calories."),
+        (profile.height_cm, "before i can do that maths — how tall are you?"),
+        (profile.weight_kg, "and your weight? i only work from numbers you give me."),
+        (profile.sex, "one more for the formula — male or female?"),
+        (
+            profile.activity,
+            "last one — how active is a normal day? desk most of it, on your feet, "
+            "or training regularly?",
+        ),
     )
     for value, reply in missing:
         if value is None:
@@ -750,18 +956,26 @@ def calorie_gate(
     history: Iterable[dict[str, Any]], user_message: str, response_text: str
 ) -> str | None:
     """Block or replace calorie output using only user-supplied values."""
-    active = _calorie_flow_active(history, user_message)
-    if not active and not _response_has_calorie_number(response_text):
+    target_flow = _calorie_flow_active(
+        history, user_message
+    ) or _maintenance_or_target_flow(user_message, response_text)
+    if not target_flow and not _response_has_calorie_number(response_text):
         return None
 
     profile = extract_calorie_profile(history, user_message)
-    if profile.age is None:
-        return "I need your age before I can give calorie numbers."
-    if profile.age < 18:
-        return "I can’t provide calorie numbers because this beta is only for adults."
 
-    if not _maintenance_or_target_flow(user_message, response_text):
+    # Load-bearing and unchanged: once we know the user is a minor, no calorie
+    # number goes out at all — target flow or not.
+    if profile.age is not None and profile.age < 18:
+        return UNDER_18_REFUSAL
+
+    # A per-food estimate is not a target, so it must not trigger the age
+    # question. Only the target flow gets that far.
+    if not target_flow:
         return None
+
+    if profile.age is None:
+        return AGE_QUESTION
 
     missing_reply = _missing_profile_reply(profile)
     if missing_reply:
@@ -769,8 +983,8 @@ def calorie_gate(
 
     estimate = _estimated_maintenance(profile)
     return (
-        f"Your estimated maintenance is roughly {estimate:,} calories a day, "
-        "based only on the values you gave me."
+        f"rough maintenance is about {estimate:,} calories a day — "
+        "worked out only from the numbers you gave me."
     )
 
 
@@ -1066,9 +1280,11 @@ def register(ctx: Any) -> None:
         __file__,
         "on" if _convex_available() else "OFF",
     )
-    if not _convex_available():
+    missing = _missing_convex_env()
+    if missing:
         LOGGER.warning(
-            "ted_memory_tool_not_registered missing=%s — Ted will chat but "
+            "ted_memory_tool_not_registered missing=%s — set these in "
+            "~/.hermes/.env, which the gateway reads. Ted will chat but "
             "remember nothing across sessions, and no other error will say so",
-            "TED_CONVEX_SITE_URL and/or TED_HERMES_SHARED_SECRET",
+            ", ".join(missing),
         )

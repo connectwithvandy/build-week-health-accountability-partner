@@ -13,8 +13,14 @@ absolute path, which is what makes the repo the live safety code.
 It tries the current project folder name first and the previous one second,
 and raises if neither exists. **Hermes does not stop when a plugin fails to
 load** — it keeps serving WhatsApp with the gates unloaded and logs nothing
-about it, so `register()` announces itself on every boot. Check for
-`ted_safety_gates_registered` in `~/.hermes/logs/agent.log` after a restart.
+about it, so `register()` announces itself on every boot.
+
+Do not check that by eye. Run `npm run gates:guard` (or
+`python3 scripts/ted-gate-guard.py`) after every restart, rename or gate edit.
+It imports this shim the way Hermes does, confirms `ted_safety_gates_registered`
+appears in `~/.hermes/logs/agent.log` *after* the last line of
+`~/.hermes/gateway-starts.log`, and **stops the gateway** if it does not.
+`--check-only` reports without touching anything.
 
 This file is a symlink to the repo copy, so there is one file, not two.
 

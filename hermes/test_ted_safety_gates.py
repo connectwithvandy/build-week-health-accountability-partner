@@ -41,7 +41,7 @@ class TedSafetyGatesTest(unittest.TestCase):
 
     def test_replays_calorie_failure_without_returning_a_number(self) -> None:
         history: list[dict[str, str]] = []
-        expected = "I need your age before I can give calorie numbers."
+        expected = gates.AGE_QUESTION
 
         for user_text in ("Track calories", "It's ragi roti", "It's only 1 roti"):
             history.append(message("user", user_text))
@@ -82,20 +82,34 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
         self.assertEqual(disclosure, VANDY_DISCLOSURE)
         history.extend([message("assistant", disclosure or ""), message("user", "Meal and steps")])
-        meal_gate = transform_response(
-            history=history,
-            user_message="Meal and steps",
-            response_text="roughly 280 calories, 14g protein.",
-        )
-        self.assertEqual(meal_gate, "I need your age before I can give calorie numbers.")
-        history.append(message("assistant", meal_gate or ""))
+        # A per-food estimate is not a calorie target, so it goes out as Ted
+        # wrote it. Demanding an age here was the bug.
+        meal_reply = "roughly 280 calories, 14g protein."
         self.assertIsNone(
             transform_response(
                 history=history,
-                user_message="33",
-                response_text="got it — what's your daily step target?",
+                user_message="Meal and steps",
+                response_text=meal_reply,
             )
         )
+        history.extend(
+            [message("assistant", meal_reply), message("user", "what should my calorie target be?")]
+        )
+        target_gate = transform_response(
+            history=history,
+            user_message="what should my calorie target be?",
+            response_text="let's work out maintenance first.",
+        )
+        self.assertEqual(target_gate, gates.AGE_QUESTION)
+        history.append(message("assistant", target_gate or ""))
+        # The age is accepted and the gate moves on to the next missing field
+        # instead of asking for the age again.
+        after_age = transform_response(
+            history=history,
+            user_message="33",
+            response_text="got it — what's your daily step target?",
+        )
+        self.assertEqual(after_age, "before i can do that maths — how tall are you?")
 
     def test_blocks_under_18(self) -> None:
         history = [message("user", "I am 17 and want to track calories")]
@@ -108,7 +122,8 @@ class TedSafetyGatesTest(unittest.TestCase):
         history = [message("user", "I am 33, 5 ft, 58 kg and female")]
         self.assertEqual(
             calorie_gate(history, "Estimate maintenance calories", "2,300 calories"),
-            "I need your activity level before I can estimate maintenance calories.",
+            "last one — how active is a normal day? desk most of it, on your feet, "
+            "or training regularly?",
         )
 
     def test_calculates_maintenance_from_supplied_values_without_a_deficit(self) -> None:
@@ -122,7 +137,8 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
         self.assertEqual(
             reply,
-            "Your estimated maintenance is roughly 2,080 calories a day, based only on the values you gave me.",
+            "rough maintenance is about 2,080 calories a day — "
+            "worked out only from the numbers you gave me.",
         )
         self.assertNotIn("deficit", reply or "")
 
@@ -931,6 +947,162 @@ class DeleteMyDataTest(unittest.TestCase):
             proven = set(gates._TURN_CONTEXT[session_id]["successful_actions"])
 
         self.assertIn("delete", proven)
+
+
+
+class CalorieProfileParsingTest(unittest.TestCase):
+    """Order 05: the parsers that used to read quantities as body measurements."""
+
+    def test_quantities_are_never_read_as_an_age(self) -> None:
+        for text in (
+            "i'm having 2 rotis and dal",
+            "i am 5'4\"",
+            "i'm 5 kg over my target",
+            "i am 3 meals down today",
+            "i drank 2 litres of water",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(gates._find_age([text]))
+
+    def test_a_real_age_is_still_read(self) -> None:
+        for text, expected in (
+            ("i am 33", 33),
+            ("im 28 years old", 28),
+            ("i'm 41 yrs", 41),
+            ("age 36", 36),
+            ("i am 17 and want to track calories", 17),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(gates._find_age([text]), expected)
+
+    def test_a_bare_number_answers_the_height_question(self) -> None:
+        history = [
+            message("user", "i am 33 and want a calorie target"),
+            message("assistant", "how tall are you?"),
+        ]
+        profile = gates.extract_calorie_profile(history, "170")
+        self.assertEqual(profile.height_cm, 170.0)
+
+    def test_a_bare_number_answers_the_weight_question(self) -> None:
+        history = [
+            message("user", "i am 33, 170 cm, chasing a calorie target"),
+            message("assistant", "and your weight?"),
+        ]
+        profile = gates.extract_calorie_profile(history, "62")
+        self.assertEqual(profile.weight_kg, 62.0)
+
+    def test_an_out_of_range_bare_number_is_not_a_measurement(self) -> None:
+        history = [message("assistant", "how tall are you?")]
+        self.assertIsNone(gates.extract_calorie_profile(history, "12").height_cm)
+
+    def test_a_loosely_worded_answer_gives_sex_and_activity(self) -> None:
+        profile = gates.extract_calorie_profile(
+            [
+                message("user", "i am 33, 170 cm, 62 kg, want a calorie target"),
+                message("assistant", "how active is a normal day?"),
+            ],
+            "I am a woman, mostly at a desk",
+        )
+        self.assertEqual(profile.sex, "female")
+        self.assertEqual(profile.activity, "sedentary")
+
+
+class CalorieGateReachTest(unittest.TestCase):
+    """Order 05: the 18+ check belongs to the target flow, not every mention."""
+
+    def test_a_per_food_question_does_not_demand_an_age(self) -> None:
+        history = [message("user", "how many calories in a roti?")]
+        self.assertIsNone(
+            calorie_gate(history, "how many calories in a roti?", "about 120 calories.")
+        )
+
+    def test_a_later_unrelated_turn_is_not_still_gated(self) -> None:
+        history = [
+            message("user", "how many calories in a roti?"),
+            message("assistant", "about 120 calories."),
+            message("user", "that was lunch"),
+            message("assistant", "noted."),
+        ]
+        self.assertIsNone(
+            calorie_gate(history, "drank 2 litres water", "nice, 2 down.")
+        )
+
+    def test_a_minor_is_still_refused_on_a_per_food_estimate(self) -> None:
+        history = [message("user", "i am 15 years old")]
+        self.assertEqual(
+            calorie_gate(
+                history, "how many calories in a roti?", "about 120 calories."
+            ),
+            gates.UNDER_18_REFUSAL,
+        )
+
+    def test_a_meal_log_is_not_mistaken_for_a_minor(self) -> None:
+        history = [message("user", "i'm having 2 rotis and paneer")]
+        self.assertIsNone(
+            calorie_gate(
+                history,
+                "i'm having 2 rotis and paneer",
+                "ooh paneer, nice — roughly 380 calories.",
+            )
+        )
+
+    def test_the_verified_maintenance_figure_is_unchanged(self) -> None:
+        history = [
+            message("user", "i am 33, female, 170 cm, 62 kg, sedentary"),
+        ]
+        reply = calorie_gate(
+            history, "what's my calorie target?", "let's start from maintenance."
+        )
+        self.assertIn("1,630", reply or "")
+        self.assertNotIn("deficit", reply or "")
+
+
+
+class RegistrationVisibilityTest(unittest.TestCase):
+    """Order 06: a dropped memory tool must never be silent."""
+
+    class _Ctx:
+        def __init__(self) -> None:
+            self.tools: list[str] = []
+            self.hooks: list[str] = []
+
+        def register_tool(self, **kwargs: object) -> None:
+            self.tools.append(str(kwargs.get("name")))
+
+        def register_hook(self, name: str, _handler: object) -> None:
+            self.hooks.append(name)
+
+    def test_a_missing_variable_is_named_at_warning_level(self) -> None:
+        ctx = self._Ctx()
+        with patch.dict(
+            gates.os.environ,
+            {"TED_CONVEX_SITE_URL": "https://example.convex.site"},
+            clear=True,
+        ):
+            with self.assertLogs("ted.safety_gates", level="WARNING") as captured:
+                gates.register(ctx)
+
+        joined = "\n".join(captured.output)
+        self.assertIn("TED_HERMES_SHARED_SECRET", joined)
+        self.assertNotIn("TED_CONVEX_SITE_URL", joined)
+        self.assertIn("~/.hermes/.env", joined)
+
+    def test_a_healthy_boot_still_announces_itself(self) -> None:
+        ctx = self._Ctx()
+        with patch.dict(
+            gates.os.environ,
+            {
+                "TED_CONVEX_SITE_URL": "https://example.convex.site",
+                "TED_HERMES_SHARED_SECRET": "shh",
+            },
+            clear=True,
+        ):
+            with self.assertLogs("ted.safety_gates", level="INFO") as captured:
+                gates.register(ctx)
+
+        self.assertIn("ted_safety_gates_registered", "\n".join(captured.output))
+        self.assertIn("ted_memory_save", ctx.tools)
+        self.assertIn("transform_llm_output", ctx.hooks)
 
 
 if __name__ == "__main__":

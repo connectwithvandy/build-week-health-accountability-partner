@@ -57,7 +57,8 @@ Last updated: Wed 2 Sep 2026, Asia/Kolkata
 - The public Vercel URL is `https://whatsapp-accountability-partner-ted.vercel.app`.
 - Convex is connected to the Next.js application.
 - Vitest and React Testing Library are configured.
-- A secret-free `.env.example` documents Convex, OpenAI, Hermes and Vercel settings without containing credentials.
+- A secret-free `.env.example` documents Convex, OpenAI, Hermes and Vercel settings without containing credentials. It now also names `TED_CONVEX_SITE_URL` and `TED_HERMES_SHARED_SECRET`, which were live in `~/.hermes/.env` but documented nowhere; `register()` names whichever one is missing at WARNING level instead of dropping the memory tool in silence.
+- `scripts/ted-gate-guard.py` is the hard stop for an ungated Ted. Hermes swallows a plugin load failure (`hermes_cli/plugins.py`, `except Exception` in `_load_plugin`) and keeps serving WhatsApp, so the check has to come from outside: the guard imports the shim, confirms the gates registered *after* the last gateway start, and stops the gateway if they did not. Run it after every restart, rename or gate edit.
 - The redesigned mobile-first landing page is intentionally short: one promise, one clearly labelled example day centered on the 7:42 PM recovery moment, one evening review, a plain privacy/safety note, and repeated WhatsApp handoff.
 - The warmer, playful design experiment was rejected and removed. The previous local landing design is restored. Reduced-motion settings are respected.
 - The WhatsApp buttons pre-fill “Okay Ted, let's do this!” and read Ted's number from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER`; the number is configured locally and on Vercel.
