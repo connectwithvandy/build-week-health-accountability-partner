@@ -442,3 +442,29 @@ export function decideReminderDelivery(
   }
   return { allowed: true, reason: "ok" };
 }
+
+// ---------------------------------------------------------------------------
+// What the deployed backend claims to support.
+//
+// The gate in hermes/ted_safety_gates talks to this backend over HTTP, and the
+// two are deployed separately — the gateway reloads from the repo the moment
+// the file changes, while Convex only changes when someone runs a deploy. That
+// gap is not theoretical: on 2 Sep the gate gained three new logDailyEntry
+// arguments that production rejected with ArgumentValidationError, which would
+// have broken every meal log the moment the gateway restarted.
+//
+// Listed here so `npm run convex:check` can ask a deployment what it is rather
+// than assume.
+export const TED_HTTP_ACTIONS = [
+  "get",
+  "save",
+  "delete",
+  "log",
+  "day",
+  "target",
+  "reminder",
+  "onboarding",
+  "report",
+  "reports",
+  "reminderGate",
+] as const;

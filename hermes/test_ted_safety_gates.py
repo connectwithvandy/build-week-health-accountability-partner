@@ -2045,5 +2045,124 @@ class CronReminderGateTest(unittest.TestCase):
         )
 
 
+class ConvexCompatibilityCheckTest(unittest.TestCase):
+    """The checker that stops a restart onto a Convex that cannot answer.
+
+    Green matters as much as red here: a checker that only ever fails gets
+    ignored, and one that passes wrongly is worse than none.
+    """
+
+    @staticmethod
+    def checker():
+        import importlib.util
+
+        path = Path(__file__).resolve().parent.parent / "scripts" / "ted-convex-check.py"
+        spec = importlib.util.spec_from_file_location("ted_convex_check", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def run_check(self, responder) -> tuple[list[str], bool]:
+        module = self.checker()
+
+        class Stub:
+            host = "test-deployment"
+
+            def call(self_inner, payload):
+                return 200, responder(payload)
+
+        return module.check(Stub())
+
+    @staticmethod
+    def healthy(payload):
+        action = payload["action"]
+        if action == "capabilities":
+            return {"success": True, "actions": sorted(gates.REQUIRED_CONVEX_ACTIONS)}
+        if action == "reports":
+            return {"success": True, "reports": []}
+        if action in ("log", "report"):
+            return {"error": "Uncaught Error: localDate must be YYYY-MM-DD"}
+        if action == "reminderGate":
+            return {"error": "Uncaught Error: nowLocalTime must be a 24-hour HH:MM"}
+        return {"success": True}
+
+    def test_a_matching_deployment_passes(self) -> None:
+        report, broken = self.run_check(self.healthy)
+        self.assertFalse(broken, "\n".join(report))
+        self.assertTrue(all(line.startswith("  ok") for line in report), report)
+
+    def test_the_exact_failure_of_2_sep_is_caught(self) -> None:
+        """Production accepted 'log' but rejected the gate's new arguments."""
+
+        def responder(payload):
+            if payload["action"] == "log":
+                return {
+                    "error": "ArgumentValidationError: Object contains extra field "
+                    "`dateConfirmed` that is not in the validator."
+                }
+            return self.healthy(payload)
+
+        report, broken = self.run_check(responder)
+        self.assertTrue(broken)
+        joined = "\n".join(report)
+        self.assertIn("dateConfirmed", joined)
+        self.assertIn("logging would break on restart", joined)
+
+    def test_a_missing_action_is_named(self) -> None:
+        def responder(payload):
+            if payload["action"] == "capabilities":
+                return {
+                    "success": True,
+                    "actions": sorted(gates.REQUIRED_CONVEX_ACTIONS - {"reminderGate"}),
+                }
+            return self.healthy(payload)
+
+        report, broken = self.run_check(responder)
+        self.assertTrue(broken)
+        self.assertIn("reminderGate", "\n".join(report))
+
+    def test_an_old_deployment_still_gets_a_specific_report(self) -> None:
+        """No capabilities endpoint must not stop it naming the real gaps."""
+
+        def responder(payload):
+            if payload["action"] in ("capabilities", "reminderGate", "report", "reports"):
+                return {"error": "Unsupported action"}
+            return self.healthy(payload)
+
+        report, broken = self.run_check(responder)
+        self.assertTrue(broken)
+        joined = "\n".join(report)
+        for expected in ("reminderGate", "report", "reports"):
+            self.assertIn(expected, joined)
+
+    def test_a_backend_ahead_of_the_gate_is_not_a_failure(self) -> None:
+        """Deploying Convex first is the safe order and must stay green."""
+
+        def responder(payload):
+            if payload["action"] == "capabilities":
+                return {
+                    "success": True,
+                    "actions": sorted(gates.REQUIRED_CONVEX_ACTIONS | {"somethingNew"}),
+                }
+            return self.healthy(payload)
+
+        report, broken = self.run_check(responder)
+        self.assertFalse(broken, "\n".join(report))
+        self.assertIn("somethingNew", "\n".join(report))
+
+    def test_the_gate_and_the_backend_declare_the_same_actions(self) -> None:
+        """The two lists are edited in different files and must not drift."""
+        import re
+
+        model = (
+            Path(__file__).resolve().parent.parent / "convex" / "model.ts"
+        ).read_text(encoding="utf-8")
+        block = model.split("TED_HTTP_ACTIONS = [")[1].split("]")[0]
+        self.assertEqual(
+            set(re.findall(r'"(\w+)"', block)),
+            set(gates.REQUIRED_CONVEX_ACTIONS),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

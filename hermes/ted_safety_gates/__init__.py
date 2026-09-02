@@ -293,6 +293,27 @@ TED_MEMORY_SAVE_SCHEMA = {
 
 _REQUIRED_CONVEX_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
 
+# Every action this gate calls. The gateway reloads this file the moment it
+# changes; Convex only changes when someone runs a deploy, so the two drift and
+# the gate is always the one that moves first. `npm run convex:check` compares
+# this against what a deployment actually answers, so the drift is caught
+# before a restart turns it into a broken meal log.
+REQUIRED_CONVEX_ACTIONS = frozenset(
+    {
+        "get",
+        "save",
+        "delete",
+        "log",
+        "day",
+        "target",
+        "reminder",
+        "onboarding",
+        "report",
+        "reports",
+        "reminderGate",
+    }
+)
+
 # Reads sit on the pre-LLM path: every WhatsApp turn waits for one before the
 # model is even called, so a slow Convex is felt as dead air in the chat. Writes
 # are worth waiting longer for — a dropped save loses the user's meal.

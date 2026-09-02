@@ -13,7 +13,8 @@
     "gates:guard": "python3 scripts/ted-gate-guard.py",
     "hermes:patch": "python3 scripts/hermes-patch-guard.py --apply",
     "hermes:patch:check": "python3 scripts/hermes-patch-guard.py",
-    "reports": "python3 scripts/ted-reports.py"
+    "reports": "python3 scripts/ted-reports.py",
+    "convex:check": "python3 scripts/ted-convex-check.py"
   },
   "dependencies": {
     "convex": "^1.45.0",

@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { TED_HTTP_ACTIONS } from "./model";
 
 const http = httpRouter();
 
@@ -119,6 +120,12 @@ http.route({
           ...rest,
         } as Parameters<typeof ctx.runMutation>[1]);
         return json(result);
+      }
+
+      // What this deployment supports, so a checker can compare it against the
+      // code that is about to talk to it. Read-only and side-effect free.
+      if (input.action === "capabilities") {
+        return json({ success: true, actions: [...TED_HTTP_ACTIONS] });
       }
 
       if (input.action === "reminderGate") {
