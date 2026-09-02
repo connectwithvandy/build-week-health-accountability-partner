@@ -842,6 +842,58 @@ class ClaimGateTest(unittest.TestCase):
         )
 
 
+class OnboardingCloseTest(unittest.TestCase):
+    """Onboarding may not sign off while the evening check-in time is missing."""
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_all_set_is_refused_while_the_review_time_is_missing(self) -> None:
+        """The tester on 2 Sep dodged the time four times and was told All set."""
+        gates._update_onboarding("u", done=["name", "goal"])
+        for closer in (
+            "all set! send me your first meal whenever.",
+            "you're all set 🙌",
+            "we're done — talk tonight.",
+            "you're good to go.",
+            "setup complete.",
+        ):
+            with self.subTest(closer=closer):
+                self.assertEqual(
+                    gates.onboarding_close_gate(closer, "u"),
+                    gates.REVIEW_TIME_QUESTION,
+                )
+
+    def test_it_closes_once_the_time_is_actually_recorded(self) -> None:
+        gates._update_onboarding("u", done=["name", "goal", "dailyReview"])
+        self.assertIsNone(gates.onboarding_close_gate("all set!", "u"))
+
+    def test_ordinary_replies_are_never_touched(self) -> None:
+        gates._update_onboarding("u", done=["name"])
+        for reply in (
+            "nice, 39g protein in that one.",
+            "arre, gym got ghosted today?",
+            "you're at 1800ml, one more glass.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertIsNone(gates.onboarding_close_gate(reply, "u"))
+
+    def test_a_user_with_no_record_is_left_alone(self) -> None:
+        """Anyone who onboarded before this gate must not be nagged."""
+        self.assertIsNone(gates.onboarding_close_gate("all set!", "someone-old"))
+
+    def test_the_question_asks_once_and_names_a_shape(self) -> None:
+        question = gates.REVIEW_TIME_QUESTION
+        self.assertEqual(question.count("?"), 1)
+        self.assertEqual(question, question.lower())
+        self.assertIn("9pm", question)
+
+
 class DeleteMyDataTest(unittest.TestCase):
     """A deletion confirmation must be backed by a real deletion."""
 

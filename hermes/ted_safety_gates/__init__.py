@@ -1517,12 +1517,52 @@ def transform_response(
     calorie = calorie_gate(history, user_message, response_text, user_key)
     if calorie:
         return calorie
+    unfinished = onboarding_close_gate(response_text, user_key)
+    if unfinished:
+        return unfinished
     return action_claim_gate(
         response_text,
         action_succeeded=action_succeeded,
         successful_actions=successful_actions,
         storage_failed=storage_failed,
     )
+
+
+# Onboarding may not close over a missing check-in time.
+#
+# Without it there is no evening review, and the review is the product. On
+# 2 Sep 2026 a tester dodged the question four times and Ted closed with "All
+# set"; that account would never have received a recap, and neither side would
+# have found out. The question is cheap to repeat and impossible to recover
+# once the conversation has moved on.
+REVIEW_TIME_QUESTION = (
+    "one last thing before we start — what time works for your evening "
+    "check-in? something like 9pm or 10:30pm."
+)
+
+_ONBOARDING_CLOSERS = re.compile(
+    r"\b("
+    r"all set|you'?re all set|we'?re all set|that'?s everything|"
+    r"all done|we'?re done|you'?re good to go|good to go|"
+    r"set(?:up)? (?:is )?(?:complete|done)|ready to go|you'?re ready"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def onboarding_close_gate(response_text: str, user_key: str) -> str | None:
+    """Refuse to sign off onboarding while the review time is still missing."""
+    if not user_key or not _ONBOARDING_CLOSERS.search(response_text or ""):
+        return None
+    record = _onboarding(user_key)
+    done = set(record.get("done") or ())
+    # No recorded steps means this user predates the record. Saying nothing is
+    # better than nagging someone who finished onboarding weeks ago.
+    if not done:
+        return None
+    if "dailyReview" in done or "complete" in done:
+        return None
+    return REVIEW_TIME_QUESTION
 
 
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
@@ -2557,8 +2597,17 @@ def _save_onboarding(
     profile = args.get("profile")
     if isinstance(profile, dict) and profile:
         body["profile"] = _camel(profile)
+    result = _convex_write("onboarding", user_key, session_id or task_id, body=body)
+    # Keep our own record of which steps really closed. The model's account of
+    # how far onboarding got is exactly what cannot be trusted here: on 2 Sep a
+    # tester was asked for a check-in time four times, dodged it four times, and
+    # was still told "All set".
+    if result.get("success") and completed in _ONBOARDING_FIELDS:
+        done = set(_onboarding(user_key).get("done") or ())
+        done.add(str(completed))
+        _update_onboarding(user_key, done=sorted(done))
     return json.dumps(
-        _convex_write("onboarding", user_key, session_id or task_id, body=body),
+        result,
         ensure_ascii=False,
     )
 
