@@ -18,10 +18,15 @@ One daily-review card, built four times. Copy, palette, layout, type and spacing
 **identical** across all four. The character is the only variable, so any difference in how
 the card feels is attributable to the character alone.
 
-|            | Flat doodle        | 3D render            |
-|------------|--------------------|----------------------|
-| Hedgehog   | hand-built SVG     | generated (pending)  |
-| Capybara   | hand-built SVG     | generated (pending)  |
+|            | Flat doodle              | Soft / volumetric              |
+|------------|--------------------------|--------------------------------|
+| Hedgehog   | hand-built SVG, ink line | hand-built SVG, gradient-shaded |
+| Capybara   | hand-built SVG, ink line | hand-built SVG, gradient-shaded |
+
+The right-hand column is **not** a generated 3D render. It is the same character geometry
+filled with radial gradients plus a contact shadow, standing in for the matte-clay look. It
+tests the real question — does volume make Ted warmer, or more toylike? — without needing an
+image-generation key. Swap in real renders later if one becomes available.
 
 ## Why the card and not the landing page
 
@@ -59,7 +64,18 @@ adapting. Warm neutrals sit calmly beside green; a cool grey or blue would not.
 
 ## Status
 
-The two flat doodles are built. The two 3D renders are **not generated** — there is no usable
-`OPENAI_API_KEY` locally (`.env.example` carries the name with an empty value; `.env.local`
-does not have it at all). Those two cells show a hatched "not generated yet" placeholder until
-a key is available.
+All four cells are built and rendering. Nothing here is wired into the app.
+
+On the missing key: there is no usable `OPENAI_API_KEY` anywhere reachable from this repo.
+`.env.example` carries the name with an empty value, `.env.local` does not have it, and Vercel
+holds only `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` and `CONVEX_DEPLOY_KEY`. Ted's OpenAI usage is
+configured in `hermes/machine/hermes-config.yaml`, so the key lives with Hermes on whatever
+machine runs it — not here.
+
+## Known rough edges
+
+- The hedgehog's snout is long enough to read slightly anteater-ish at large sizes. Fine in the
+  52px card avatar, worth shortening if the hedgehog wins.
+- Neither character has been tested against a real WhatsApp dark-mode background yet.
+- The card has only been viewed at desktop width. It has not been checked at phone width,
+  which is where it will actually be seen.
