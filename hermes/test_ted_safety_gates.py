@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -826,6 +827,110 @@ class ClaimGateTest(unittest.TestCase):
             ),
             "3 meals logged, 4,200 steps.",
         )
+
+
+class DeleteMyDataTest(unittest.TestCase):
+    """A deletion confirmation must be backed by a real deletion."""
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_the_confirmation_that_slipped_through_is_now_caught(self) -> None:
+        self.assertEqual(
+            action_claim_gate("done, your profile, logs and uploads are deleted."),
+            "I haven’t completed that action.",
+        )
+
+    def test_other_ways_of_confirming_a_deletion_are_caught(self) -> None:
+        for reply in (
+            "all cleared, fresh start whenever you want.",
+            "that's wiped — nothing left on my side.",
+            "your data's gone.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    action_claim_gate(reply), "I haven’t completed that action."
+                )
+
+    def test_ordinary_fitness_talk_is_not_a_deletion_claim(self) -> None:
+        for reply in (
+            "the bloating is gone, that's a good sign.",
+            "your energy dip is gone once protein is up.",
+            "that craving is gone in 20 minutes, promise.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertIsNone(action_claim_gate(reply))
+
+    def test_a_real_deletion_lets_the_confirmation_through(self) -> None:
+        self.assertIsNone(
+            action_claim_gate(
+                "done, your profile, logs and uploads are deleted.",
+                successful_actions={"delete"},
+            )
+        )
+
+    def test_the_tool_refuses_without_explicit_confirmation(self) -> None:
+        session_id = "delete-unconfirmed"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="delete-test@s.whatsapp.net",
+            conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="delete my data",
+        )
+        result = json.loads(
+            gates._delete_user_data({"confirmed": False}, session_id=session_id)
+        )
+
+        self.assertFalse(result["success"])
+        self.assertIn("confirm", result["error"].lower())
+
+    def test_the_tool_refuses_when_no_user_is_active(self) -> None:
+        result = json.loads(
+            gates._delete_user_data({"confirmed": True}, session_id="no-such-session")
+        )
+
+        self.assertFalse(result["success"])
+
+    def test_deletion_also_clears_the_gates_own_state(self) -> None:
+        """Otherwise Ted still greets a deleted user by name."""
+        user_key = "whatsapp:sha256:erase"
+        gates._remember_name(user_key, "Vandy")
+        gates._record_name_ask(user_key)
+
+        with patch.object(gates, "_persist_disclosure_state"):
+            gates._DISCLOSURE_SENT_KEYS.add(user_key)
+            gates._forget_user(user_key)
+            self.assertNotIn(user_key, gates._DISCLOSURE_SENT_KEYS)
+
+        self.assertIsNone(gates._known_name(user_key))
+        self.assertEqual(gates._name_asks(user_key), 0)
+
+    def test_a_successful_delete_tool_proves_the_claim(self) -> None:
+        session_id = "delete-proven"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session_id,
+            sender_id="delete-proven@s.whatsapp.net",
+            conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="yes",
+        )
+        _record_tool_success(
+            session_id=session_id,
+            status="ok",
+            tool_name="ted_memory_delete",
+            args={"confirmed": True},
+            result='{"success": true, "deleted": true}',
+        )
+        with gates._TURN_LOCK:
+            proven = set(gates._TURN_CONTEXT[session_id]["successful_actions"])
+
+        self.assertIn("delete", proven)
 
 
 if __name__ == "__main__":

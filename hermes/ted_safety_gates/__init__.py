@@ -179,6 +179,51 @@ def _remember_name_from_facts(user_key: str, result: dict[str, Any]) -> None:
             return
 
 
+def _forget_user(user_key: str) -> None:
+    """Clear the gate's own durable state for a user who asked for erasure."""
+    if not user_key:
+        return
+    with _ONBOARDING_LOCK:
+        if _ONBOARDING_STATE.pop(user_key, None) is not None:
+            _persist_onboarding_state()
+    with _TURN_LOCK:
+        if user_key in _DISCLOSURE_SENT_KEYS:
+            _DISCLOSURE_SENT_KEYS.discard(user_key)
+            _persist_disclosure_state()
+    LOGGER.info("ted_user_state_forgotten user_key=%s", user_key)
+
+
+def _delete_user_data(
+    args: dict[str, Any],
+    session_id: str = "",
+    task_id: str = "",
+    **_: Any,
+) -> str:
+    context_id = session_id or task_id
+    with _TURN_LOCK:
+        context = dict(_TURN_CONTEXT.get(context_id, {}))
+    user_key = str(context.get("user_key") or "")
+    if not user_key:
+        return json.dumps({"success": False, "error": "No WhatsApp user is active"})
+    if not (isinstance(args, dict) and args.get("confirmed") is True):
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Ask the user to confirm the deletion first, then call again",
+            }
+        )
+
+    result = _convex_request("delete", user_key)
+    if result.get("success"):
+        _forget_user(user_key)
+        LOGGER.info(
+            "ted_user_data_deleted user_key=%s removed=%s",
+            user_key,
+            result.get("removed"),
+        )
+    return json.dumps(result, ensure_ascii=False)
+
+
 def _capture_name_answer(user_key: str, user_message: str) -> None:
     """The turn after the gate asked for a name is the answer to it."""
     if not user_key or _known_name(user_key) or _name_asks(user_key) == 0:
@@ -186,6 +231,30 @@ def _capture_name_answer(user_key: str, user_message: str) -> None:
     name = _clean_name(user_message)
     if name:
         _remember_name(user_key, name)
+
+TED_MEMORY_DELETE_SCHEMA = {
+    "name": "ted_memory_delete",
+    "description": (
+        "Permanently delete everything stored for the current WhatsApp user: "
+        "profile, saved facts, onboarding, targets, reminders and all logged "
+        "entries. Call this only after the user has asked for deletion and "
+        "confirmed it in a separate message. There is no undo."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "confirmed": {
+                "type": "boolean",
+                "description": (
+                    "True only when the user has explicitly confirmed the "
+                    "deletion after being asked."
+                ),
+            }
+        },
+        "required": ["confirmed"],
+        "additionalProperties": False,
+    },
+}
 
 TED_MEMORY_SAVE_SCHEMA = {
     "name": "ted_memory_save",
@@ -762,8 +831,23 @@ _CRON_CLAIM = re.compile(
     r"|\b(?:that's|it's|this is)\s+(?:set|scheduled|on)\s+for\b",
     re.IGNORECASE,
 )
+# Any confirmation that data is gone must be backed by a real deletion. The
+# subject has to be a data noun: "the bloating is gone" is a fitness sentence,
+# "your logs are gone" is a promise about health data.
+_DATA_NOUN = (
+    r"data|profile|logs?|uploads?|entr(?:y|ies)|records?|history|photos?"
+    r"|reminders?|account|info(?:rmation)?|memor(?:y|ies)|everything"
+)
+_GONE_VERB = r"deleted|removed|wiped|erased|cleared|gone"
 _DELETE_CLAIM = re.compile(
-    r"\bI(?:'ve| have)\s+deleted\b|\b(?:data|entry|reminder|job)\b.{0,20}\bdeleted\b",
+    # "I've deleted", "I removed", "I'll wipe"
+    rf"\bI(?:'ve| have|'ll| will)?\s*(?:just\s+)?(?:{_GONE_VERB}|delete|remove|wipe|erase|clear)\b"
+    # "your profile, logs and uploads are deleted", "your data's gone"
+    rf"|\b(?:{_DATA_NOUN})\b[^.!?]{{0,60}}?\b(?:{_GONE_VERB})\b"
+    # "all cleared", "everything's gone"
+    rf"|\b(?:all|everything)(?:'s)?\s+(?:{_GONE_VERB})\b"
+    # "that's wiped"
+    rf"|\b(?:that's|it's|this is)\s+(?:{_GONE_VERB})\b",
     re.IGNORECASE,
 )
 
@@ -919,6 +1003,8 @@ def _record_tool_success(**kwargs: Any) -> None:
             proven.update({"cron", "delete"})
     elif tool_name == "ted_memory_save":
         proven.add("memory")
+    elif tool_name == "ted_memory_delete":
+        proven.update({"delete", "memory"})
     if not proven:
         return None
 
@@ -959,6 +1045,13 @@ def register(ctx: Any) -> None:
         toolset="ted",
         schema=TED_MEMORY_SAVE_SCHEMA,
         handler=_save_user_facts,
+        check_fn=_convex_available,
+    )
+    ctx.register_tool(
+        name="ted_memory_delete",
+        toolset="ted",
+        schema=TED_MEMORY_DELETE_SCHEMA,
+        handler=_delete_user_data,
         check_fn=_convex_available,
     )
     ctx.register_hook("pre_llm_call", _capture_turn)

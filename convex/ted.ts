@@ -1,5 +1,7 @@
 import { v } from "convex/values";
 
+import type { Id } from "./_generated/dataModel";
+
 import { internalMutation, internalQuery } from "./_generated/server";
 
 const factValidator = v.object({
@@ -109,14 +111,62 @@ export const deleteUserMemory = internalMutation({
         query.eq("whatsappUserId", whatsappUserId),
       )
       .unique();
-    if (!user) return { success: true, deleted: false };
+    if (!user) {
+      return { success: true, deleted: false, removed: {} };
+    }
 
-    const facts = await ctx.db
-      .query("userFacts")
-      .withIndex("by_user", (query) => query.eq("userId", user._id))
-      .collect();
-    for (const fact of facts) await ctx.db.delete(fact._id);
+    // The privacy page promises "profile, plans, logs, uploads, reminders,
+    // reviews". Every table below hangs off userId, so a partial teardown is
+    // never a partial promise — it is a broken one.
+    const removed: Record<string, number> = {};
+    const clear = async (
+      rows: { _id: Id<"userFacts" | "onboarding" | "targets" | "reminders" | "dailyEntries"> }[],
+      table: string,
+    ) => {
+      for (const row of rows) {
+        await ctx.db.delete(row._id);
+      }
+      removed[table] = rows.length;
+    };
+
+    await clear(
+      await ctx.db
+        .query("userFacts")
+        .withIndex("by_user", (query) => query.eq("userId", user._id))
+        .collect(),
+      "userFacts",
+    );
+    await clear(
+      await ctx.db
+        .query("onboarding")
+        .withIndex("by_user", (query) => query.eq("userId", user._id))
+        .collect(),
+      "onboarding",
+    );
+    await clear(
+      await ctx.db
+        .query("targets")
+        .withIndex("by_user", (query) => query.eq("userId", user._id))
+        .collect(),
+      "targets",
+    );
+    await clear(
+      await ctx.db
+        .query("reminders")
+        .withIndex("by_user", (query) => query.eq("userId", user._id))
+        .collect(),
+      "reminders",
+    );
+    await clear(
+      await ctx.db
+        .query("dailyEntries")
+        .withIndex("by_user_and_date", (query) => query.eq("userId", user._id))
+        .collect(),
+      "dailyEntries",
+    );
+
     await ctx.db.delete(user._id);
-    return { success: true, deleted: true };
+    removed.users = 1;
+    return { success: true, deleted: true, removed };
   },
 });

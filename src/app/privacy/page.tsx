@@ -36,7 +36,8 @@ export default function PrivacyPage() {
 
         <section>
           <h2>How to delete it</h2>
-          <p>Send <strong>delete my data</strong> in your Ted WhatsApp chat. Ted will ask you to confirm once. After you confirm, Vandy will delete your profile, plans, logs, uploads, reminders, reviews, and conversation history.</p>
+          <p>Send <strong>delete my data</strong> in your Ted WhatsApp chat. Ted will ask you to confirm once. As soon as you confirm, Ted deletes everything it has stored about you: your profile, saved facts, targets, reminders, and every logged meal, workout, and daily entry. That happens immediately and cannot be undone.</p>
+          <p>Two things sit outside that automatic deletion, and we would rather say so than let you assume otherwise. The photos and voice notes you sent, and Ted&rsquo;s own record of your conversation, are held on the machine that runs Ted; reply in the chat asking for those to be removed and Vandy will delete them by hand. The WhatsApp chat on your own phone belongs to you &mdash; clearing it there is yours to do.</p>
         </section>
 
         <p className="privacy-boundary">Ted is a habit coach, not a doctor. Do not use it for emergencies, diagnosis, or treatment.</p>
