@@ -597,5 +597,236 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
 
 
+class InjectedMemoryContextTest(unittest.TestCase):
+    """Hermes appends the Convex memory block to the user's own message."""
+
+    @staticmethod
+    def with_memory(user_text: str, *facts: str) -> str:
+        """Build a user turn the way Hermes delivers it, block appended."""
+        block = gates._format_user_memory(
+            {
+                "success": True,
+                "facts": [
+                    {"key": key, "value": value}
+                    for key, value in (fact.split(": ", 1) for fact in facts)
+                ],
+            }
+        )
+        return f"{user_text}\n\n{block}"
+
+    def test_a_saved_goal_is_not_read_as_a_body_measurement(self) -> None:
+        turn = self.with_memory("Hi", "goal: lose 5 kg")
+        texts = gates._user_turns([message("user", turn)])
+
+        self.assertEqual(texts, ["Hi"])
+        self.assertIsNone(gates._find_weight_kg(texts))
+        self.assertIsNone(gates._find_age(texts))
+
+    def test_a_saved_calorie_target_does_not_open_the_calorie_flow(self) -> None:
+        turn = self.with_memory("drank 2 litres water", "calorie target: 1800")
+
+        self.assertFalse(
+            gates._calorie_flow_active(
+                [message("user", turn)], "drank 2 litres water"
+            )
+        )
+
+    def test_the_name_survives_the_appended_block(self) -> None:
+        history = [
+            message("assistant", "first things first — what should i call you?"),
+            message("user", self.with_memory("Vandy", "name: Vandy")),
+        ]
+
+        self.assertEqual(gates._given_name(history), "Vandy")
+
+    def test_the_block_still_starts_with_the_shared_marker(self) -> None:
+        block = gates._format_user_memory(
+            {"success": True, "facts": [{"key": "name", "value": "Vandy"}]}
+        )
+
+        self.assertTrue(block.startswith(gates._MEMORY_CONTEXT_MARKER))
+        self.assertIn("- name: Vandy", block)
+        self.assertEqual(gates._strip_memory_context(block), "")
+
+
+# The exact assistant turn from the 2 Sep WhatsApp thread that looped.
+LIVE_NAME_ASK = (
+    "first things first though — what should i actually call you day to day, "
+    "and what's the one goal we're chasing here?"
+)
+
+
+class OnboardingStateTest(unittest.TestCase):
+    """Onboarding state is recorded, never re-derived from model prose."""
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_the_live_wording_is_recognised_as_the_name_question(self) -> None:
+        self.assertTrue(gates._asks_for_name(LIVE_NAME_ASK))
+
+    def test_a_promise_to_message_later_is_not_the_name_question(self) -> None:
+        self.assertFalse(gates._asks_for_name("cool, i'll call you at 8pm."))
+        self.assertFalse(gates._asks_for_name("i'll call you once it's done."))
+
+    def test_the_live_thread_no_longer_loops(self) -> None:
+        user_key = "whatsapp:sha256:live"
+
+        # Turn 1: the model asks in its own words. The gate lets Ted's voice
+        # through and records that the question went out.
+        self.assertIsNone(consent_gate([], LIVE_NAME_ASK, user_key))
+        self.assertEqual(gates._name_asks(user_key), 1)
+
+        # Turn 2: she answers. Hermes stores the model's original reply.
+        gates._capture_name_answer(user_key, "Vandy")
+        history = [
+            message("assistant", LIVE_NAME_ASK),
+            message("user", "Vandy"),
+        ]
+        self.assertEqual(
+            consent_gate(history, GOAL_QUESTION, user_key), VANDY_DISCLOSURE
+        )
+
+    def test_an_unrecognised_question_still_cannot_loop_forever(self) -> None:
+        """The bound holds even when phrase matching fails completely."""
+        user_key = "whatsapp:sha256:loop"
+        unmatched = "so, who am i talking to today"
+
+        replies = [consent_gate([], unmatched, user_key) for _ in range(5)]
+
+        self.assertEqual(replies[:3], ["What should I call you?"] * 3)
+        self.assertEqual(replies[3:], [None, None])
+
+    def test_a_name_in_convex_memory_means_the_gate_never_asks(self) -> None:
+        user_key = "whatsapp:sha256:convex"
+        gates._remember_name_from_facts(
+            user_key,
+            {"success": True, "facts": [{"key": "name", "value": "Vandy"}]},
+        )
+
+        self.assertEqual(
+            consent_gate([], GOAL_QUESTION, user_key), VANDY_DISCLOSURE
+        )
+        self.assertEqual(gates._name_asks(user_key), 0)
+
+    def test_the_opening_message_counts_as_asking_for_the_name(self) -> None:
+        user_key = "whatsapp:sha256:opening"
+
+        self.assertEqual(
+            transform_response(
+                history=[message("user", "Okay Ted, let's do this!")],
+                user_message="Okay Ted, let's do this!",
+                response_text="A different model-generated opener.",
+                user_key=user_key,
+            ),
+            OPENING_MESSAGE,
+        )
+        self.assertEqual(gates._name_asks(user_key), 1)
+
+        gates._capture_name_answer(user_key, "call me Vandy")
+        self.assertEqual(gates._known_name(user_key), "Vandy")
+
+    def test_the_name_is_not_taken_before_the_question_is_asked(self) -> None:
+        user_key = "whatsapp:sha256:early"
+        gates._capture_name_answer(user_key, "Okay Ted, let's do this!")
+
+        self.assertIsNone(gates._known_name(user_key))
+
+
+class ClaimGateTest(unittest.TestCase):
+    """Ted's own claims are gated; descriptions of the user's day are not."""
+
+    # Real replies from milestones 8, 9 and 13, which the old gate destroyed.
+    TOTALS = (
+        "1,180 calories so far, 3 meals logged, 4,200 steps. "
+        "a 20 min walk closes the step gap."
+    )
+    CORRECTION = "ah, paneer. updated: roughly 380 calories, 19g protein."
+    REVIEW = (
+        "3 meals logged, water done, walk done. tomorrow: protein at breakfast."
+    )
+
+    def test_todays_totals_survive_intact(self) -> None:
+        self.assertIsNone(action_claim_gate(self.TOTALS))
+
+    def test_a_correction_keeps_its_recalculated_numbers(self) -> None:
+        self.assertIsNone(action_claim_gate(self.CORRECTION))
+
+    def test_the_evening_review_keeps_its_counts(self) -> None:
+        self.assertIsNone(action_claim_gate(self.REVIEW))
+
+    def test_other_descriptions_of_the_users_day_survive(self) -> None:
+        for reply in (
+            "4 glasses recorded so far, 2 to go.",
+            "your target was updated last week, so this is measured against it.",
+            "2 workouts logged this week — same as last week.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertIsNone(action_claim_gate(reply))
+
+    def test_an_unbacked_save_claim_is_still_removed(self) -> None:
+        self.assertEqual(
+            action_claim_gate("I've saved that to your log."),
+            "I haven’t completed that action.",
+        )
+
+    def test_the_check_in_claim_no_longer_slips_through(self) -> None:
+        """The false claim the cron gate was built to catch, and missed."""
+        self.assertEqual(
+            action_claim_gate("chalo, 8pm check-in is set."),
+            "I haven’t completed that action.",
+        )
+
+    def test_other_scheduling_promises_are_caught(self) -> None:
+        for reply in (
+            "I'll remind you at 8pm.",
+            "I'll ping you tomorrow morning.",
+            "that's on for tomorrow morning.",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    action_claim_gate(reply), "I haven’t completed that action."
+                )
+
+    def test_real_scheduling_replies_from_the_2_sep_thread(self) -> None:
+        """Both slipped the gate live; both are true, so both need a tool."""
+        for reply in (
+            "all 5 pings are set — coq10 8:45am, omega3+b12 10:30am 💊",
+            "done, one-off ping at 5pm today for the vitamin 👍",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    action_claim_gate(reply), "I haven’t completed that action."
+                )
+                self.assertIsNone(
+                    action_claim_gate(reply, successful_actions={"cron"})
+                )
+
+    def test_a_proven_action_lets_the_claim_through(self) -> None:
+        self.assertIsNone(
+            action_claim_gate(
+                "I've saved that to your log.", successful_actions={"memory"}
+            )
+        )
+        self.assertIsNone(
+            action_claim_gate(
+                "chalo, 8pm check-in is set.", successful_actions={"cron"}
+            )
+        )
+
+    def test_a_claim_is_stripped_but_the_reading_survives(self) -> None:
+        self.assertEqual(
+            action_claim_gate(
+                "I've saved that. 3 meals logged, 4,200 steps."
+            ),
+            "3 meals logged, 4,200 steps.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
