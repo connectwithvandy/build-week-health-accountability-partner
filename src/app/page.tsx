@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-const openingMessage = "Okay Ted, let's do this!";
+const openingMessage = "Okay Ted, let's do this 🫡";
 
 function getWhatsAppUrl() {
   const number = (process.env.NEXT_PUBLIC_TED_WHATSAPP_NUMBER ?? "").replace(/\D/g, "");
