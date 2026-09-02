@@ -20,7 +20,7 @@ Do not check that by eye. Run `npm run gates:guard` (or
 It imports this shim the way Hermes does, confirms `ted_safety_gates_registered`
 appears in `~/.hermes/logs/agent.log` *after* the last line of
 `~/.hermes/gateway-starts.log`, and **stops the gateway** if it does not.
-`--check-only` reports without touching anything.
+`--check-only` reports without touching anything. With the gateway down it exits 3 and says the gates are unverified rather than reporting green — nothing ungated is not the same as gates confirmed on.
 
 This file is a symlink to the repo copy, so there is one file, not two.
 

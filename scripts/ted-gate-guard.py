@@ -146,7 +146,9 @@ def main() -> int:
     pid = running_pid()
 
     if pid is None:
-        report.append(_ok("gateway is not running — nothing is serving ungated"))
+        report.append(
+            _ok("gateway is not running — nothing is serving ungated (not verified)")
+        )
     elif registered is None:
         ungated.append("the gates have never announced themselves in agent.log")
         report.append(_fail(f"no {REGISTERED} line in {AGENT_LOG}"))
@@ -177,6 +179,16 @@ def main() -> int:
     print("\n".join(report))
 
     if not ungated:
+        if pid is None:
+            # Nothing is serving, so nothing is ungated - but the check that
+            # matters has not run. Saying "gates are on" here reads as a green
+            # light for a gateway that was never asked the question.
+            print(
+                "\nNothing is running, so nothing is ungated — but the gates have "
+                "NOT been verified.\nStart the gateway (hermes gateway start), "
+                "then run this again."
+            )
+            return 3
         if absent:
             print("\nGates are on. Memory is off — see the FAIL line above.")
             return 1
