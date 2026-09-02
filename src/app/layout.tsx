@@ -23,6 +23,11 @@ export const metadata: Metadata = {
   title: "Ted. Your day, remembered",
   description:
     "Ted remembers your meals, movement, water, and commitments in WhatsApp. Then it gives you one useful thing you can still do today.",
+  // Private beta: the waitlist is exactly the people Vandy has messaged, so
+  // being findable in search is a liability, not a win. robots.ts asks
+  // crawlers not to fetch; this asks them not to index anything they fetched
+  // anyway. Remove both together when the beta opens.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
