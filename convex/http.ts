@@ -121,6 +121,32 @@ http.route({
         return json(result);
       }
 
+      if (input.action === "reminderGate") {
+        const result = await ctx.runMutation(internal.ted.gateReminderDelivery, {
+          whatsappUserId: input.whatsappUserId,
+          nowLocalTime: String(payload.nowLocalTime ?? ""),
+          today: String(payload.today ?? ""),
+        });
+        return json(result);
+      }
+
+      if (input.action === "report") {
+        const result = await ctx.runMutation(internal.ted.reportBadReply, {
+          whatsappUserId: input.whatsappUserId,
+          ...rest,
+        } as Parameters<typeof ctx.runMutation>[1]);
+        return json(result);
+      }
+
+      // Builder read-back. Reached with the shared secret, never by the model,
+      // so it is not a route one user's turn can use to read another's.
+      if (input.action === "reports") {
+        const result = await ctx.runQuery(internal.ted.listReportedReplies, {
+          limit: typeof payload.limit === "number" ? payload.limit : undefined,
+        });
+        return json({ success: true, ...result });
+      }
+
       if (input.action === "onboarding") {
         const result = await ctx.runMutation(internal.ted.saveOnboarding, {
           whatsappUserId: input.whatsappUserId,

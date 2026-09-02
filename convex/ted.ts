@@ -8,10 +8,13 @@ import {
   buildDedupeKey,
   dailyEntryStateValidator,
   dailyEntryTypeValidator,
+  decideReminderDelivery,
+  findClashingEntry,
   goalValidator,
   inputSourceValidator,
   isLocalDateKey,
   isLocalTimeKey,
+  needsDateConfirmation,
   onboardingFieldValidator,
   summariseDay,
 } from "./model";
@@ -240,6 +243,11 @@ export const logDailyEntry = internalMutation({
     workoutMinutes: v.optional(v.number()),
     commitmentId: v.optional(v.string()),
     correctsDedupeKey: v.optional(v.string()),
+    // Milestone 10. Both default to false: a write that needs a question
+    // asked first must fail closed, not slip through on an omitted flag.
+    today: v.optional(v.string()),
+    dateConfirmed: v.optional(v.boolean()),
+    secondOneConfirmed: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     if (!isLocalDateKey(args.localDate)) {
@@ -274,6 +282,54 @@ export const logDailyEntry = internalMutation({
         entryId: existing._id,
         dedupeKey,
       };
+    }
+
+    // A day the user named out loud is confirmed once before anything is
+    // written. A meal on the wrong date quietly corrupts two daily reviews,
+    // and "yesterday" is easy to mishear.
+    if (
+      args.today !== undefined &&
+      needsDateConfirmation(args.localDate, args.today, args.dateConfirmed === true)
+    ) {
+      return {
+        success: false,
+        needsConfirmation: "date" as const,
+        localDate: args.localDate,
+        today: args.today,
+        dedupeKey,
+      };
+    }
+
+    // Not a re-delivery (that is the dedupeKey above) but plausibly the same
+    // event described twice. Ask rather than guess in either direction.
+    // A correction is exempt: it is explicitly replacing the row it clashes
+    // with, which is the whole point of correctsDedupeKey.
+    if (!args.correctsDedupeKey && args.secondOneConfirmed !== true) {
+      const sameDay = await ctx.db
+        .query("dailyEntries")
+        .withIndex("by_user_and_date", (query) =>
+          query.eq("userId", user._id).eq("localDate", args.localDate),
+        )
+        .collect();
+      const clash = findClashingEntry(sameDay, {
+        entryType: args.entryType,
+        occurredAt,
+        commitmentId: args.commitmentId,
+      });
+      if (clash) {
+        return {
+          success: false,
+          needsConfirmation: "duplicate" as const,
+          clashesWith: {
+            entryType: clash.entryType,
+            occurredAt: clash.occurredAt,
+            dedupeKey: clash.dedupeKey,
+            meal: clash.meal ?? undefined,
+            commitmentId: clash.commitmentId ?? undefined,
+          },
+          dedupeKey,
+        };
+      }
     }
 
     // A correction supersedes the entry it replaces rather than deleting it,
@@ -575,5 +631,123 @@ export const saveOnboarding = internalMutation({
       updatedAt: now,
     });
     return { success: true, created: false, onboardingId: existing._id };
+  },
+});
+
+/**
+ * Milestone 11 — record a reply the user says was wrong.
+ *
+ * Written by the safety gate straight from the conversation, not by the model.
+ * A model that has just produced a bad reply is the last thing that should be
+ * deciding whether the complaint gets stored, or what it says.
+ */
+export const reportBadReply = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    localDate: v.string(),
+    userMessage: v.string(),
+    assistantMessage: v.string(),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (!isLocalDateKey(args.localDate)) {
+      throw new Error("localDate must be YYYY-MM-DD in the user's own timezone");
+    }
+    const user = await ensureUser(ctx, args.whatsappUserId);
+    const now = Date.now();
+    const reportId = await ctx.db.insert("reportedReplies", {
+      userId: user._id,
+      localDate: args.localDate,
+      reportedAt: now,
+      userMessage: args.userMessage.slice(0, 4000),
+      assistantMessage: args.assistantMessage.slice(0, 4000),
+      note: args.note?.slice(0, 1000) || undefined,
+    });
+    await ctx.db.patch(user._id, { updatedAt: now });
+    return { success: true, reportId };
+  },
+});
+
+/**
+ * Every reported reply, newest first — the builder's read-back.
+ *
+ * Reached only through the shared secret on the HTTP route, never as a model
+ * tool, so it cannot become a way for one user's turn to read another's.
+ */
+export const listReportedReplies = internalQuery({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, { limit }) => {
+    const capped = Math.min(Math.max(limit ?? 50, 1), 200);
+    const reports = await ctx.db
+      .query("reportedReplies")
+      .withIndex("by_reported_at")
+      .order("desc")
+      .take(capped);
+
+    return {
+      reports: await Promise.all(
+        reports.map(async (report) => {
+          const user = await ctx.db.get(report.userId);
+          return {
+            reportedAt: report.reportedAt,
+            localDate: report.localDate,
+            // The hashed key, which is the only identity this system holds.
+            whatsappUserId: user?.whatsappUserId ?? "",
+            userMessage: report.userMessage,
+            assistantMessage: report.assistantMessage,
+            note: report.note,
+            reviewedAt: report.reviewedAt,
+          };
+        }),
+      ),
+    };
+  },
+});
+
+/**
+ * Milestone 12 — may a reminder go out to this user right now?
+ *
+ * A mutation rather than a query because a "yes" consumes one of the day's
+ * allowance. Counting only what was actually cleared to send is what makes the
+ * cap real; asking and not sending would otherwise burn the budget silently.
+ */
+export const gateReminderDelivery = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    nowLocalTime: v.string(),
+    today: v.string(),
+  },
+  handler: async (ctx, args) => {
+    if (!isLocalTimeKey(args.nowLocalTime)) {
+      throw new Error("nowLocalTime must be a 24-hour HH:MM local time");
+    }
+    if (!isLocalDateKey(args.today)) {
+      throw new Error("today must be YYYY-MM-DD in the user's own timezone");
+    }
+    const user = await ensureUser(ctx, args.whatsappUserId);
+    const now = Date.now();
+    const policy = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    const decision = decideReminderDelivery(
+      policy,
+      args.nowLocalTime,
+      args.today,
+      now,
+    );
+    if (!decision.allowed) {
+      return { success: true, ...decision, sentToday: 0 };
+    }
+
+    const sentToday =
+      (policy!.sentLocalDate === args.today ? (policy!.sentCount ?? 0) : 0) + 1;
+    await ctx.db.patch(policy!._id, {
+      sentLocalDate: args.today,
+      sentCount: sentToday,
+      updatedAt: now,
+    });
+    return { success: true, ...decision, sentToday, maxPerDay: policy!.maxPerDay };
   },
 });

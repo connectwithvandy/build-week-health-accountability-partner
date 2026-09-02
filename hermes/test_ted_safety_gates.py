@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1547,6 +1548,501 @@ class ConvexTimeoutTest(unittest.TestCase):
     def test_the_read_timeout_is_shorter_than_it_was(self) -> None:
         """5s on every turn was up to 5s of dead air before Ted even thought."""
         self.assertLess(gates._CONVEX_READ_TIMEOUT, 5.0)
+
+
+class DuplicateAndDateConfirmationTest(unittest.TestCase):
+    """Milestone 10: Ted asks before writing a repeat or a day that is not today."""
+
+    SESSION = "milestone-10-session"
+    SENDER = "m10@s.whatsapp.net"
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="dal and rice",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+
+    def log(self, **extra: object) -> dict:
+        args = {
+            "entry_type": "meal",
+            "meal": {"items": ["dal", "rice"], "calories": 420},
+        }
+        args.update(extra)
+        return json.loads(gates._log_daily_entry(args, session_id=self.SESSION))
+
+    def test_the_flags_default_to_false_on_every_call(self) -> None:
+        """An omitted flag must never read as permission."""
+        seen = {}
+        with patch.object(
+            gates,
+            "_convex_request",
+            side_effect=lambda *a, **k: seen.update(k.get("body") or {})
+            or {"success": True},
+        ):
+            self.log()
+        self.assertIs(seen["dateConfirmed"], False)
+        self.assertIs(seen["secondOneConfirmed"], False)
+        self.assertEqual(seen["today"], gates._today())
+
+    def test_a_clash_is_reported_as_a_question_not_a_save(self) -> None:
+        occurred = int(time.mktime((2026, 9, 2, 13, 15, 0, 0, 0, -1)) * 1000)
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={
+                "success": False,
+                "needsConfirmation": "duplicate",
+                "clashesWith": {
+                    "entryType": "meal",
+                    "occurredAt": occurred,
+                    "dedupeKey": "msg:abc",
+                },
+            },
+        ):
+            result = self.log()
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["needsConfirmation"], "duplicate")
+        self.assertIn("Nothing was saved", result["ask"])
+        self.assertIn("lunch", result["ask"])
+        self.assertIn("1:15 pm", result["ask"])
+        self.assertIn("second_one_confirmed", result["ask"])
+        self.assertIn("msg:abc", result["ask"])
+
+    def test_a_clash_does_not_unlock_the_save_claim(self) -> None:
+        """success is false, so "logged it" is still stripped."""
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={
+                "success": False,
+                "needsConfirmation": "duplicate",
+                "clashesWith": {"entryType": "meal", "dedupeKey": "k1"},
+            },
+        ):
+            raw = gates._log_daily_entry(
+                {"entry_type": "meal", "meal": {"items": ["dal"], "calories": 420}},
+                session_id=self.SESSION,
+            )
+        gates._record_tool_success(
+            tool_name="ted_log_entry", status="ok", args={}, result=raw,
+            session_id=self.SESSION,
+        )
+        with gates._TURN_LOCK:
+            proven = set(gates._TURN_CONTEXT[self.SESSION]["successful_actions"])
+        self.assertNotIn("memory", proven)
+        self.assertEqual(
+            gates.action_claim_gate("logged it.", successful_actions=proven),
+            gates.CLAIM_NOT_DONE,
+        )
+
+    def test_a_clash_is_not_reported_as_a_storage_outage(self) -> None:
+        """Ted asking a question is not the database being down."""
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={
+                "success": False,
+                "needsConfirmation": "duplicate",
+                "clashesWith": {"entryType": "meal", "dedupeKey": "k1"},
+            },
+        ):
+            self.log()
+        with gates._TURN_LOCK:
+            self.assertFalse(gates._TURN_CONTEXT[self.SESSION].get("storage_failed"))
+
+    def test_a_named_date_is_reported_as_a_question(self) -> None:
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={
+                "success": False,
+                "needsConfirmation": "date",
+                "localDate": "2026-09-01",
+                "today": "2026-09-02",
+            },
+        ):
+            result = self.log(local_date="2026-09-01")
+
+        self.assertFalse(result["success"])
+        self.assertIn("2026-09-01", result["ask"])
+        self.assertIn("not today", result["ask"])
+        self.assertIn("date_confirmed", result["ask"])
+
+    def test_a_confirmed_answer_is_passed_through(self) -> None:
+        seen = {}
+        with patch.object(
+            gates,
+            "_convex_request",
+            side_effect=lambda *a, **k: seen.update(k.get("body") or {})
+            or {"success": True, "entryId": "e1"},
+        ):
+            result = self.log(second_one_confirmed=True, date_confirmed=True)
+        self.assertIs(seen["secondOneConfirmed"], True)
+        self.assertIs(seen["dateConfirmed"], True)
+        self.assertTrue(result["success"])
+
+    def test_a_truthy_string_is_not_a_confirmation(self) -> None:
+        """Only a real boolean True counts, so a hallucinated value cannot pass."""
+        seen = {}
+        with patch.object(
+            gates,
+            "_convex_request",
+            side_effect=lambda *a, **k: seen.update(k.get("body") or {})
+            or {"success": True},
+        ):
+            self.log(second_one_confirmed="yes", date_confirmed="true")
+        self.assertIs(seen["secondOneConfirmed"], False)
+        self.assertIs(seen["dateConfirmed"], False)
+
+    def test_meal_slots_read_the_way_a_person_would_say_them(self) -> None:
+        for hour, expected in ((8, "breakfast"), (13, "lunch"), (17, "a snack"), (20, "dinner")):
+            with self.subTest(hour=hour):
+                self.assertEqual(gates._meal_slot(hour), expected)
+        self.assertEqual(gates._meal_slot(3), "a meal")
+
+
+class AttachmentBoundaryTest(unittest.TestCase):
+    """SCOPING #8 and #10: photos log meals; PDFs are health plans, never updates."""
+
+    SESSION = "attachment-session"
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id="attach@s.whatsapp.net",
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="here you go",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+
+    def log(self, source: str, entry_type: str) -> dict:
+        args: dict[str, object] = {"entry_type": entry_type, "source": source}
+        if entry_type == "meal":
+            args["meal"] = {"items": ["dal"], "calories": 420}
+        if entry_type == "water":
+            args["water_ml"] = 500
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True}
+        ) as request:
+            result = json.loads(gates._log_daily_entry(args, session_id=self.SESSION))
+        return {"result": result, "wrote": request.called}
+
+    def test_a_pdf_can_never_log_a_daily_update(self) -> None:
+        for entry_type in gates._ENTRY_TYPES:
+            with self.subTest(entry_type=entry_type):
+                outcome = self.log("pdf", entry_type)
+                self.assertFalse(outcome["result"]["success"])
+                self.assertFalse(outcome["wrote"], "a PDF reached the database")
+                self.assertIn("health plan", outcome["result"]["error"])
+
+    def test_a_photo_logs_a_meal_and_nothing_else(self) -> None:
+        self.assertTrue(self.log("photo", "meal")["wrote"])
+        for entry_type in ("water", "steps", "workout", "commitment"):
+            with self.subTest(entry_type=entry_type):
+                outcome = self.log("photo", entry_type)
+                self.assertFalse(outcome["wrote"])
+                self.assertIn("only log a meal", outcome["result"]["error"])
+
+    def test_text_and_voice_still_carry_everything(self) -> None:
+        for source in ("text", "voice"):
+            for entry_type in gates._ENTRY_TYPES:
+                with self.subTest(source=source, entry_type=entry_type):
+                    self.assertTrue(self.log(source, entry_type)["wrote"])
+
+    def test_the_rule_is_a_table_not_a_guess(self) -> None:
+        self.assertIsNone(gates._attachment_refusal("photo", "meal"))
+        self.assertIsNotNone(gates._attachment_refusal("photo", "steps"))
+        self.assertIsNotNone(gates._attachment_refusal("pdf", "meal"))
+        self.assertIsNone(gates._attachment_refusal("text", "steps"))
+
+
+class BadReplyReportTest(unittest.TestCase):
+    """Milestone 11: "report that" stores the exact turn and confirms it."""
+
+    SESSION = "report-session"
+    SENDER = "report@s.whatsapp.net"
+    BAD = "eat 900 calories a day and you'll drop 5kg by friday."
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        self.history = [
+            message("assistant", DISCLOSURE_MESSAGE),
+            message("user", "how do i lose weight fast"),
+            message("assistant", self.BAD),
+        ]
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=self.history,
+                user_message="that reply was wrong",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+
+    def test_the_phrases_a_person_would_actually_use(self) -> None:
+        for phrase in (
+            "report that",
+            "report this reply",
+            "that reply was wrong",
+            "that answer is unsafe",
+            "this was bad advice",
+            "flag that",
+            "wrong answer",
+            "that's dangerous",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(gates._asks_to_report(phrase))
+
+    def test_ordinary_conversation_is_not_a_report(self) -> None:
+        for phrase in (
+            "i had two rotis",
+            "that was a good workout",
+            "i got the answer wrong on my quiz",
+            "report my weekly steps",
+            "that reply was helpful",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertFalse(gates._asks_to_report(phrase))
+
+    def test_the_reported_turn_is_stored_verbatim(self) -> None:
+        sent = {}
+        with patch.object(
+            gates,
+            "_convex_request",
+            side_effect=lambda action, key, **k: sent.update(
+                {"action": action, "key": key, **(k.get("body") or {})}
+            )
+            or {"success": True, "reportId": "r1"},
+        ):
+            reply = _transform_live_response(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                response_text="sorry about that! anyway, what did you have for lunch?",
+            )
+
+        self.assertEqual(sent["action"], "report")
+        self.assertEqual(sent["assistantMessage"], self.BAD)
+        self.assertEqual(sent["userMessage"], "that reply was wrong")
+        self.assertEqual(reply, gates.REPORT_CONFIRMATION)
+
+    def test_the_model_does_not_get_to_write_the_confirmation(self) -> None:
+        """Whatever the model said, the user gets the same sentence."""
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True}
+        ):
+            for model_said in ("no problem!", "I have escalated this to a human coach.", ""):
+                with self.subTest(model_said=model_said):
+                    self.assertEqual(
+                        _transform_live_response(
+                            platform="whatsapp",
+                            session_id=self.SESSION,
+                            response_text=model_said,
+                        ),
+                        gates.REPORT_CONFIRMATION,
+                    )
+
+    def test_a_failed_store_is_admitted_not_faked(self) -> None:
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={"success": False, "error": "down", "storage_error": True},
+        ):
+            reply = _transform_live_response(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                response_text="noted!",
+            )
+        self.assertEqual(reply, gates.REPORT_NOT_SAVED)
+        self.assertNotEqual(reply, gates.REPORT_CONFIRMATION)
+
+    def test_nothing_to_report_falls_back_to_normal_conversation(self) -> None:
+        session = "report-empty"
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=session,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="report that",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, session, None)
+        with patch.object(gates, "_convex_request", return_value={"success": True}) as req:
+            reply = _transform_live_response(
+                platform="whatsapp",
+                session_id=session,
+                response_text="what would you like me to look at?",
+            )
+        self.assertNotEqual(reply, gates.REPORT_CONFIRMATION)
+        self.assertFalse(
+            any(call.args and call.args[0] == "report" for call in req.call_args_list)
+        )
+
+
+class CronReminderGateTest(unittest.TestCase):
+    """Milestone 12: cron reminders are Ted talking, so Ted's rules apply.
+
+    cron/scheduler.py builds its agent with platform="cron", so before this
+    every gate here returned early and a scheduled ping reached a real WhatsApp
+    thread with nothing checked.
+    """
+
+    SESSION = "cron_919661eba04c_20260903_084500"
+    CHAT = "144504426369026@lid"
+
+    def jobs_file(self, origin: dict | None) -> object:
+        job = {"id": "919661eba04c", "name": "CoQ10 reminder"}
+        if origin is not None:
+            job["origin"] = origin
+        path = Path(self.tmp) / "jobs.json"
+        path.write_text(json.dumps([job]), encoding="utf-8")
+        return patch.object(gates, "_CRON_JOBS_PATH", path)
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+
+    def test_a_cron_run_is_no_longer_invisible_to_the_gate(self) -> None:
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            self.assertEqual(
+                gates._cron_whatsapp_recipient(self.SESSION), self.CHAT
+            )
+
+    def test_a_cron_job_for_another_platform_is_left_alone(self) -> None:
+        with self.jobs_file({"platform": "telegram", "chat_id": "123"}):
+            self.assertIsNone(gates._cron_whatsapp_recipient(self.SESSION))
+        with self.jobs_file(None):
+            self.assertIsNone(gates._cron_whatsapp_recipient(self.SESSION))
+
+    def test_an_ordinary_session_id_is_not_mistaken_for_cron(self) -> None:
+        for session in ("20260901_235408_3bab3370", "", "cron_", "croncron_x_1"):
+            with self.subTest(session=session):
+                self.assertIsNone(gates._cron_job_id(session))
+
+    def test_the_recipient_resolves_to_the_same_person_as_a_live_turn(self) -> None:
+        """The cap and quiet hours must apply to the real user, not a stray key."""
+        from_cron = gates._user_state_key("whatsapp", self.CHAT, self.SESSION)
+        from_chat = gates._user_state_key("whatsapp", self.CHAT, "live-session")
+        self.assertEqual(from_cron, from_chat)
+
+    def test_quiet_hours_suppress_the_ping_entirely(self) -> None:
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            with patch.object(
+                gates,
+                "_convex_request",
+                return_value={"success": True, "allowed": False, "reason": "quietHours"},
+            ):
+                self.assertEqual(
+                    _transform_live_response(
+                        platform="cron",
+                        session_id=self.SESSION,
+                        response_text="morning! coq10 time ☀️",
+                    ),
+                    gates.CRON_SILENT,
+                )
+
+    def test_the_cap_and_a_pause_suppress_it_too(self) -> None:
+        for reason in ("dailyCap", "paused", "noPolicy"):
+            with self.subTest(reason=reason):
+                with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+                    with patch.object(
+                        gates,
+                        "_convex_request",
+                        return_value={"success": True, "allowed": False, "reason": reason},
+                    ):
+                        self.assertEqual(
+                            _transform_live_response(
+                                platform="cron",
+                                session_id=self.SESSION,
+                                response_text="coq10 time",
+                            ),
+                            gates.CRON_SILENT,
+                        )
+
+    def test_an_unreadable_policy_stays_silent_rather_than_pinging(self) -> None:
+        """A reminder is an interruption Ted chose; silence is the safe failure."""
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            with patch.object(
+                gates,
+                "_convex_request",
+                return_value={"success": False, "error": "unavailable"},
+            ):
+                self.assertEqual(
+                    _transform_live_response(
+                        platform="cron",
+                        session_id=self.SESSION,
+                        response_text="coq10 time",
+                    ),
+                    gates.CRON_SILENT,
+                )
+
+    def test_an_allowed_reminder_goes_out_unchanged(self) -> None:
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            with patch.object(
+                gates,
+                "_convex_request",
+                return_value={"success": True, "allowed": True, "reason": "ok"},
+            ):
+                self.assertIsNone(
+                    _transform_live_response(
+                        platform="cron",
+                        session_id=self.SESSION,
+                        response_text="coq10 time 💊",
+                    )
+                )
+
+    def test_a_cleared_reminder_still_cannot_make_a_false_claim(self) -> None:
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            with patch.object(
+                gates,
+                "_convex_request",
+                return_value={"success": True, "allowed": True, "reason": "ok"},
+            ):
+                self.assertEqual(
+                    _transform_live_response(
+                        platform="cron",
+                        session_id=self.SESSION,
+                        response_text="i've saved that to your log.",
+                    ),
+                    gates.CLAIM_NOT_DONE,
+                )
+
+    def test_a_cleared_reminder_still_cannot_hand_out_calorie_numbers(self) -> None:
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            with patch.object(
+                gates,
+                "_convex_request",
+                return_value={"success": True, "allowed": True, "reason": "ok"},
+            ):
+                reply = _transform_live_response(
+                    platform="cron",
+                    session_id=self.SESSION,
+                    response_text="reminder: stick to 1,200 calories today.",
+                )
+        # Dropped outright: a one-line ping has no conversation behind it, so
+        # nothing here can prove the recipient is an adult.
+        self.assertEqual(reply, gates.CRON_SILENT)
+
+    def test_a_non_whatsapp_platform_is_still_ignored(self) -> None:
+        self.assertIsNone(
+            _transform_live_response(
+                platform="telegram", session_id="x", response_text="hi"
+            )
+        )
 
 
 if __name__ == "__main__":

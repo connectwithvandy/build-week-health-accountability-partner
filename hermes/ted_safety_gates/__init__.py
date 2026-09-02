@@ -1231,12 +1231,18 @@ def transform_response(
     successful_actions: set[str] | None = None,
     user_key: str = "",
     storage_failed: bool = False,
+    report_saved: bool | None = None,
 ) -> str | None:
     history = list(history)
     if _is_prepared_start(history, user_message):
         # OPENING_MESSAGE ends with the name question, so it counts as asking.
         _record_name_ask(user_key)
         return OPENING_MESSAGE
+    # Milestone 11, before anything else reads the model's reply: a user
+    # reporting a bad answer must get the same confirmation every time,
+    # whatever the model decided to say about it.
+    if report_saved is not None:
+        return REPORT_CONFIRMATION if report_saved else REPORT_NOT_SAVED
     disclosure = consent_gate(history, response_text, user_key)
     if disclosure:
         return disclosure
@@ -1304,6 +1310,11 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
 
 
 def _transform_live_response(**kwargs: Any) -> str | None:
+    # A cron run has platform "cron", not "whatsapp", but it still ends up in a
+    # real WhatsApp thread. Checked first so those stop slipping past every
+    # gate below.
+    if kwargs.get("platform") == "cron":
+        return _cron_reminder_gate(**kwargs)
     if kwargs.get("platform") != "whatsapp":
         return None
     session_id = str(kwargs.get("session_id") or "")
@@ -1312,13 +1323,30 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     history = list(context.get("history", []))
     if context.get("disclosure_sent") and not _disclosure_was_sent(history):
         history.insert(0, {"role": "assistant", "content": DISCLOSURE_MESSAGE})
+    user_message = str(context.get("user_message", ""))
+    user_key = str(context.get("user_key", ""))
+
+    # Only once the disclosure is behind us — before that the consent gate owns
+    # the reply, and there is no earlier Ted answer worth reporting anyway.
+    report_saved: bool | None = None
+    if (
+        user_key
+        and _disclosure_was_sent(history)
+        and _asks_to_report(user_message)
+        # No model answer yet means there is nothing to complain about, so this
+        # is ordinary conversation rather than a report.
+        and _last_assistant_turn(history)
+    ):
+        report_saved = _record_bad_reply(user_key, history, user_message)
+
     return transform_response(
         history=history,
-        user_message=str(context.get("user_message", "")),
+        user_message=user_message,
         response_text=str(kwargs.get("response_text") or ""),
         successful_actions=set(context.get("successful_actions", set())),
-        user_key=str(context.get("user_key", "")),
+        user_key=user_key,
         storage_failed=bool(context.get("storage_failed")),
+        report_saved=report_saved,
     )
 
 
@@ -1475,7 +1503,9 @@ TED_LOG_ENTRY_SCHEMA = {
         "meal, water, steps, a workout, or a commitment they kept. Call this "
         "every time they tell you about one, before you reply about it. To "
         "replace an entry they corrected, pass corrects_dedupe_key with the "
-        "dedupe_key returned when you logged the original."
+        "dedupe_key returned when you logged the original. If this returns "
+        "needsConfirmation, nothing was written: ask the one question in "
+        "'ask', then call it again with the flag it names."
     ),
     "parameters": {
         "type": "object",
@@ -1513,6 +1543,21 @@ TED_LOG_ENTRY_SCHEMA = {
                 ),
             },
             "corrects_dedupe_key": {"type": "string"},
+            "date_confirmed": {
+                "type": "boolean",
+                "description": (
+                    "Only after you asked the user to confirm a date that is "
+                    "not today, and they confirmed it."
+                ),
+            },
+            "second_one_confirmed": {
+                "type": "boolean",
+                "description": (
+                    "Only after this tool told you it clashes with something "
+                    "already logged, you asked, and the user said it really is "
+                    "a separate one."
+                ),
+            },
         },
         "required": ["entry_type"],
         "additionalProperties": False,
@@ -1651,6 +1696,292 @@ TED_SAVE_ONBOARDING_SCHEMA = {
 }
 
 
+# Milestone 12 — reminders, and the hole underneath them.
+#
+# Reminders are not sent by this repo. They are Hermes cron jobs, and
+# cron/scheduler.py builds its agent with platform="cron" (not "whatsapp"), so
+# every gate here — the claim gate, the calorie gate, the disclosure check —
+# returned early and never saw them. A cron job delivering to a real WhatsApp
+# thread was completely ungated, and quiet hours, the pause and the per-day cap
+# were prompt text that nothing enforced.
+#
+# The session id a cron run carries is "cron_<job_id>_<timestamp>", and the
+# job's own record names where it delivers. That is enough to recover the real
+# WhatsApp recipient and put the message back under the same rules as anything
+# else Ted says.
+_CRON_JOBS_PATH = Path.home() / ".hermes" / "cron" / "jobs.json"
+_CRON_SESSION = re.compile(r"^cron_([0-9a-zA-Z]+)_\d{8}_\d{6}$")
+
+# cron/scheduler.py drops a response that is exactly this token.
+CRON_SILENT = "[SILENT]"
+
+
+def _cron_job_id(session_id: str) -> str | None:
+    match = _CRON_SESSION.match(session_id or "")
+    return match.group(1) if match else None
+
+
+def _cron_whatsapp_recipient(session_id: str) -> str | None:
+    """The WhatsApp id a cron job delivers to, or None if it is not ours."""
+    job_id = _cron_job_id(session_id)
+    if not job_id or not _CRON_JOBS_PATH.exists():
+        return None
+    try:
+        raw = json.loads(_CRON_JOBS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        LOGGER.warning("ted_cron_jobs_unreadable error=%s", error)
+        return None
+    jobs = raw if isinstance(raw, list) else list(raw.values()) if isinstance(raw, dict) else []
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("id") != job_id:
+            continue
+        origin = job.get("origin")
+        if not isinstance(origin, dict):
+            return None
+        if str(origin.get("platform") or "").lower() != "whatsapp":
+            return None
+        chat_id = str(origin.get("chat_id") or "")
+        return chat_id or None
+    return None
+
+
+def _reminder_allowed(user_key: str) -> tuple[bool, str]:
+    """Ask the stored policy whether a reminder may go out right now."""
+    result = _convex_request(
+        "reminderGate",
+        user_key,
+        body={"nowLocalTime": time.strftime("%H:%M"), "today": _today()},
+    )
+    if not result.get("success"):
+        # The policy is unreadable. A reminder is an interruption Ted chose to
+        # send, not something the user is waiting on, so silence is the safe
+        # failure — unlike a reply, where saying nothing strands them.
+        LOGGER.warning(
+            "ted_reminder_gate_unavailable user_key=%s error=%s",
+            user_key,
+            result.get("error"),
+        )
+        return False, "unavailable"
+    reason = str(result.get("reason") or "unknown")
+    return bool(result.get("allowed")), reason
+
+
+def _cron_reminder_gate(**kwargs: Any) -> str | None:
+    """Put cron-delivered WhatsApp messages back under Ted's rules."""
+    session_id = str(kwargs.get("session_id") or "")
+    recipient = _cron_whatsapp_recipient(session_id)
+    if not recipient:
+        return None
+    user_key = _user_state_key("whatsapp", recipient, session_id)
+
+    allowed, reason = _reminder_allowed(user_key)
+    if not allowed:
+        LOGGER.info(
+            "ted_reminder_suppressed user_key=%s reason=%s session=%s",
+            user_key,
+            reason,
+            session_id,
+        )
+        return CRON_SILENT
+
+    # Cleared to send — but a cron reminder is still Ted talking to a real
+    # person, so it goes through the same output gates as a reply. History is
+    # empty here by construction: a cron run has no conversation, which is
+    # exactly why the disclosure check must not fire on it.
+    response_text = str(kwargs.get("response_text") or "")
+    gated = action_claim_gate(response_text)
+    if gated is not None:
+        LOGGER.info("ted_reminder_claim_stripped user_key=%s", user_key)
+        return gated
+    # calorie_gate needs a conversation to read an age and a target flow out
+    # of, and a cron run has neither — so with empty history it reads "stick to
+    # 1,200 calories" as a harmless per-food estimate and lets it pass. A
+    # scheduled one-line ping is never the place for nutrition maths anyway,
+    # and nothing here can prove the recipient is an adult, so any calorie
+    # number in one is dropped outright rather than argued with.
+    if _response_has_calorie_number(response_text):
+        LOGGER.info("ted_reminder_calorie_suppressed user_key=%s", user_key)
+        return CRON_SILENT
+    return None
+
+
+# Milestone 11 — the user reporting a reply as wrong or unsafe.
+#
+# Matched on what the USER typed, never on what the model wrote. That is the
+# difference between this and the claim gate's problem: a complaint about a bad
+# reply is the one case where the model's own account of the turn is worth
+# least, so the gate reads the user's words and writes the record itself.
+_REPORT_REQUEST = re.compile(
+    r"\b("
+    # "report that", "report this reply", "reporting that answer"
+    r"report(?:ing)?\s+(?:that|this|it|the\s+(?:last\s+)?(?:reply|answer|message))"
+    # "that reply was wrong", "this answer is unsafe", "that was bad advice"
+    r"|(?:that|this|your\s+last)\s+(?:reply|answer|response|message|advice)?\s*"
+    r"(?:was|is|'s)\s+(?:wrong|incorrect|unsafe|dangerous|bad|harmful|nonsense)"
+    # "that's wrong", "this is unsafe" — bare, right after a reply
+    r"|(?:that's|thats|this is)\s+(?:wrong|unsafe|dangerous|harmful)"
+    # "flag that", "wrong answer"
+    r"|flag\s+(?:that|this|it)"
+    r"|wrong\s+answer"
+    r")\b",
+    re.IGNORECASE,
+)
+
+REPORT_CONFIRMATION = (
+    "logged that as a bad reply — the exact message is saved for review. "
+    "thanks for flagging it. what did you expect instead?"
+)
+
+REPORT_NOT_SAVED = (
+    "i couldn't save that report just now. say \"report that\" again in a minute."
+)
+
+
+def _asks_to_report(text: str) -> bool:
+    """Whether this user turn is a complaint about Ted's previous reply."""
+    return bool(_REPORT_REQUEST.search(_strip_memory_context(text or "")))
+
+
+def _last_assistant_turn(history: Iterable[dict[str, Any]]) -> str:
+    """The reply being complained about — the newest model-written answer.
+
+    Ted's own fixed lines are skipped. The disclosure and the opening message
+    are produced by this gate, not the model, so they are never the thing a
+    user means by "that reply was wrong" — and storing one as a reported reply
+    would bury the real complaints under noise.
+    """
+    fixed = {DISCLOSURE_MESSAGE.strip(), OPENING_MESSAGE.strip(), GOAL_QUESTION.strip()}
+    for role, content in reversed(_messages(history)):
+        stripped = content.strip()
+        if role != "assistant" or not stripped:
+            continue
+        if stripped in fixed or any(line in stripped for line in fixed):
+            continue
+        return stripped
+    return ""
+
+
+def _record_bad_reply(user_key: str, history: Iterable[dict[str, Any]], user_message: str) -> bool:
+    """Store the reported turn. True when it is safely written."""
+    reported = _last_assistant_turn(history)
+    if not reported:
+        # Nothing to report yet — treat it as ordinary conversation.
+        return False
+    result = _convex_request(
+        "report",
+        user_key,
+        body={
+            "localDate": _today(),
+            "userMessage": _strip_memory_context(user_message)[:4000],
+            "assistantMessage": reported[:4000],
+        },
+    )
+    if result.get("success"):
+        LOGGER.info("ted_bad_reply_reported user_key=%s", user_key)
+        return True
+    LOGGER.warning(
+        "ted_bad_reply_report_failed user_key=%s error=%s",
+        user_key,
+        result.get("error"),
+    )
+    return False
+
+
+# SCOPING.md #8 and #10: "photos work for meal updates; PDFs work only for
+# existing health plans", and PDFs are "not for daily updates". That boundary
+# lived only in SOUL.md prose, so a PDF sent as a daily update was accepted
+# whenever the model felt like accepting it. Enforced here instead.
+_SOURCE_ALLOWED_ENTRY_TYPES: dict[str, frozenset[str]] = {
+    "text": frozenset(_ENTRY_TYPES),
+    "voice": frozenset(_ENTRY_TYPES),
+    "photo": frozenset({"meal"}),
+    "pdf": frozenset(),
+    # Ted's own scheduled writes, which are not an attachment at all.
+    "system": frozenset(_ENTRY_TYPES),
+}
+
+
+def _attachment_refusal(source: str, entry_type: str) -> str | None:
+    """Why this attachment cannot carry this kind of log, or None."""
+    allowed = _SOURCE_ALLOWED_ENTRY_TYPES.get(source)
+    if allowed is None or entry_type in allowed:
+        return None
+    if source == "pdf":
+        return (
+            "A PDF is only ever an existing health plan, never a daily update. "
+            "Read the plan and set their targets instead, or ask them to send "
+            "this update as text or a voice note."
+        )
+    if source == "photo":
+        return (
+            "A photo can only log a meal. Ask them to send this as text or a "
+            "voice note."
+        )
+    return f"{source} cannot be used to log {entry_type}"
+
+
+_MEAL_SLOTS = (
+    (5, 11, "breakfast"),
+    (11, 16, "lunch"),
+    (16, 19, "a snack"),
+    (19, 24, "dinner"),
+)
+
+
+def _meal_slot(hour: int) -> str:
+    for start, end, label in _MEAL_SLOTS:
+        if start <= hour < end:
+            return label
+    return "a meal"
+
+
+def _confirmation_needed(kind: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Turn a refused write into a question Ted can ask, with the facts in it.
+
+    Returned with success false on purpose. The claim gate keys off that, so a
+    reply that says "logged it" is still stripped — the write genuinely has not
+    happened, and the whole point of milestone 10 is that Ted asks instead of
+    guessing.
+    """
+    if kind == "date":
+        return {
+            "success": False,
+            "needsConfirmation": "date",
+            "localDate": result.get("localDate"),
+            "today": result.get("today"),
+            "ask": (
+                f"Nothing was saved. They named {result.get('localDate')}, which is "
+                f"not today ({result.get('today')}). Confirm the date with them in "
+                "one short question, then call this again with date_confirmed true."
+            ),
+        }
+
+    clash = result.get("clashesWith") or {}
+    occurred_at = clash.get("occurredAt")
+    when = ""
+    slot = "one"
+    if isinstance(occurred_at, (int, float)):
+        stamp = time.localtime(occurred_at / 1000)
+        when = time.strftime("%-I:%M %p", stamp).lower()
+        slot = _meal_slot(stamp.tm_hour)
+    entry_type = str(clash.get("entryType") or "entry")
+    described = slot if entry_type == "meal" else entry_type
+    return {
+        "success": False,
+        "needsConfirmation": "duplicate",
+        "clashesWith": clash,
+        "ask": (
+            f"Nothing was saved. They already logged {described}"
+            + (f" at {when}" if when else "")
+            + ". Ask in one short question whether this is a second one or the "
+            "same thing again. If they say it is a second one, call this again "
+            "with second_one_confirmed true. If it is a correction to that "
+            "entry, call this again with corrects_dedupe_key set to "
+            f"{clash.get('dedupeKey')!r}."
+        ),
+    }
+
+
 def _log_daily_entry(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -1664,12 +1995,23 @@ def _log_daily_entry(
     if entry_type not in _ENTRY_TYPES:
         return _refused(f"entry_type must be one of {', '.join(_ENTRY_TYPES)}")
 
+    source = (
+        str(args.get("source")) if args.get("source") in _INPUT_SOURCES else "text"
+    )
+    wrong_attachment = _attachment_refusal(source, entry_type)
+    if wrong_attachment:
+        LOGGER.info(
+            "ted_attachment_refused user_key=%s source=%s type=%s",
+            user_key,
+            source,
+            entry_type,
+        )
+        return _refused(wrong_attachment)
+
     body: dict[str, Any] = {
         "localDate": str(args.get("local_date") or _today()),
         "entryType": entry_type,
-        "source": (
-            str(args.get("source")) if args.get("source") in _INPUT_SOURCES else "text"
-        ),
+        "source": source,
         "occurredAt": int(time.time() * 1000),
     }
     for key in ("note", "commitment_id", "state", "corrects_dedupe_key"):
@@ -1695,6 +2037,14 @@ def _log_daily_entry(
             "fiberGrams": float(meal.get("fiber_grams") or 0),
         }
 
+    # Milestone 10. `today` is what makes a named date checkable at all; the
+    # two flags are how the model says the question has been asked and
+    # answered. Both are read strictly — anything other than a real True is a
+    # no, so a hallucinated flag cannot wave a write through.
+    body["today"] = _today()
+    body["dateConfirmed"] = args.get("date_confirmed") is True
+    body["secondOneConfirmed"] = args.get("second_one_confirmed") is True
+
     message_id = _turn_message_id(session_id or task_id)
     if message_id:
         body["externalMessageId"] = message_id
@@ -1702,6 +2052,9 @@ def _log_daily_entry(
     result = _convex_write(
         "log", user_key, session_id or task_id, body=body
     )
+    pending = result.get("needsConfirmation")
+    if pending:
+        return json.dumps(_confirmation_needed(pending, result), ensure_ascii=False)
     if result.get("success"):
         LOGGER.info(
             "ted_entry_logged user_key=%s type=%s duplicate=%s",

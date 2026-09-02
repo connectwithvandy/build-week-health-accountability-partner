@@ -83,6 +83,11 @@ export default defineSchema({
     quietHoursStart: v.string(),
     quietHoursEnd: v.string(),
     pausedUntil: v.optional(timestamp),
+    // Milestone 12 — what makes the per-day cap countable rather than a hope.
+    // Optional so rows written before this existed still validate; a missing
+    // pair reads as "nothing sent yet today".
+    sentLocalDate: v.optional(v.string()),
+    sentCount: v.optional(v.number()),
     items: v.array(
       v.object({
         reminderId: v.string(),
@@ -95,6 +100,24 @@ export default defineSchema({
     createdAt: timestamp,
     updatedAt: timestamp,
   }).index("by_user", ["userId"]),
+
+  // Milestone 11 — "that reply was wrong". Stored as its own table rather than
+  // a userFact so the reported turn survives verbatim and can be read back
+  // whole. Written by the gate, never by the model: a bad reply is exactly the
+  // situation where the model's account of itself cannot be trusted.
+  reportedReplies: defineTable({
+    userId: v.id("users"),
+    localDate: v.string(),
+    reportedAt: timestamp,
+    // The turn being complained about.
+    userMessage: v.string(),
+    assistantMessage: v.string(),
+    // Anything the user said beyond the trigger phrase.
+    note: v.optional(v.string()),
+    reviewedAt: v.optional(timestamp),
+  })
+    .index("by_user", ["userId"])
+    .index("by_reported_at", ["reportedAt"]),
 
   dailyEntries: defineTable({
     userId: v.id("users"),

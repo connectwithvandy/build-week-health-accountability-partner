@@ -264,3 +264,181 @@ export function summariseDay(
 
   return summary;
 }
+
+// ---------------------------------------------------------------------------
+// Milestone 10 — near-duplicates and dates that are not today.
+//
+// buildDedupeKey above collapses an exact re-delivery: the same message id, or
+// byte-identical content at the same instant. It cannot catch the case a
+// tester actually hits — telling Ted about the same lunch twice, in different
+// words, twenty minutes apart. That is not a re-delivery and it is not
+// obviously a second meal either, so the only honest answer is to ask.
+
+/** How long after a meal another meal is more likely a repeat than a second one. */
+export const SAME_MEAL_WINDOW_MINUTES = 120;
+
+/** Same for a workout — two gym sessions inside two hours is worth querying. */
+export const SAME_WORKOUT_WINDOW_MINUTES = 120;
+
+export type ClashCandidate = {
+  entryType: DailyEntryType;
+  state: (typeof dailyEntryStates)[number];
+  occurredAt: number;
+  dedupeKey: string;
+  meal?: MealDetail | null;
+  commitmentId?: string | null;
+};
+
+/**
+ * The already-logged entry a new one probably repeats, or null.
+ *
+ * Deliberately narrow. Water, steps and anything the user is plainly
+ * accumulating are never flagged: a second glass of water is a second glass of
+ * water, and `summariseDay` already treats steps as a running total rather
+ * than an increment. Flagging those would train the user to ignore the
+ * question, which costs more than the duplicate row it saves.
+ *
+ * Only `confirmed` entries can clash. A `corrected` row has already been
+ * superseded, and a `pendingClarification` row is itself an open question.
+ */
+export function findClashingEntry(
+  existing: readonly ClashCandidate[],
+  candidate: Pick<ClashCandidate, "entryType" | "occurredAt" | "commitmentId">,
+): ClashCandidate | null {
+  const confirmed = existing.filter((entry) => entry.state === "confirmed");
+
+  if (candidate.entryType === "commitment") {
+    // A commitment is a named thing done once a day. The same one twice is a
+    // repeat regardless of how many hours apart, so there is no window here.
+    if (!candidate.commitmentId) return null;
+    return (
+      confirmed.find(
+        (entry) =>
+          entry.entryType === "commitment" &&
+          entry.commitmentId === candidate.commitmentId,
+      ) ?? null
+    );
+  }
+
+  const windowMinutes =
+    candidate.entryType === "meal"
+      ? SAME_MEAL_WINDOW_MINUTES
+      : candidate.entryType === "workout"
+        ? SAME_WORKOUT_WINDOW_MINUTES
+        : 0;
+  if (windowMinutes === 0) return null;
+
+  const windowMs = windowMinutes * 60 * 1000;
+  const inWindow = confirmed.filter(
+    (entry) =>
+      entry.entryType === candidate.entryType &&
+      Math.abs(entry.occurredAt - candidate.occurredAt) <= windowMs,
+  );
+  if (inWindow.length === 0) return null;
+
+  // The nearest in time is the one worth naming back to the user.
+  return inWindow.reduce((nearest, entry) =>
+    Math.abs(entry.occurredAt - candidate.occurredAt) <
+    Math.abs(nearest.occurredAt - candidate.occurredAt)
+      ? entry
+      : nearest,
+  );
+}
+
+/**
+ * Whether a log needs the date said out loud before it is written.
+ *
+ * "I had dal yesterday" is easy to mishear, and a meal written to the wrong day
+ * quietly corrupts two daily reviews. Anything that is not the user's today
+ * has to be confirmed once, explicitly.
+ */
+export function needsDateConfirmation(
+  localDate: string,
+  today: string,
+  confirmed: boolean,
+): boolean {
+  if (confirmed) return false;
+  if (!isLocalDateKey(localDate) || !isLocalDateKey(today)) return false;
+  return localDate !== today;
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 12 — quiet hours, pause/resume, and the per-day reminder cap.
+//
+// These were prompt instructions with nothing behind them. Worse, reminders
+// are delivered by Hermes cron jobs, which run with platform "cron" — so the
+// WhatsApp safety gates never saw them at all and no instruction was being
+// checked by anything. The decision is made here, as one pure function, so the
+// answer is the same wherever it is asked from.
+
+export type ReminderPolicy = {
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  maxPerDay: number;
+  pausedUntil?: number | null;
+  sentLocalDate?: string | null;
+  sentCount?: number | null;
+};
+
+export type ReminderDecision = {
+  allowed: boolean;
+  reason: "ok" | "quietHours" | "paused" | "dailyCap" | "noPolicy";
+};
+
+/**
+ * Whether HH:MM falls inside the quiet window.
+ *
+ * The window normally wraps midnight (22:00 → 07:00), which is exactly the
+ * case a naive start <= now < end comparison gets wrong, so it is handled
+ * explicitly. Start equal to end means no quiet hours at all rather than a
+ * 24-hour blackout — the safer reading of an unset pair.
+ */
+export function isWithinQuietHours(
+  nowLocalTime: string,
+  start: string,
+  end: string,
+): boolean {
+  if (!isLocalTimeKey(nowLocalTime) || !isLocalTimeKey(start) || !isLocalTimeKey(end)) {
+    return false;
+  }
+  if (start === end) return false;
+  if (start < end) return nowLocalTime >= start && nowLocalTime < end;
+  // Wraps midnight: late evening OR early morning.
+  return nowLocalTime >= start || nowLocalTime < end;
+}
+
+/** Whether reminders are paused at this instant. */
+export function isPaused(now: number, pausedUntil?: number | null): boolean {
+  return typeof pausedUntil === "number" && pausedUntil > now;
+}
+
+/**
+ * May this reminder go out right now?
+ *
+ * Order matters for the answer the user gets back: an explicit pause is a
+ * thing they chose and should be reported as such, ahead of quiet hours, which
+ * is a standing setting, ahead of the cap, which is a limit they may not know
+ * about.
+ */
+export function decideReminderDelivery(
+  policy: ReminderPolicy | null,
+  nowLocalTime: string,
+  today: string,
+  now: number,
+): ReminderDecision {
+  // No row means the user never set anything up. Nothing scheduled, nothing
+  // to send — refuse rather than invent a default that pings someone at 3am.
+  if (!policy) return { allowed: false, reason: "noPolicy" };
+
+  if (isPaused(now, policy.pausedUntil)) {
+    return { allowed: false, reason: "paused" };
+  }
+  if (isWithinQuietHours(nowLocalTime, policy.quietHoursStart, policy.quietHoursEnd)) {
+    return { allowed: false, reason: "quietHours" };
+  }
+  const sentToday = policy.sentLocalDate === today ? (policy.sentCount ?? 0) : 0;
+  if (sentToday >= policy.maxPerDay) {
+    return { allowed: false, reason: "dailyCap" };
+  }
+  return { allowed: true, reason: "ok" };
+}
