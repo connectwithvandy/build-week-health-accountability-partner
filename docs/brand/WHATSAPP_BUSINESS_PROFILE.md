@@ -101,7 +101,7 @@ and silence from a health coach reads as being ignored.
 **A** — 92 characters
 
 ```
-i'm quiet right now, but nothing's lost — send it anyway and i'll pick it up when i'm back 🤬
+i'm quiet right now, but nothing's lost — send it anyway and i'll pick it up when i'm back 🤐
 ```
 
 **B** — 89 characters

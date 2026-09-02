@@ -6,12 +6,31 @@ export const metadata: Metadata = {
   description: "What Ted stores, who can see it, how long it is kept, and how to delete it.",
 };
 
+/** The landing page's Ted mark, redrawn here so /privacy opens with the same
+ *  logo rather than a wordmark from the design it replaced. */
+function TedLogo() {
+  return (
+    <span className="ted-logo">
+      <svg className="bubble" viewBox="4 2 44 45" aria-hidden="true">
+        <rect x="4" y="2" width="44" height="34" rx="10" fill="#ff7e3e" />
+        <path d="M13 34 L7 47 L24 35 Z" fill="#ff7e3e" />
+        <g fill="none" stroke="#111317" strokeWidth="2.9" strokeLinecap="round">
+          <path d="M15 16 Q19 9.5 23 16" />
+          <path d="M29 16 Q33 9.5 37 16" />
+          <path d="M17 22 Q26 32 35 22" />
+        </g>
+      </svg>
+      <span className="wm"><b>t</b><b>e</b><b>d</b></span>
+    </span>
+  );
+}
+
 export default function PrivacyPage() {
   return (
     <main className="privacy-page">
       <header className="privacy-header page-shell">
-        <Link className="brand" href="/" aria-label="Ted home">Ted<span className="brand-dot" aria-hidden="true">.</span></Link>
-        <Link className="privacy-back" href="/">Back to Ted</Link>
+        <Link className="brand" href="/" aria-label="Ted home"><TedLogo /></Link>
+        <Link className="privacy-back" href="/">Back to Ted <span aria-hidden="true">→</span></Link>
       </header>
 
       <article className="privacy-copy page-shell">
@@ -48,6 +67,12 @@ export default function PrivacyPage() {
 
         <p className="privacy-boundary">Ted is a habit coach, not a doctor. Do not use it for emergencies, diagnosis, or treatment.</p>
       </article>
+
+      <footer className="privacy-footer page-shell">
+        <span>© 2026 Ted</span>
+        <span>A habit coach, not medical advice — not for emergencies, diagnosis or treatment</span>
+        <Link href="/">heyted.vercel.app</Link>
+      </footer>
     </main>
   );
 }

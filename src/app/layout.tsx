@@ -1,22 +1,29 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, Manrope, Space_Grotesk } from "next/font/google";
+import { Baloo_2, Fraunces, Outfit } from "next/font/google";
 import "./globals.css";
 import { ConvexClientProvider } from "./ConvexClientProvider";
 
-const display = Space_Grotesk({
+/**
+ * The same three faces the landing page uses. The landing page is a static file
+ * that pulls them from Google's CDN; here they are self-hosted by next/font, so
+ * /privacy has no third-party font request and no layout shift.
+ */
+const display = Fraunces({
   variable: "--font-display",
   subsets: ["latin"],
+  style: ["normal", "italic"],
 });
 
-const body = Manrope({
+const body = Outfit({
   variable: "--font-body",
   subsets: ["latin"],
 });
 
-const utility = IBM_Plex_Mono({
-  variable: "--font-utility",
-  weight: ["500", "700"],
+// the Ted wordmark only — the three letters in the logo, nothing else
+const wordmark = Baloo_2({
+  variable: "--font-wordmark",
   subsets: ["latin"],
+  weight: ["800"],
 });
 
 export const metadata: Metadata = {
@@ -26,7 +33,9 @@ export const metadata: Metadata = {
   // Private beta: the waitlist is exactly the people Vandy has messaged, so
   // being findable in search is a liability, not a win. robots.ts asks
   // crawlers not to fetch; this asks them not to index anything they fetched
-  // anyway. Remove both together when the beta opens.
+  // anyway. The landing page carries its own copy of this, because it is a
+  // static file that this metadata cannot reach. Remove all three together
+  // when the beta opens.
   robots: { index: false, follow: false },
 };
 
@@ -34,7 +43,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${display.variable} ${body.variable} ${utility.variable} h-full antialiased`}
+      className={`${display.variable} ${body.variable} ${wordmark.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
         <ConvexClientProvider>{children}</ConvexClientProvider>
