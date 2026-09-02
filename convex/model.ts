@@ -382,8 +382,14 @@ export type ReminderPolicy = {
 
 export type ReminderDecision = {
   allowed: boolean;
-  reason: "ok" | "quietHours" | "paused" | "dailyCap" | "noPolicy";
+  reason: "ok" | "quietHours" | "paused" | "dailyCap";
 };
+
+// The same values setReminder writes when it creates a row, so a user who has
+// never set anything gets the behaviour they would have got by default rather
+// than a different one.
+export const DEFAULT_QUIET_HOURS_START = "22:00";
+export const DEFAULT_QUIET_HOURS_END = "07:00";
 
 /**
  * Whether HH:MM falls inside the quiet window.
@@ -426,9 +432,25 @@ export function decideReminderDelivery(
   today: string,
   now: number,
 ): ReminderDecision {
-  // No row means the user never set anything up. Nothing scheduled, nothing
-  // to send — refuse rather than invent a default that pings someone at 3am.
-  if (!policy) return { allowed: false, reason: "noPolicy" };
+  // No row means the user has never set reminder preferences — which is not
+  // the same as having no reminders. Vandy's five vitamin pings are Hermes
+  // cron jobs created directly, with nothing in this table, and refusing on a
+  // missing row silently killed every one of them.
+  //
+  // SCOPING #21: "The number of reminders depends on the user's preferences."
+  // There is no system cap to fall back on, so absent a preference there is no
+  // cap — inventing one drops reminders the user set up themselves. Quiet
+  // hours still apply, from the defaults above, because 3am is 3am whether or
+  // not anyone has saved a row.
+  if (!policy) {
+    return isWithinQuietHours(
+      nowLocalTime,
+      DEFAULT_QUIET_HOURS_START,
+      DEFAULT_QUIET_HOURS_END,
+    )
+      ? { allowed: false, reason: "quietHours" }
+      : { allowed: true, reason: "ok" };
+  }
 
   if (isPaused(now, policy.pausedUntil)) {
     return { allowed: false, reason: "paused" };

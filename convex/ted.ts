@@ -741,13 +741,19 @@ export const gateReminderDelivery = internalMutation({
       return { success: true, ...decision, sentToday: 0 };
     }
 
+    // No row to count into: the user has no stored preferences, so there is no
+    // cap to enforce and nothing to increment. Cleared on quiet hours alone.
+    if (!policy) {
+      return { success: true, ...decision, sentToday: 0 };
+    }
+
     const sentToday =
-      (policy!.sentLocalDate === args.today ? (policy!.sentCount ?? 0) : 0) + 1;
-    await ctx.db.patch(policy!._id, {
+      (policy.sentLocalDate === args.today ? (policy.sentCount ?? 0) : 0) + 1;
+    await ctx.db.patch(policy._id, {
       sentLocalDate: args.today,
       sentCount: sentToday,
       updatedAt: now,
     });
-    return { success: true, ...decision, sentToday, maxPerDay: policy!.maxPerDay };
+    return { success: true, ...decision, sentToday, maxPerDay: policy.maxPerDay };
   },
 });

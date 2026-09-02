@@ -1956,7 +1956,7 @@ class CronReminderGateTest(unittest.TestCase):
                 )
 
     def test_the_cap_and_a_pause_suppress_it_too(self) -> None:
-        for reason in ("dailyCap", "paused", "noPolicy"):
+        for reason in ("dailyCap", "paused"):
             with self.subTest(reason=reason):
                 with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
                     with patch.object(
@@ -1973,22 +1973,46 @@ class CronReminderGateTest(unittest.TestCase):
                             gates.CRON_SILENT,
                         )
 
-    def test_an_unreadable_policy_stays_silent_rather_than_pinging(self) -> None:
-        """A reminder is an interruption Ted chose; silence is the safe failure."""
-        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
-            with patch.object(
-                gates,
-                "_convex_request",
-                return_value={"success": False, "error": "unavailable"},
-            ):
-                self.assertEqual(
-                    _transform_live_response(
-                        platform="cron",
-                        session_id=self.SESSION,
-                        response_text="coq10 time",
-                    ),
-                    gates.CRON_SILENT,
-                )
+    def test_an_unreadable_policy_falls_back_to_default_quiet_hours(self) -> None:
+        """A Convex blip must not silently kill reminders the user set up.
+
+        Blanket suppression looked like the safe failure until it was pointed
+        at a real account: the five live vitamin reminders have no row in the
+        reminders table at all, so "no policy" and "policy unreadable" both
+        meant "send nothing", with nothing anywhere to say why.
+        """
+        outage = {"success": False, "error": "unavailable"}
+
+        def reply_at(clock: str) -> str | None:
+            with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+                with patch.object(gates, "_convex_request", return_value=outage):
+                    with patch.object(gates.time, "strftime", lambda *_: clock):
+                        return _transform_live_response(
+                            platform="cron",
+                            session_id=self.SESSION,
+                            response_text="coq10 time",
+                        )
+
+        # Daytime: the ping the user asked for still arrives.
+        for clock in ("08:45", "10:30", "16:00", "21:59"):
+            with self.subTest(clock=clock):
+                self.assertIsNone(reply_at(clock))
+        # Night: 3am is still 3am when the database is down.
+        for clock in ("22:00", "23:30", "03:00", "06:59"):
+            with self.subTest(clock=clock):
+                self.assertEqual(reply_at(clock), gates.CRON_SILENT)
+
+    def test_the_python_fallback_matches_the_backend_defaults(self) -> None:
+        """Two copies of the same quiet hours, in different languages."""
+        model = (
+            Path(__file__).resolve().parent.parent / "convex" / "model.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            f'DEFAULT_QUIET_HOURS_START = "{gates.DEFAULT_QUIET_HOURS_START}"', model
+        )
+        self.assertIn(
+            f'DEFAULT_QUIET_HOURS_END = "{gates.DEFAULT_QUIET_HOURS_END}"', model
+        )
 
     def test_an_allowed_reminder_goes_out_unchanged(self) -> None:
         with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):

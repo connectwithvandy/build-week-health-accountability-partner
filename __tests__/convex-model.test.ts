@@ -415,11 +415,38 @@ describe("Reminder delivery decision (milestone 12)", () => {
     ).toBe(true);
   });
 
-  it("sends nothing when the user has no reminder settings at all", () => {
+  it("still sends when the user has no stored settings at all", () => {
+    // The five live vitamin reminders are Hermes cron jobs with no row in this
+    // table. Refusing on a missing row silently killed every one of them, and
+    // SCOPING #21 puts the number of reminders down to the user's preferences
+    // — so absent a preference there is no cap to apply.
     expect(decideReminderDelivery(null, "09:00", "2026-09-02", now)).toEqual({
-      allowed: false,
-      reason: "noPolicy",
+      allowed: true,
+      reason: "ok",
     });
+  });
+
+  it("still applies default quiet hours with no stored settings", () => {
+    for (const clock of ["22:00", "23:30", "03:00", "06:59"]) {
+      expect(decideReminderDelivery(null, clock, "2026-09-02", now)).toEqual({
+        allowed: false,
+        reason: "quietHours",
+      });
+    }
+    for (const clock of ["07:00", "08:45", "16:00", "21:59"]) {
+      expect(decideReminderDelivery(null, clock, "2026-09-02", now).allowed).toBe(
+        true,
+      );
+    }
+  });
+
+  it("never caps a user who has not asked for a cap", () => {
+    // Ten pings on a day with no stored preferences must all be allowed.
+    for (let i = 0; i < 10; i += 1) {
+      expect(decideReminderDelivery(null, "09:00", "2026-09-02", now).allowed).toBe(
+        true,
+      );
+    }
   });
 
   it("treats a missing count as nothing sent yet", () => {

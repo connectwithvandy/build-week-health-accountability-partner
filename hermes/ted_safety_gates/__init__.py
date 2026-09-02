@@ -1736,6 +1736,12 @@ _CRON_SESSION = re.compile(r"^cron_([0-9a-zA-Z]+)_\d{8}_\d{6}$")
 # cron/scheduler.py drops a response that is exactly this token.
 CRON_SILENT = "[SILENT]"
 
+# Mirrors DEFAULT_QUIET_HOURS_* in convex/model.ts. Used only when the stored
+# policy cannot be read, so a database blip degrades to the documented default
+# rather than to silence.
+DEFAULT_QUIET_HOURS_START = "22:00"
+DEFAULT_QUIET_HOURS_END = "07:00"
+
 
 def _cron_job_id(session_id: str) -> str | None:
     match = _CRON_SESSION.match(session_id or "")
@@ -1774,15 +1780,20 @@ def _reminder_allowed(user_key: str) -> tuple[bool, str]:
         body={"nowLocalTime": time.strftime("%H:%M"), "today": _today()},
     )
     if not result.get("success"):
-        # The policy is unreadable. A reminder is an interruption Ted chose to
-        # send, not something the user is waiting on, so silence is the safe
-        # failure — unlike a reply, where saying nothing strands them.
+        # The stored policy is unreadable. Blanket suppression here would mean
+        # a Convex blip silently kills reminders the user set up and is
+        # expecting, with nothing anywhere to say why. Fall back to the same
+        # default quiet hours the backend would have applied: 3am is still 3am
+        # when the database is down, and a daytime ping the user asked for
+        # should still arrive.
         LOGGER.warning(
-            "ted_reminder_gate_unavailable user_key=%s error=%s",
+            "ted_reminder_gate_unavailable user_key=%s error=%s falling_back=quiet_hours",
             user_key,
             result.get("error"),
         )
-        return False, "unavailable"
+        now = time.strftime("%H:%M")
+        quiet = now >= DEFAULT_QUIET_HOURS_START or now < DEFAULT_QUIET_HOURS_END
+        return (not quiet), ("quietHours" if quiet else "defaultsOnly")
     reason = str(result.get("reason") or "unknown")
     return bool(result.get("allowed")), reason
 
