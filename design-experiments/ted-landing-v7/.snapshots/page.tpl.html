@@ -1,0 +1,739 @@
+<meta charset="utf-8">
+<title>Ted on WhatsApp</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@800&family=Caveat:wght@600;700&family=Fraunces:opsz,wght@9..144,900&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Ted landing — v5 editorial.
+   Rhythm: sections are laid out by one flex gap, so every gap is identical by construction.
+   Type: the fat serif is display-only (36px+). Everything under that is the sans.
+   Orange: CTAs and the logo. Nowhere else.
+   Copy: heyted.vercel.app. Chat: real threads, from hermes/SOUL.md and a live WhatsApp log. */
+:root{
+  /* ground — one block restyles the whole page. --ink is *text*; the dark
+     slabs (chat header, privacy block) use --panel so a dark ground can flip. */
+__GROUND__
+  --orange:#ff7e3e; --orange-dk:#d95c17;
+  --display:Fraunces,Georgia,serif;
+  --body:Outfit,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --gap:150px; --r:10px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);
+     font-size:17px;font-weight:400;line-height:1.6;-webkit-font-smoothing:antialiased;
+     overflow-x:hidden;position:relative}
+/* a warm glow behind the top of the page — paper under a lamp, not a fill */
+body::before{content:"";position:absolute;inset:0 0 auto;height:1400px;pointer-events:none;z-index:0;
+             background:radial-gradient(120% 60% at 68% -8%,var(--glow),transparent 70%)}
+/* film grain over everything, at the threshold of visibility */
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:9999;opacity:.055;
+            background-image:url("__GRAIN__");background-size:200px 200px}
+main,nav,footer{position:relative;z-index:1}
+@media(prefers-reduced-motion:reduce){body::after{opacity:.035}}
+
+/* ── full-bleed acts ─────────────────────────────────────────────────── */
+.band{margin-block:calc(34px - var(--gap));padding:104px 0;position:relative}
+.band.deep{background:var(--deep);color:var(--deep-fg)}
+.band.deep h2,.band.deep h3{color:var(--deep-fg)}
+.band.deep .lede,.band.deep p{color:var(--deep-fg-2)}
+.band.deep .eyebrow{color:var(--orange)}
+.band.deep .script{color:var(--orange)}
+.band.deep .list div{border-top-color:var(--deep-line)}
+.band.deep .list{border-bottom-color:var(--deep-line)}
+.band.deep .list q{color:var(--deep-fg)}
+.band.deep .fmt-stage{border-color:var(--deep-line)}
+.band.warm{background:var(--orange);color:#16130f}
+.band.warm h2,.band.warm .eyebrow,.band.warm .fineprint{color:#16130f}
+.band.warm .eyebrow{opacity:.62}
+.band.warm .fineprint{opacity:.7}
+.band.warm .btn{background:#16130f;color:var(--orange)}
+.band.warm .btn:hover{background:#fff;color:#16130f}
+a{color:inherit;text-decoration:none}
+img{max-width:100%}
+:focus-visible{outline:3px solid var(--orange);outline-offset:3px;border-radius:4px}
+.shell{width:min(1060px,calc(100% - 88px));margin-inline:auto}
+@media(max-width:700px){.shell{width:calc(100% - 40px)}}
+
+/* one flex column drives every section gap */
+main{display:flex;flex-direction:column;gap:var(--gap);padding-bottom:var(--gap)}
+
+h1,h2{font-family:var(--display);font-weight:900;letter-spacing:-.032em;line-height:1;margin:0;
+      text-wrap:balance}
+h1{font-size:clamp(3rem,6.6vw,4.6rem)}
+h2{font-size:clamp(1.85rem,3vw,2.3rem)}
+h2.loud{font-size:clamp(2.7rem,5.4vw,3.9rem)}
+h1 em,h2 em{font-style:italic;font-weight:900}
+/* sub-heads are sans — the fat serif goes muddy under ~32px */
+h3{font-family:var(--body);font-weight:800;font-size:1.02rem;line-height:1.3;letter-spacing:-.005em;margin:0}
+p{margin:0}
+.lede{font-size:1.05rem;line-height:1.62;color:var(--ink-2);max-width:54ch}
+.eyebrow{display:block;font-size:.72rem;font-weight:800;letter-spacing:.17em;text-transform:uppercase;
+         color:var(--orange-dk);margin-bottom:20px}
+
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 30px;border-radius:var(--r);
+     background:var(--orange);color:var(--ink);font-size:1rem;font-weight:800;
+     transition:background .2s,transform .2s,color .2s}
+.btn:hover{background:var(--orange-dk);color:var(--white);transform:translateY(-2px)}
+.btn::after{content:"→";display:inline-block;transition:transform .25s;font-weight:700}
+.btn:hover::after{transform:translateX(4px)}
+.btn.ghost::after{content:none}
+.btn.ghost{background:transparent;border:1.5px solid var(--ink);padding:12.5px 26px}
+.btn.ghost:hover{background:var(--ink);color:var(--paper);transform:none}
+.fineprint{display:block;margin-top:14px;font-size:.85rem;color:var(--muted)}
+
+.rv{opacity:1;transform:none;
+    transition:opacity .55s cubic-bezier(.2,.7,.3,1),transform .55s cubic-bezier(.2,.7,.3,1)}
+.rv.armed{opacity:0;transform:translateY(18px)}
+.rv.armed.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.rv,.rv.armed{opacity:1;transform:none;transition:none}}
+
+/* ── logo ───────────────────────────────────────────────────────────────
+   The svg viewBox is cropped to the artwork, so the box edge IS the ink
+   edge and `gap` is the real optical gap. The bubble body (not the box,
+   which includes the tail) is centred on the wordmark by nudging down
+   half the tail's height. Letter rotation steals advance width, so each
+   letter pays it back in margin. */
+.ted-logo{display:inline-flex;align-items:center;gap:4px;line-height:1}
+.ted-logo .bubble{width:36px;height:37px;flex:0 0 auto;margin-top:5px;
+                  transition:transform .3s cubic-bezier(.2,.7,.3,1);transform-origin:60% 45%}
+.brand:hover .bubble{transform:rotate(-8deg) scale(1.06)}
+.ted-logo .wm{display:inline-flex;font-family:"Baloo 2",var(--body);font-weight:800;
+              font-size:2.2rem;letter-spacing:-.045em;color:var(--ink)}
+.ted-logo .wm b{display:inline-block;font-weight:800}
+.ted-logo .wm b:nth-child(1){transform:rotate(-5deg);margin-right:.045em}
+.ted-logo .wm b:nth-child(2){transform:rotate(4deg) translateY(1px);margin-right:.055em}
+.ted-logo .wm b:nth-child(3){transform:rotate(-3deg)}
+.ted-logo.sm .bubble{width:27px;height:28px;margin-top:4px}
+.ted-logo.sm .wm{font-size:1.6rem}
+
+/* nav — its CTA stays out of the way until the hero one has gone by */
+.nav{position:sticky;top:0;z-index:60;background:var(--paper);
+     border-bottom:1px solid transparent;transition:border-color .25s}
+.nav.stuck{border-bottom-color:var(--line)}
+.nav-in{display:flex;align-items:center;gap:34px;height:84px}
+.nav-links{display:flex;gap:30px;margin-left:20px}
+.nav-links a{font-size:.95rem;font-weight:600;color:var(--ink-2)}
+.nav-links a:hover{color:var(--ink)}
+.nav-cta{margin-left:auto;opacity:0;pointer-events:none;transition:opacity .3s}
+.nav.stuck .nav-cta{opacity:1;pointer-events:auto}
+
+/* hero */
+.hero{padding-top:26px}
+.hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,372px);
+           gap:76px;align-items:center}
+.hero .lede{margin-top:24px;max-width:36ch;font-size:1.14rem}
+.hero-actions{margin-top:34px}
+
+/* ── the chat: a flat card, not a half-drawn phone ─────────────────────── */
+.chat{border:1px solid var(--line);border-radius:18px;overflow:hidden;background:var(--wa);
+      box-shadow:0 18px 44px var(--shadow)}
+.chat svg{flex:0 0 auto}
+.ios-bar{display:flex;align-items:center;justify-content:space-between;
+         padding:7px 17px 2px;background:var(--panel);color:var(--panel-fg);
+         font-size:.66rem;font-weight:700;letter-spacing:.01em}
+.ios-bar .r{display:flex;align-items:center;gap:5px}
+.ios-bar svg{height:9px;width:auto;display:block}
+.wa-bar .badge{font-size:.68rem;font-weight:700;margin:0 3px 0 -3px;opacity:.85}
+.jump{position:absolute;right:12px;bottom:12px;width:31px;height:31px;border-radius:50%;
+      background:var(--white);border:1px solid var(--hair);display:flex;align-items:center;
+      justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.16);color:var(--ink-2)}
+.jump svg{width:14px;height:14px}
+.thread-wrap{position:relative}
+.wa-bar{display:flex;align-items:center;gap:9px;padding:9px 13px 11px;background:var(--panel);color:var(--panel-fg)}
+.wa-bar .chev{width:9px;height:16px;opacity:.85;margin-right:1px}
+.wa-bar .ava{width:36px;height:36px;border-radius:50%;background:var(--white);display:flex;
+             align-items:center;justify-content:center;overflow:hidden;flex:0 0 auto}
+.wa-bar .ava svg{width:24px;height:24px;margin:0}
+.wa-bar .who{min-width:0}
+.wa-acts{margin-left:auto;display:flex;align-items:center;gap:17px;opacity:.82}
+.wa-acts svg{width:19px;height:19px}
+.wa-bar b{font-size:.95rem;font-weight:700;letter-spacing:-.01em}
+.wa-bar span{display:block;font-size:.72rem;opacity:.62}
+.wa-bar span i{font-style:normal}
+.wa-bar .on{width:6px;height:6px;border-radius:50%;background:#5ec26a;display:inline-block;
+              vertical-align:middle;margin-right:4px}
+.thread{padding:16px 14px;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;
+        overflow:hidden;background-color:var(--wa);
+        background-image:url("__WAPATTERN__");background-size:250px 250px}
+.msg{flex:0 0 auto}
+/* typing indicator */
+.msg.typing{padding:12px 13px 11px}
+.dots{display:flex;align-items:center;gap:4px}
+.dots i{width:6px;height:6px;border-radius:50%;background:var(--muted)}
+.dots i{animation:blink 1.25s ease-in-out infinite}
+.dots i:nth-child(2){animation-delay:.16s}
+.dots i:nth-child(3){animation-delay:.32s}
+@keyframes blink{0%,62%,100%{opacity:.3;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
+/* delivered ticks, like the real thing */
+.wa-bar .on{animation:breathe 2.6s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.82)}}
+@media(prefers-reduced-motion:reduce){
+  .dots i,.wa-bar .on{animation:none}
+  .thread{justify-content:flex-start;height:auto!important}
+}
+.msg{position:relative;max-width:88%;padding:8px 11px 6px;border-radius:14px;font-size:.855rem;
+     line-height:1.46;box-shadow:0 1px 1px rgba(0,0,0,.07)}
+.msg.them{align-self:flex-start;background:var(--white);border-top-left-radius:4px}
+.msg.me{align-self:flex-end;background:var(--me);color:var(--me-fg);border-top-right-radius:4px}
+.msg.them::after,.msg.me::after{content:"";position:absolute;top:0;width:9px;height:13px}
+.msg.them::after{left:-7px;background:var(--white);clip-path:polygon(100% 0,100% 100%,0 0)}
+.msg.me::after{right:-7px;background:var(--me);clip-path:polygon(0 0,0 100%,100% 0)}
+.msg time{float:right;margin:5px -2px -2px 11px;font-size:.63rem;line-height:1;
+           color:var(--stamp);white-space:nowrap}
+.msg.me time::after{content:"✓✓";margin-left:3px;color:#53a6dd;letter-spacing:-1.5px}
+/* on a photo the stamp sits on the image under a scrim, as it really does */
+.msg.has-photo{position:relative}
+.msg.has-photo time{position:absolute;float:none;right:12px;bottom:11px;margin:0;
+                    color:#fff;text-shadow:0 1px 4px rgba(0,0,0,.75)}
+.msg .emo,.list q .emo{margin:0 .1em;font-style:normal}
+.msg .meta{display:block;margin-top:8px;padding-top:8px;border-top:1px solid var(--hair);
+           font-size:.78rem;line-height:1.5;color:var(--ink-2)}
+.msg.has-photo{padding:4px 4px 5px;width:214px}
+.msg .photo img{display:block;width:100%;height:162px;object-fit:cover;object-position:50% 46%;
+                border-radius:11px}
+.wa-input{display:flex;align-items:center;gap:11px;padding:9px 12px;background:var(--wa-bar2);
+          border-top:1px solid var(--hair);color:var(--muted)}
+.wa-input svg{width:19px;height:19px}
+.wa-input .field{flex:1;min-width:0;height:31px;padding:0 12px;border-radius:16px;
+                 background:var(--white);border:1px solid var(--hair);display:flex;align-items:center;
+                 justify-content:flex-start;overflow:hidden;white-space:nowrap;
+                 font-size:.82rem;color:var(--muted)}
+.wa-input .field.typing{justify-content:flex-end;color:var(--ink)}
+.wa-input .field .caret{display:inline-block;width:1.5px;height:14px;background:var(--orange);
+                        margin-left:2px;animation:caret 1.05s step-end infinite;flex:0 0 auto}
+@keyframes caret{0%,49%{opacity:1}50%,100%{opacity:0}}
+.wa-input .acts{display:flex;align-items:center;gap:13px;opacity:.85}
+@media(prefers-reduced-motion:reduce){.wa-input .field .caret{animation:none}}
+
+.msg.voice{display:flex;align-items:center;gap:10px;width:236px;padding:9px 11px 8px}
+.msg.voice .play{width:0;height:0;border-left:11px solid var(--ink-2);
+                 border-top:7px solid transparent;border-bottom:7px solid transparent;flex:0 0 auto}
+.msg.voice .wave{flex:1;display:flex;align-items:center;justify-content:space-between;height:21px}
+.msg.voice .wave i{width:2.5px;flex:0 0 auto;min-height:3px;background:var(--ink-2);
+                   opacity:.34;border-radius:2px}
+.msg.voice .wave i.on{opacity:1;background:var(--orange-dk)}
+.msg.voice .mic{width:26px;height:26px;border-radius:50%;background:var(--orange);flex:0 0 auto;
+                display:flex;align-items:center;justify-content:center;color:#16130f}
+.msg.voice .mic svg{width:13px;height:13px}
+.msg.voice .dur{font-size:.68rem;color:var(--stamp);flex:0 0 auto}
+
+.msg.enter{animation:pop .4s cubic-bezier(.2,.8,.3,1) backwards}
+@keyframes pop{from{opacity:0;transform:translateY(9px) scale(.97)}to{opacity:1;transform:none}}
+
+/* numbered steps — numerals are sans, tracked, above the rule */
+.steps{margin-top:46px;display:grid;grid-template-columns:repeat(3,1fr);gap:0 40px}
+.steps div{padding-top:14px;border-top:2px solid var(--ink)}
+.steps em{display:block;font-style:normal;font-size:.72rem;font-weight:800;letter-spacing:.16em;
+          color:var(--orange-dk);margin-bottom:16px}
+.steps h3{margin-bottom:8px}
+.steps p{font-size:.96rem;line-height:1.55;color:var(--ink-2)}
+
+/* three ways in — text, voice, photo */
+.ways{margin-top:38px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.ways span{display:inline-flex;align-items:center;gap:9px;padding:9px 17px 9px 13px;border-radius:999px;
+           border:1px solid var(--line);background:var(--white);font-size:.9rem;font-weight:600;
+           color:var(--ink-2)}
+.ways span svg{width:15px;height:15px;flex:0 0 auto;color:var(--orange)}
+.ways b{font-size:.9rem;font-weight:600;color:var(--muted)}
+
+/* ── motion ─────────────────────────────────────────────────────────────
+   A marquee of things Ted has actually said, running under the hero. It is
+   the fastest way to show the voice, and it makes the page move on arrival. */
+.marquee{overflow:hidden;background:var(--deep);padding:26px 0 28px;
+         margin-block:calc(46px - var(--gap))}
+.marquee .row{overflow:hidden}
+.marquee .row+.row{margin-top:12px}
+.marquee .track{display:flex;width:max-content;gap:12px;will-change:transform;
+                animation:slide 62s linear infinite}
+.marquee .row.rev .track{animation-duration:74s;animation-direction:reverse}
+.marquee:hover .track{animation-play-state:paused}
+@keyframes slide{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.marquee q{quotes:none;display:inline-flex;align-items:center;white-space:nowrap;
+           padding:9px 19px;border-radius:999px;background:transparent;
+           border:1px solid var(--deep-line);font-size:.92rem;color:var(--deep-fg-2)}
+.marquee q.hot{background:var(--orange);border-color:var(--orange);color:#16130f;font-weight:700}
+.marquee .dot{display:inline-flex;align-items:center;color:var(--orange);font-size:1.05rem;opacity:.7}
+
+/* the brush-script words underline themselves when they arrive */
+.script{position:relative}
+.ul{position:absolute;left:-2%;bottom:-.1em;width:104%;height:.26em;overflow:visible}
+.ul path{fill:none;stroke:var(--orange);stroke-width:8;stroke-linecap:round;
+         stroke-dasharray:420;stroke-dashoffset:420;
+         transition:stroke-dashoffset 1.1s cubic-bezier(.4,0,.2,1) .3s}
+.rv.in .ul path,.rv:not(.armed) .ul path{stroke-dashoffset:0}
+.band.deep .ul path{stroke:var(--deep-fg)}
+
+/* the doodle arrows draw themselves too */
+.doodle path{stroke-dasharray:200;stroke-dashoffset:200;
+             animation:draw 1s cubic-bezier(.4,0,.2,1) .45s forwards}
+.doodle path:last-child{animation-delay:1.25s}
+@keyframes draw{to{stroke-dashoffset:0}}
+.doodle.a1{position:absolute;right:-6px;top:-34px;width:104px;transform:rotate(8deg)}
+.doodle.a2{width:96px;margin:0 0 -14px 6px}
+
+/* stickers land with a bounce, and wiggle when you touch them */
+.chat-wrap .sticker{animation:popS .7s cubic-bezier(.34,1.56,.64,1) both;transition:transform .25s}
+.chat-wrap .s-1{animation-delay:1s}
+.chat-wrap .s-2{animation-delay:1.25s}
+@keyframes popS{from{opacity:0;transform:rotate(-26deg) scale(.3)}}
+.chat-wrap .s-1:hover{transform:rotate(-2deg) scale(1.07)}
+.chat-wrap .s-2:hover{transform:rotate(0deg) scale(1.07)}
+
+/* the hero card breathes, so the page is never fully still */
+.hero .chat{animation:float 8s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+
+/* things lift when you point at them */
+.fmt-stage,.list div,.bubble-card{transition:transform .28s cubic-bezier(.2,.7,.3,1),
+                                             box-shadow .28s}
+.fmt:hover .fmt-stage{transform:translateY(-6px) rotate(-.6deg)}
+.list div:hover{transform:translateX(5px)}
+.bubble-card:hover{transform:translateY(-5px)}
+.steps div{transition:border-color .25s}
+.steps div:hover{border-top-color:var(--orange)}
+
+@media(prefers-reduced-motion:reduce){
+  .marquee .track{animation:none}
+  .hero .chat{animation:none}
+  .chat-wrap .sticker{animation:none}
+  .ul path{stroke-dashoffset:0;transition:none}
+  .doodle path{stroke-dashoffset:0;animation:none}
+  .fmt:hover .fmt-stage,.list div:hover,.bubble-card:hover{transform:none}
+}
+
+/* three input formats, each shown as the real message it would be */
+.formats{margin-top:52px;display:grid;grid-template-columns:repeat(3,1fr);gap:38px}
+.fmt-stage{background:var(--wa);background-image:url("__WAPATTERN__");background-size:420px 420px;
+           border:1px solid var(--line);border-radius:14px;padding:20px 16px;margin-bottom:20px;
+           height:196px;display:flex;align-items:center;justify-content:flex-end}
+.fmt-stage .msg{max-width:100%;animation:none}
+.fmt h3{margin-bottom:7px}
+.fmt p{font-size:.95rem;line-height:1.55;color:var(--ink-2)}
+@media(max-width:980px){.formats{grid-template-columns:1fr;gap:30px}}
+
+/* what Ted remembers — closed on all four sides, each with a real line of Ted */
+.list{margin-top:46px;display:grid;grid-template-columns:1fr 1fr;gap:0 40px;
+      border-bottom:1px solid var(--line)}
+.list div{padding:22px 0;border-top:1px solid var(--line)}
+.list h3{margin-bottom:6px}
+.list p{font-size:.96rem;line-height:1.55;color:var(--ink-2);max-width:40ch}
+.list q{display:block;margin-top:12px;max-width:40ch;quotes:none;
+        font-size:.9rem;line-height:1.5;color:var(--ink);
+        border-left:2px solid var(--orange);padding-left:12px}
+
+/* the nudge section — chat on the right, argument on the left */
+.split{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);gap:64px;align-items:center}
+.split.flip>*:first-child{order:2}
+.split .chat{max-width:392px}
+
+/* the review, as a message */
+.bubble-card{max-width:392px;background:var(--white);border:1px solid var(--line);
+             border-radius:14px;border-top-left-radius:4px;padding:20px 20px 15px;position:relative;
+             box-shadow:0 14px 34px var(--shadow)}
+.bubble-card .from{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+.bubble-card .from b{font-size:.86rem;font-weight:800}
+.bubble-card .from span{margin-left:auto;font-size:.72rem;color:var(--muted)}
+.wrap-line{font-size:.98rem;line-height:1.52;margin-bottom:15px}
+.stats{display:flex;flex-direction:column;margin:0}
+.stats div{display:flex;justify-content:space-between;align-items:center;gap:14px;
+           height:34px;font-size:.93rem}
+.stats div+div{border-top:1px solid var(--hair)}
+.stats dt{color:var(--ink-2)}
+.stats dd{margin:0;font-weight:700;font-variant-numeric:tabular-nums}
+.next{margin-top:14px;padding-top:13px;border-top:1px solid var(--hair);font-size:.93rem;line-height:1.5}
+.next b{display:block;font-size:.7rem;font-weight:800;letter-spacing:.13em;text-transform:uppercase;
+        color:var(--muted);margin-bottom:6px}
+.bubble-card time{display:block;margin-top:12px;font-size:.68rem;color:var(--muted);text-align:right}
+
+/* trust: a headline, one sentence, a link. not a legal page. */
+.bound{background:var(--panel);border-radius:24px;border-bottom-left-radius:6px;
+       padding:52px 54px 46px;color:var(--panel-fg);max-width:730px}
+.bound .eyebrow{color:var(--orange)}
+.bound h2{color:var(--panel-fg);max-width:13ch}
+.bound h2 em{color:var(--orange)}
+.bound p{margin-top:18px;font-size:1.02rem;line-height:1.6;color:var(--panel-fg-2);max-width:52ch}
+.bound p+p{margin-top:14px;font-size:.92rem;color:var(--panel-fg-3)}
+.bound a{margin-top:30px;display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:.95rem;
+         color:var(--panel-fg);border-bottom:1.5px solid var(--panel-fg-3);padding-bottom:3px;
+         white-space:nowrap}
+.bound a:hover{border-bottom-color:var(--panel-fg)}
+
+.final{text-align:center}
+.final h2{max-width:16ch;margin-inline:auto}
+.final .btn{margin-top:34px}
+
+footer{background:var(--paper-2);padding:56px 0 36px;border-top:1px solid var(--line)}
+.foot{display:grid;grid-template-columns:1.8fr 1fr 1fr;gap:40px}
+.foot h4{margin:0 0 14px;font-size:.72rem;font-weight:800;letter-spacing:.14em;
+         text-transform:uppercase;color:var(--muted)}
+.foot ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.foot li a{font-size:.95rem;color:var(--ink-2)}
+.foot li a:hover{color:var(--ink)}
+.foot .about p{margin-top:14px;max-width:30ch;font-size:.94rem;color:var(--ink-2)}
+.legal{margin-top:44px;padding-top:22px;border-top:1px solid var(--line);display:flex;gap:20px;
+       flex-wrap:wrap;font-size:.85rem;color:var(--muted)}
+
+/* ── borrowed from TBH: a brush-script accent carries the last phrase of a
+      headline, so the fat serif never has to do the whole job alone. ────── */
+.script{font-family:Caveat,"Bradley Hand","Segoe Script",cursive;font-weight:700;font-style:normal;
+        font-size:1.36em;line-height:.78;letter-spacing:0;display:inline-block;
+        transform:translateY(.055em);padding-right:.06em}
+h1 .script{color:var(--ink)}
+.bound .script{color:var(--orange)}
+
+/* hand-drawn connective arrows */
+.doodle{width:86px;height:44px;flex:0 0 auto;color:var(--ink);opacity:.85}
+.doodle.flip{transform:scaleY(-1)}
+
+/* sticker: white pill, hard black outline, hard black shadow */
+.sticker{display:inline-flex;align-items:center;gap:7px;padding:7px 15px;border-radius:999px;
+         background:var(--white);color:var(--ink);border:2.5px solid var(--ink);
+         font-size:.8rem;font-weight:800;letter-spacing:-.01em;line-height:1.2;
+         box-shadow:3px 3px 0 var(--ink)}
+.sticker.orange{background:var(--orange);color:#16130f}
+.sticker .live{width:7px;height:7px;border-radius:50%;background:#e0342c}
+.chat-wrap{position:relative}
+.chat-wrap .sticker{position:absolute;z-index:3}
+.chat-wrap .s-1{top:74px;left:-30px;transform:rotate(-7deg)}
+.chat-wrap .s-2{bottom:-17px;left:-26px;transform:rotate(4deg)}
+
+/* the numbers strip — small label, fat numeral, script noun, arrows between */
+.tally{margin-top:74px;display:flex;align-items:center;justify-content:space-between;gap:20px;
+       flex-wrap:wrap}
+.tally .fig{display:flex;flex-direction:column;gap:2px}
+.tally .fig i{font-style:normal;font-size:.86rem;font-weight:700;color:var(--muted)}
+.tally .fig b{display:flex;align-items:baseline;gap:.22em;font-family:var(--display);font-weight:900;
+              font-size:clamp(2.6rem,5vw,3.5rem);line-height:1;letter-spacing:-.03em}
+.tally .fig .script{font-size:1.15em;color:var(--orange-dk)}
+
+/* a section that IS a speech bubble — the product is a chat, so the container
+   may as well say so */
+.bound{position:relative}
+.bound::after{content:"";position:absolute;left:0;bottom:-24px;width:54px;height:26px;
+              background:var(--panel);clip-path:polygon(0 0,100% 0,16% 100%)}
+
+@media(max-width:980px){
+  :root{--gap:96px}
+  .tally{gap:34px}
+  .tally .doodle{display:none}
+  .chat-wrap .sticker{display:none}
+  .hero-grid,.split{grid-template-columns:1fr;gap:48px}
+  .split.flip>*:first-child{order:0}
+  .split .chat,.bubble-card{max-width:none}
+  .list,.steps{grid-template-columns:1fr;gap:0}
+  .bound{padding:38px 26px 34px;max-width:none}
+  .foot{grid-template-columns:1fr 1fr}
+  .nav-links{display:none}
+}
+
+h2 + .lede{margin-top:22px}
+.split h2 + .lede{margin-top:20px}
+</style>
+
+<nav class="nav" id="nav"><div class="shell nav-in">
+  <a class="brand" href="#top" aria-label="Ted — home">__LOGO__</a>
+  <div class="nav-links">
+    <a href="#day">A day with Ted</a><a href="#remember">What Ted remembers</a>
+    <a href="#nudge">The nudge</a><a href="#ask">Reminders</a><a href="#review">The review</a><a href="#privacy">Privacy</a>
+  </div>
+  <div class="nav-cta"><a class="btn ghost" href="__WA__" target="_blank" rel="noreferrer">Message Ted</a></div>
+</div></nav>
+
+<main>
+<header class="hero shell" id="top">
+  <div class="hero-grid">
+    <div>
+      <span class="eyebrow rv">Health accountability that lives in WhatsApp</span>
+      <h1 class="rv">your day, <span class="script">remembered<svg class="ul" viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M4 9.5c34-4.6 71-6.4 106-4.2 24 1.5 48 3.4 86 1.1"/></svg></span>.</h1>
+      <p class="lede rv">Ted remembers your meals, movement, water, and commitments. Then it messages
+        you with the one useful thing you can still do today.</p>
+      <div class="hero-actions rv">
+        <a class="btn" href="__WA__" target="_blank" rel="noreferrer">Message Ted</a>
+        <span class="fineprint">Free during beta · 18+ · Opens WhatsApp ↗</span>
+      </div>
+    </div>
+    <div class="chat-wrap rv">
+      <span class="sticker s-1"><i class="live"></i> real thread</span>
+      <span class="sticker orange s-2">reads the photo 📸</span>
+      <div class="chat">
+      __WABAR__
+      <div class="thread-wrap"><div class="thread" id="thread-meal" style="height:486px"></div></div>
+      __WAINPUT__
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- things Ted has actually said. two copies, so the loop is seamless -->
+<div class="marquee rv" aria-hidden="true"><div class="row"><div class="track"><q>arre, gym got ghosted today? 😏 no stress, tomorrow we go double</q><span class="dot">·</span><q>you're at 1800ml 💧 one more glass and you're basically there</q><span class="dot">·</span><q class="hot">39g protein in this meal, you're at 49g for the day</q><span class="dot">·</span><q>omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?</q><span class="dot">·</span><q>no gym today. rest and recovery count too 🙏</q><span class="dot">·</span><q class="hot">koi na — the walk still counts</q><span class="dot">·</span><q>logged, all of it 📝 the paneer sabji did the heavy lifting at 25g</q><span class="dot">·</span><q>it's 12:30, sleep beats supplements tonight 😴 night, yaar 💤</q><span class="dot">·</span><q class="hot">150g protein?? goal absolutely smashed. showoff 😌</q><span class="dot">·</span><q>that's water, ignore it</q><span class="dot">·</span><q>arre, gym got ghosted today? 😏 no stress, tomorrow we go double</q><span class="dot">·</span><q>you're at 1800ml 💧 one more glass and you're basically there</q><span class="dot">·</span><q class="hot">39g protein in this meal, you're at 49g for the day</q><span class="dot">·</span><q>omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?</q><span class="dot">·</span><q>no gym today. rest and recovery count too 🙏</q><span class="dot">·</span><q class="hot">koi na — the walk still counts</q><span class="dot">·</span><q>logged, all of it 📝 the paneer sabji did the heavy lifting at 25g</q><span class="dot">·</span><q>it's 12:30, sleep beats supplements tonight 😴 night, yaar 💤</q><span class="dot">·</span><q class="hot">150g protein?? goal absolutely smashed. showoff 😌</q><span class="dot">·</span><q>that's water, ignore it</q><span class="dot">·</span></div></div><div class="row rev"><div class="track"><q>arre, gym got ghosted today? 😏 no stress, tomorrow we go double</q><span class="dot">·</span><q>you're at 1800ml 💧 one more glass and you're basically there</q><span class="dot">·</span><q class="hot">39g protein in this meal, you're at 49g for the day</q><span class="dot">·</span><q>omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?</q><span class="dot">·</span><q>no gym today. rest and recovery count too 🙏</q><span class="dot">·</span><q class="hot">koi na — the walk still counts</q><span class="dot">·</span><q>logged, all of it 📝 the paneer sabji did the heavy lifting at 25g</q><span class="dot">·</span><q>it's 12:30, sleep beats supplements tonight 😴 night, yaar 💤</q><span class="dot">·</span><q class="hot">150g protein?? goal absolutely smashed. showoff 😌</q><span class="dot">·</span><q>that's water, ignore it</q><span class="dot">·</span><q>arre, gym got ghosted today? 😏 no stress, tomorrow we go double</q><span class="dot">·</span><q>you're at 1800ml 💧 one more glass and you're basically there</q><span class="dot">·</span><q class="hot">39g protein in this meal, you're at 49g for the day</q><span class="dot">·</span><q>omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?</q><span class="dot">·</span><q>no gym today. rest and recovery count too 🙏</q><span class="dot">·</span><q class="hot">koi na — the walk still counts</q><span class="dot">·</span><q>logged, all of it 📝 the paneer sabji did the heavy lifting at 25g</q><span class="dot">·</span><q>it's 12:30, sleep beats supplements tonight 😴 night, yaar 💤</q><span class="dot">·</span><q class="hot">150g protein?? goal absolutely smashed. showoff 😌</q><span class="dot">·</span><q>that's water, ignore it</q><span class="dot">·</span></div></div></div>
+
+<section class="shell" id="day">
+  <h2 class="rv" style="max-width:19ch">Your day slipped away. You can still <span class="script">turn it around<svg class="ul" viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M4 9.5c34-4.6 71-6.4 106-4.2 24 1.5 48 3.4 86 1.1"/></svg></span>.</h2>
+  <p class="lede rv">Your meals are in one app. Water is another alarm. Steps sit somewhere else, and
+    the gym bag is a guilt object by the door. Ted keeps the whole thread in the chat you already
+    open forty times a day.</p>
+  <svg class="doodle a2" viewBox="0 0 118 50" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 33c9-15 24-22 36-15 8 5 6 16-3 17-8 1-12-6-8-13C38 8 62 2 84 10c11 4 20 12 26 22"/><path d="M110 32l-13-1M110 32l-3-13"/></svg>
+  <div class="steps rv">
+    <div><em>01</em><h3>You tell it what you ate and did.</h3>
+      <p>Meals, water, steps, workouts and your own commitments — in text, a photo, or a voice note.</p></div>
+    <div><em>02</em><h3>Ted keeps the running context.</h3>
+      <p>It reads the new thing against what you planned and everything already logged today.</p></div>
+    <div><em>03</em><h3>You get one move, not a lecture.</h3>
+      <p>Specific enough to act on. Small enough to fit the day that actually happened.</p></div>
+  </div>
+</section>
+
+<section class="band deep" id="formats"><div class="shell">
+  <h2 class="rv" style="max-width:17ch">Tell it however you can be <span class="script">bothered<svg class="ul" viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M4 9.5c34-4.6 71-6.4 106-4.2 24 1.5 48 3.4 86 1.1"/></svg></span>.</h2>
+  <p class="lede rv">Typing is the slow way. Ted reads a voice note on the walk home and a photo of
+    the plate before you eat it — and comes back with the same numbers either way.</p>
+  <div class="formats rv">
+    <div class="fmt">
+      <div class="fmt-stage">
+        <div class="msg me">had 2 rotis, paneer sabji and dahi<time>1:47 PM</time></div>
+      </div>
+      <h3>Text</h3><p>A half-sentence is enough. No fields, no dropdowns, no portion picker.</p>
+    </div>
+    <div class="fmt">
+      <div class="fmt-stage">
+        <div class="msg me voice"><span class="play"></span>
+          <span class="wave">__WAVE__</span><span class="dur">0:14</span>
+          <span class="mic">__MICSM__</span><time>7:06 PM</time></div>
+      </div>
+      <h3>Voice note</h3><p>Ramble it on the walk home. Ted transcribes, logs it, and replies in text.</p>
+    </div>
+    <div class="fmt">
+      <div class="fmt-stage">
+        <div class="msg me has-photo">__PHOTOSM__<time>3:00 PM</time></div>
+      </div>
+      <h3>Photo</h3><p>One clear shot of the plate. It names what it sees before it counts anything.</p>
+    </div>
+  </div>
+
+  <h2 class="rv" id="remember" style="max-width:18ch;margin-top:104px">Everything that makes the
+    next nudge useful.</h2>
+  <div class="list rv">
+    <div><h3>Meals &amp; nutrition</h3>
+      <p>Calories, protein, carbs, fat and fiber — from a sentence, a voice note, or a photo of the plate.</p>
+      <q>logged, all of it 📝 the paneer sabji did the heavy lifting at 25g</q></div>
+    <div><h3>Water &amp; steps</h3>
+      <p>What you have done, what is left, and whether another reminder is worth sending at all.</p>
+      <q>you're at 1800ml 💧 one more glass and you're basically there</q></div>
+    <div><h3>Workouts</h3>
+      <p>Done, skipped, or honestly moved — never turned into punishment for something you ate.</p>
+      <q>no gym today. rest and recovery count too 🙏</q></div>
+    <div><h3>Your commitments</h3>
+      <p>The routine in your own words, with quiet hours and reminders that you control.</p>
+      <q>omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?</q></div>
+  </div>
+</div></section>
+
+<section class="shell split" id="ask">
+  <div>
+    <h2 class="rv" style="max-width:16ch">Ask for the nudge. Ask it to <em>back off.</em></h2>
+    <p class="lede rv">Supplements, water, the 4 p.m. walk, the thing you keep meaning to do —
+      tell Ted in a sentence and it holds the time, not you.</p>
+    <p class="lede rv" style="margin-top:18px">Say you are travelling, ill, or just done for the
+      day and it goes quiet. Quiet hours are yours to set. Ted stays silent by default and only
+      speaks when it has earned the interruption — a companion that over-pings gets muted.</p>
+  </div>
+  <div class="rv"><div class="chat">
+    __WABAR__
+    <div class="thread-wrap"><div class="thread" id="thread-ask" style="height:392px"></div></div>
+      __WAINPUT__
+  </div></div>
+</section>
+
+<section class="shell split flip" id="nudge">
+  <div>
+    <h2 class="rv" style="max-width:15ch">Nothing to download. It starts <em>in your chat.</em></h2>
+    <p class="lede rv">No dashboard, no streak to protect, no seventh app asking for notifications.
+      Ted watches the gap between the day you planned and the day you got, and sends one line when
+      closing it is still possible.</p>
+    <p class="lede rv" style="margin-top:18px">Miss the gym and it moves the session. It does not
+      make you pay for it.</p>
+  </div>
+  <div class="rv"><div class="chat">
+    __WABAR__
+    <div class="thread-wrap"><div class="thread" id="thread-nudge" style="height:392px"></div></div>
+      __WAINPUT__
+  </div></div>
+</section>
+
+<section class="shell split" id="review">
+  <div>
+    <h2 class="rv">No pretending the day was perfect. Just an <span class="script">honest close<svg class="ul" viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M4 9.5c34-4.6 71-6.4 106-4.2 24 1.5 48 3.4 86 1.1"/></svg></span>.</h2>
+    <p class="lede rv">At the evening time you choose, Ted brings the day together so you can see
+      what happened, recover what is still possible, and stop carrying the rest around in your head.</p>
+    <p class="lede rv" style="margin-top:18px">It arrives as a message, not a report — short enough
+      to read standing in the kitchen, specific enough to act on before bed.</p>
+  </div>
+  <div class="rv"><div class="bubble-card">
+    <div class="from">__BUBBLE26__<b>Ted</b><span>Evening review</span></div>
+    <p class="wrap-line">decent day 👏 49g is something to build on, and that walk rescued the bit
+      that was slipping.</p>
+    <dl class="stats">
+      <div><dt>Meals logged</dt><dd>2</dd></div>
+      <div><dt>Calories</dt><dd><span data-count="1180">1,180</span> / 1,400</dd></div>
+      <div><dt>Protein</dt><dd><span data-count="49">49</span> / 110g</dd></div>
+      <div><dt>Water</dt><dd><span data-count="2.4">2.4</span> / 2.5L</dd></div>
+      <div><dt>Steps</dt><dd><span data-count="8214">8,214</span></dd></div>
+      <div><dt>Workout</dt><dd>Moved to Sat</dd></div>
+    </dl>
+    <p class="next"><b>Tomorrow's one move</b>Spread the protein out instead of saving it for dinner —
+      paneer or soya at lunch 💪</p>
+    <time>10:45 PM</time>
+  </div></div>
+</section>
+
+<section class="shell" id="privacy"><div class="bound rv">
+    <span class="eyebrow">Before you start</span>
+    <h2>your health. <span class="script">your call<svg class="ul" viewBox="0 0 200 14" preserveAspectRatio="none" aria-hidden="true"><path d="M4 9.5c34-4.6 71-6.4 106-4.2 24 1.5 48 3.4 86 1.1"/></svg></span>.</h2>
+    <p>Ted stores your profile, messages, plans, logs, and uploaded media so it can remember your
+      day. Ted and the services that run it process this information. To remove it, message
+      “delete my data” in WhatsApp and confirm the request.</p>
+    <p>Ted is a habit coach, not medical advice, and should not be used for emergencies, diagnosis,
+      or treatment.</p>
+  <a href="/privacy">Read the privacy policy <span aria-hidden="true">→</span></a>
+</div></section>
+
+<section class="band warm final" id="start"><div class="shell">
+  <span class="eyebrow rv">Today, whenever you're ready</span>
+  <h2 class="loud rv">One message starts the conversation.</h2>
+  <a class="btn rv" href="__WA__" target="_blank" rel="noreferrer">Message Ted</a>
+  <span class="fineprint rv">Free during beta · 18+ · Opens WhatsApp ↗</span>
+</div></section>
+</main>
+
+<footer><div class="shell">
+  <div class="foot">
+    <div class="about">__LOGO_SM__
+      <p>Health accountability in WhatsApp.</p></div>
+    <div><h4>Product</h4><ul><li><a href="#day">A day with Ted</a></li><li><a href="#remember">What Ted remembers</a></li><li><a href="#nudge">The nudge</a></li><li><a href="#ask">Reminders you control</a></li><li><a href="#review">The review</a></li></ul></div>
+    <div><h4>Trust</h4><ul><li><a href="/privacy">Privacy</a></li><li><a href="#privacy">Delete my data</a></li><li><a href="#privacy">Adults 18+ only</a></li></ul></div>
+  </div>
+  <div class="legal"><span>© 2026 Ted</span><span>A habit coach, not medical advice — not for emergencies, diagnosis or treatment</span><span>Built at GrowthX Build Week, Season 03</span><span>Design experiment — not the live site</span></div>
+</div></footer>
+
+<script>
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),
+  {threshold:.12,rootMargin:'0px 0px -5% 0px'});
+const motionOK=!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window;
+if(motionOK) document.querySelectorAll('.rv').forEach((el,i)=>{
+  el.classList.add('armed'); el.style.transitionDelay=(i%3)*70+'ms'; io.observe(el); });
+function revealVisible(){document.querySelectorAll('.rv:not(.in)').forEach(el=>{
+  const r=el.getBoundingClientRect(); if(r.top<innerHeight&&r.bottom>0) el.classList.add('in')})}
+addEventListener('load',()=>setTimeout(revealVisible,800));
+addEventListener('scroll',revealVisible,{passive:true});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)revealVisible()});
+
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('stuck',scrollY>340),{passive:true});
+
+/* ── the live threads ───────────────────────────────────────────────────
+   Each card plays like a real conversation: Ted goes to "typing…", the dots
+   run, then the message lands. The thread fills from the bottom, so older
+   messages ride up out of the window. It starts when the card is on screen
+   and loops, so the page is never a dead screenshot.
+   The numbers carry across the whole page: this meal puts the day at 49g,
+   the walk puts it at 8,214 steps, and the evening review reads both back. */
+const MEAL='__MEALSRC__';
+const THREADS={
+ 'thread-meal':[
+  {who:'me',photo:1,t:'3:00 PM',pre:500},
+  {who:'them',text:'ooh a pic 👀 taking a look, one sec…',t:'3:00 PM',pre:450,type:900},
+  {who:'them',text:"paneer and kidney beans, nice combo 😊 39g protein in this meal, you're at 49g for the day. greek yogurt helps too, love it! 💪",
+   meta:'📷 Snapped: white rice (150g), kidney bean curry (120g), paneer cubes (80g), yellow corn sauté (60g), tomato onion relish (50g), plain greek yogurt (175g)',
+   t:'3:01 PM',pre:650,type:2300}],
+ 'thread-ask':[
+  {who:'me',text:'remind me for omega-3 after dinner, and nag me about water in the afternoon',t:'9:12 PM',pre:500},
+  {who:'them',text:'done ✅ omega-3 at 9pm, water check at 3pm. quiet hours 11pm–8am, so nothing lands while you sleep',t:'9:12 PM',pre:400,type:1500},
+  {who:'them',text:"omega-3 💊 take it now and i'll leave you alone the rest of the night, deal?",t:'9:00 PM',pre:1500,type:1100},
+  {who:'me',text:'deal',t:'9:01 PM',pre:900},
+  {who:'them',text:'🤝 goodnight then',t:'9:01 PM',pre:350,type:600},
+  {who:'me',text:"travelling thu and fri, don't nudge me",t:'11:04 PM',pre:1300},
+  {who:'them',text:"paused thu and fri 🤐 log whatever you feel like, i just won't start anything. back on saturday",t:'11:04 PM',pre:400,type:1400}],
+ 'thread-nudge':[
+  {who:'them',text:"you're 2,100 steps short 🚶 a 19-minute walk closes the gap. shoes on?",t:'7:42 PM',pre:450,type:1300},
+  {who:'me',text:'going now',t:'7:44 PM',pre:1200},
+  {who:'me',text:'no gym today though',t:'7:44 PM',pre:800},
+  {who:'them',text:'arre, gym got ghosted today? 😏 koi na — the walk still counts. moving it to saturday, not deleting it',t:'7:45 PM',pre:500,type:1700},
+  {who:'them',text:'8,214 steps 🎯 that walk rescued the bit that was slipping',t:'8:19 PM',pre:1100,type:1200}]
+};
+
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const PHOTO=`<span class="photo"><img src="${MEAL}" alt="A bowl of rice, kidney bean curry, paneer cubes, corn sauté and tomato relish, with a pot of greek yogurt" width="760" height="760"></span>`;
+const TYPING='<div class="msg them typing enter"><span class="dots"><i></i><i></i><i></i></span></div>';
+/* a colour emoji's glyph box swallows the space beside it, so each one gets
+   its own margin instead */
+const EMO=/(\p{Extended_Pictographic}\uFE0F?)/gu;
+const emo=t=>t.replace(EMO,'<i class="emo">$1</i>');
+const bubble=m=>`<div class="msg ${m.who}${m.photo?' has-photo':''} enter">`
+  +(m.photo?PHOTO:'')+(m.text?emo(esc(m.text)):'')
+  +(m.meta?`<span class="meta">${emo(esc(m.meta))}</span>`:'')
+  +`<time>${m.t}</time></div>`;
+
+const still=script=>script.map(bubble).join('').replace(/ enter/g,'');
+
+function play(id,script){
+  const el=document.getElementById(id);
+  /* paint the finished thread first, so the card is never an empty box —
+     for a screenshot, a print, or a tab still in the background */
+  el.innerHTML=still(script);
+  const chat=el.closest('.chat');
+  const status=chat.querySelector('.wa-status');
+  const field=chat.querySelector('.wa-input .field');
+  const txt=field.querySelector('.txt');
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const compose=(v,on)=>{
+    field.classList.toggle('typing',!!on);
+    txt.textContent = v || 'Message';
+    field.querySelector('.caret')?.remove();
+    if(on) field.insertAdjacentHTML('beforeend','<span class="caret"></span>');
+  };
+  /* only run while the card is on screen and the tab is in front */
+  let onScreen=false;
+  new IntersectionObserver(es=>{onScreen=es[0].isIntersecting},{threshold:.25}).observe(el);
+  const ready=async()=>{while(!onScreen||document.hidden)await sleep(350)};
+  (async()=>{
+    for(;;){
+      await ready(); el.innerHTML=''; compose('',false);
+      for(const m of script){
+        await sleep(m.pre??600); await ready();
+        if(m.who==='them'&&m.type){
+          status.textContent='typing…';
+          el.insertAdjacentHTML('beforeend',TYPING);
+          await sleep(m.type);
+          el.querySelector('.typing')?.remove();
+          status.textContent='online';
+        }
+        if(m.who==='me'){
+          /* your half gets typed into the composer first, then sent */
+          const body=m.text||'📷 Photo';
+          for(let i=1;i<=body.length;i++){compose([...body].slice(0,i).join(''),true); await sleep(22)}
+          await sleep(330); compose('',false);
+        }
+        el.insertAdjacentHTML('beforeend',bubble(m));
+      }
+      await sleep(5600);
+    }
+  })();
+}
+
+for(const [id,script] of Object.entries(THREADS)){
+  if(motionOK) play(id,script);
+  else document.getElementById(id).innerHTML=still(script);
+}
+
+if(motionOK){
+  const nums=new IntersectionObserver(es=>es.forEach(e=>{
+    if(!e.isIntersecting)return;
+    const el=e.target,target=parseFloat(el.dataset.count),dec=target%1?1:0;let s=null;
+    const step=ts=>{s??=ts;const p=Math.min((ts-s)/900,1);const v=target*(1-Math.pow(1-p,3));
+      el.textContent=dec?v.toFixed(1):Math.round(v).toLocaleString();
+      if(p<1)requestAnimationFrame(step)};
+    requestAnimationFrame(step);nums.unobserve(el)}),{threshold:.6});
+  document.querySelectorAll('[data-count]').forEach(el=>nums.observe(el));
+}
+</script>

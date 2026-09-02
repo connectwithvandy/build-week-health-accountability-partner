@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ted — The health coach who remembers your day</title>
+<meta name="description" content="Tell Ted what you ate and what got done. It keeps score, nudges you when it matters, and helps you close the day without guilt.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@800&family=Fraunces:opsz,wght@9..144,900&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav" id="nav"><div class="shell nav-in">
+  <a class="brand" href="#top"><span class="ted-logo"><svg class="bubble" viewBox="0 0 52 50" aria-hidden="true"><rect x="4" y="2" width="44" height="34" rx="10" fill="#ff7e3e"/><path d="M13 34 L7 47 L24 35 Z" fill="#ff7e3e"/><g fill="none" stroke="#211e1d" stroke-width="2.9" stroke-linecap="round"><path d="M15 16 Q19 9.5 23 16"/><path d="M29 16 Q33 9.5 37 16"/><path d="M17 22 Q26 32 35 22"/></g></svg><span class="wm"><b>t</b><b>e</b><b>d</b></span></span></a>
+  <div class="nav-links">
+    <a href="#day">A day with Ted</a><a href="#remember">What Ted remembers</a>
+    <a href="#review">The review</a><a href="#privacy">Privacy</a>
+  </div>
+  <div class="nav-cta"><a class="btn ghost" href="#start">Start on WhatsApp</a></div>
+</div></nav>
+
+<main>
+<header class="hero shell" id="top">
+  <div class="hero-grid">
+    <div>
+      <h1 class="rv">your health day, <em>remembered.</em></h1>
+      <p class="lede rv">Ted lives in WhatsApp, keeps track of what you ate and did, and gives you
+        the one useful nudge that still fits today.</p>
+      <div class="hero-actions rv">
+        <a class="btn" href="#start">Start on WhatsApp</a>
+        <span class="fineprint">Free during beta · 18+ · Opens WhatsApp</span>
+      </div>
+    </div>
+    <div class="chat rv">
+      <div class="wa-bar">
+        <svg class="bubble" style="width:30px;height:29px" viewBox="0 0 52 50" aria-hidden="true"><rect x="4" y="2" width="44" height="34" rx="10" fill="#ff7e3e"/><path d="M13 34 L7 47 L24 35 Z" fill="#ff7e3e"/><g fill="none" stroke="#211e1d" stroke-width="2.9" stroke-linecap="round"><path d="M15 16 Q19 9.5 23 16"/><path d="M29 16 Q33 9.5 37 16"/><path d="M17 22 Q26 32 35 22"/></g></svg>
+        <div><b>Ted</b><span>WhatsApp · online</span></div>
+      </div>
+      <div class="thread" id="thread"></div>
+    </div>
+  </div>
+</header>
+
+<section class="shell" id="day">
+  <h2 class="rv" style="max-width:19ch">Tracking isn’t the hard part. Remembering to act is.</h2>
+  <p class="lede rv">Your meals are in one app. Water is another alarm. Steps sit somewhere else.
+    Ted keeps the thread in the chat you already open all day.</p>
+  <div class="steps rv">
+    <div><em>01</em><h3>You report life as it happens.</h3>
+      <p>Meals, water, steps, workouts, and your own commitments—in text, photos, or voice notes.</p></div>
+    <div><em>02</em><h3>Ted keeps the running context.</h3>
+      <p>It compares the latest update with what you planned and everything already logged that day.</p></div>
+    <div><em>03</em><h3>You get one move, not a lecture.</h3>
+      <p>Specific enough to act on. Small enough to fit the day that actually happened.</p></div>
+  </div>
+</section>
+
+<section class="shell" id="remember">
+  <h2 class="rv" style="max-width:18ch">Everything that makes the next nudge useful.</h2>
+  <div class="list rv">
+    <div><h3>Meals &amp; nutrition</h3>
+      <p>Calories, protein, carbs, fat and fiber from text, voice notes or a clear meal photo.</p></div>
+    <div><h3>Water &amp; steps</h3>
+      <p>What you have done, what remains, and whether another reminder is worth sending.</p></div>
+    <div><h3>Workouts</h3>
+      <p>Done, skipped or realistically moved — never turned into punishment for eating.</p></div>
+    <div><h3>Your commitments</h3>
+      <p>The routine written in your own words, with quiet hours and reminders you control.</p></div>
+  </div>
+</section>
+
+<section class="shell split" id="review">
+  <div>
+    <h2 class="rv">An honest close. Not a perfect score.</h2>
+    <p class="lede rv">At your chosen evening time, Ted brings the day together and names the one
+      thing still worth doing. It arrives as a message, not a report — short enough to read standing
+      in the kitchen, specific enough to act on before bed.</p>
+  </div>
+  <div class="rv"><div class="bubble-card">
+    <div class="from">
+      <svg class="bubble" style="width:26px;height:25px" viewBox="0 0 52 50" aria-hidden="true"><rect x="4" y="2" width="44" height="34" rx="10" fill="#ff7e3e"/><path d="M13 34 L7 47 L24 35 Z" fill="#ff7e3e"/><g fill="none" stroke="#211e1d" stroke-width="2.9" stroke-linecap="round"><path d="M15 16 Q19 9.5 23 16"/><path d="M29 16 Q33 9.5 37 16"/><path d="M17 22 Q26 32 35 22"/></g></svg>
+      <b>Ted</b><span>Evening review</span>
+    </div>
+    <p class="wrap-line">good recovery. the walk rescued the bit that was slipping.</p>
+    <dl class="stats">
+      <div><dt>Meals</dt><dd>3 logged</dd></div>
+      <div><dt>Water</dt><dd><span data-count="2.4">2.4</span> / 2.5L</dd></div>
+      <div><dt>Steps</dt><dd><span data-count="8214">8,214</span></dd></div>
+      <div><dt>Workout</dt><dd>Moved to Sat</dd></div>
+    </dl>
+    <p class="next"><b>Tomorrow’s one move</b>Protein at breakfast, before the calendar starts misbehaving.</p>
+    <time>10:30 PM</time>
+  </div></div>
+</section>
+
+<section class="shell" id="privacy"><div class="bound rv">
+  <div>
+    <h2>Personal should stay personal.</h2>
+    <p>Ted stores your profile, messages, plans, logs, and uploaded media so it can remember your
+      day. Message “delete my data” and confirm, and all of it goes.</p>
+  </div>
+  <a href="#">Read the privacy policy <span aria-hidden="true">→</span></a>
+</div></section>
+
+<section class="final shell" id="start">
+  <h2 class="loud rv">One message. Ted remembers the rest.</h2>
+  <a class="btn rv" href="#">Start on WhatsApp</a>
+  <span class="fineprint rv">Free during beta · 18+ · Opens WhatsApp</span>
+</section>
+</main>
+
+<footer><div class="shell">
+  <div class="foot">
+    <div class="about"><span class="ted-logo"><svg class="bubble" viewBox="0 0 52 50" aria-hidden="true"><rect x="4" y="2" width="44" height="34" rx="10" fill="#ff7e3e"/><path d="M13 34 L7 47 L24 35 Z" fill="#ff7e3e"/><g fill="none" stroke="#211e1d" stroke-width="2.9" stroke-linecap="round"><path d="M15 16 Q19 9.5 23 16"/><path d="M29 16 Q33 9.5 37 16"/><path d="M17 22 Q26 32 35 22"/></g></svg><span class="wm"><b>t</b><b>e</b><b>d</b></span></span>
+      <p>Health accountability in WhatsApp.</p></div>
+    <div><h4>Product</h4><ul><li><a href="#day">A day with Ted</a></li><li><a href="#remember">What Ted remembers</a></li><li><a href="#review">The review</a></li></ul></div>
+    <div><h4>Trust</h4><ul><li><a href="#privacy">Privacy</a></li><li><a href="#privacy">Delete my data</a></li><li><a href="#privacy">Adults 18+ only</a></li></ul></div>
+  </div>
+  <div class="legal"><span>© 2026 Ted</span><span>Not medical advice — not for emergencies, diagnosis or treatment</span><span>Built at GrowthX Build Week, Season 03</span><span>Design experiment — not the live site</span></div>
+</div></footer>
+
+<script>
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),
+  {threshold:.12,rootMargin:'0px 0px -5% 0px'});
+const motionOK=!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window;
+if(motionOK) document.querySelectorAll('.rv').forEach((el,i)=>{
+  el.classList.add('armed'); el.style.transitionDelay=(i%3)*70+'ms'; io.observe(el); });
+function revealVisible(){document.querySelectorAll('.rv:not(.in)').forEach(el=>{
+  const r=el.getBoundingClientRect(); if(r.top<innerHeight&&r.bottom>0) el.classList.add('in')})}
+addEventListener('load',()=>setTimeout(revealVisible,800));
+addEventListener('scroll',revealVisible,{passive:true});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)revealVisible()});
+
+const nav=document.getElementById('nav');
+addEventListener('scroll',()=>nav.classList.toggle('stuck',scrollY>340),{passive:true});
+
+const script=[
+ {who:'me',photo:true,text:'lunch',t:'1:14 PM'},
+ {who:'them',text:'paneer roll — that one pulled its weight 😋 330 kcal · 16g protein. puts you at 39g today, so 71g to go',t:'1:15 PM'},
+ {who:'them',text:'bring soya to dinner and you’re properly close 💪',t:'1:15 PM'}];
+document.getElementById('thread').innerHTML = script.map((m,i)=>
+  `<div class="msg ${m.who}${m.photo?' has-photo':''}${motionOK?' enter':''}" style="animation-delay:${i*200+300}ms">`
+  + (m.photo?'<span class="photo"><img src="art/meal-sm.png" alt="A paneer roll on a plate"></span>':'')
+  + m.text + `<time>${m.t}</time></div>`).join('');
+
+if(motionOK){
+  const nums=new IntersectionObserver(es=>es.forEach(e=>{
+    if(!e.isIntersecting)return;
+    const el=e.target,target=parseFloat(el.dataset.count),dec=target%1?1:0;let s=null;
+    const step=ts=>{s??=ts;const p=Math.min((ts-s)/900,1);const v=target*(1-Math.pow(1-p,3));
+      el.textContent=dec?v.toFixed(1):Math.round(v).toLocaleString();
+      if(p<1)requestAnimationFrame(step)};
+    requestAnimationFrame(step);nums.unobserve(el)}),{threshold:.6});
+  document.querySelectorAll('[data-count]').forEach(el=>nums.observe(el));
+}
+</script>
+</body>
+</html>
