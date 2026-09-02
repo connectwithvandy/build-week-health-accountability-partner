@@ -72,7 +72,7 @@ The landing page must explain the product, show a realistic example conversation
 ##### v1 public pages and states
 
 1. **Landing page:** product promise, benefits, supported inputs, how it works, example WhatsApp conversation, privacy and safety information, and repeated Start on WhatsApp actions.
-2. **WhatsApp handoff:** opens WhatsApp with the prepared first message—“Okay Ted, let's do this 🫡”.
+2. **WhatsApp handoff:** opens WhatsApp with the prepared first message—“Okay Ted, let's do this 💪”.
 3. **Privacy policy:** collected data, raw-media retention, service providers, deletion requests and health-data boundaries.
 
 ##### website data and measurement

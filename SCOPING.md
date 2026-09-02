@@ -22,7 +22,7 @@ Existing tools also require her to remember to open them. They record isolated n
 
 2. The page explains the product through benefits, WhatsApp chat examples, how it works, privacy information, and repeated “Start on WhatsApp” buttons. There is no product dashboard.
 
-3. Pressing the button opens WhatsApp with the pre-filled message: “Okay Ted, let's do this 🫡” There is no payment, waitlist, email, password, or separate account. The WhatsApp number identifies the user.
+3. Pressing the button opens WhatsApp with the pre-filled message: “Okay Ted, let's do this 💪” There is no payment, waitlist, email, password, or separate account. The WhatsApp number identifies the user.
 
 4. Ted opens conversationally: “Chalo, done. What should I call you?” After the name, Ted gives the short disclosure and asks the goal question in the same message. Answering the goal question records consent for the beta.
 

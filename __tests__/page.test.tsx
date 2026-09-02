@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import Home from "@/app/page";
 
-const openingMessage = "Okay Ted, let's do this 🫡";
+const openingMessage = "Okay Ted, let's do this 💪";
 
 describe("Home", () => {
   it("explains Ted's core promise", () => {
@@ -38,7 +38,7 @@ describe("Home", () => {
       const href = link.getAttribute("href");
       expect(href).toContain("https://wa.me/");
       expect(decodeURIComponent(href ?? "")).toContain(openingMessage);
-      expect(decodeURIComponent(href ?? "")).toContain("🫡");
+      expect(decodeURIComponent(href ?? "")).toContain("💪");
     }
   });
 });

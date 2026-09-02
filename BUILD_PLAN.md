@@ -87,7 +87,7 @@ This plan implements the complete V1 defined in `SCOPING.md`. No V1 requirement 
 | # | Milestone | Layer |
 |---:|---|---|
 | 1 | I can open the landing page on my phone and understand the product in 10 seconds. | Frontend |
-| 2 | I can tap “Start on WhatsApp” and see “Okay Ted, let's do this 🫡” pre-filled and ready to send. | Frontend / Integration |
+| 2 | I can tap “Start on WhatsApp” and see “Okay Ted, let's do this 💪” pre-filled and ready to send. | Frontend / Integration |
 | 3 | I can send that message and receive the short storage, medical-boundary, and deletion disclosure followed by the goal question. | Backend / Integration |
 | 4 | I can answer the goal, name, and daily check-in time plus city questions, then start using Ted without completing a long profile. | Backend / Integration |
 | 5 | I can send a text or voice-note meal such as “I ate two rotis and paneer,” then see it logged with estimated nutrition. | Backend / Integration |
