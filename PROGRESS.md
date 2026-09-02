@@ -1,6 +1,6 @@
 # Ted — WhatsApp Fitness Coach V1 Progress
 
-Last updated: Tue 1 Sep 2026, Asia/Kolkata
+Last updated: Wed 2 Sep 2026, Asia/Kolkata
 
 ## What we decided
 
@@ -14,7 +14,8 @@ Last updated: Tue 1 Sep 2026, Asia/Kolkata
 - Codex must not change the Hermes WhatsApp connection. Suggested Hermes changes are reported to Vandy instead.
 - Do not use Twilio or build a Telegram fallback.
 - Use Convex for stored state and scheduling and Vercel for the public web application.
-- The live product uses the OpenAI API for interpretation and transcription.
+- Ted's live conversational model runs through OpenRouter with `anthropic/claude-sonnet-5` as primary and `openai/gpt-5.3-codex` as the automatic fallback.
+- Voice transcription remains a separate OpenAI speech service because the Codex model does not accept audio input.
 - Voice notes work for health plans, meals and all progress updates. PDFs work only for health plans.
 - Store raw photos, voice notes and PDFs until the user deletes their data.
 - Use Mifflin–St Jeor for optional maintenance-calorie estimates.
@@ -40,10 +41,13 @@ Last updated: Tue 1 Sep 2026, Asia/Kolkata
 - The first-turn contract now also explains input formats and their limits: text and voice notes for meals or progress, meal photos for meals, and PDFs only for existing health plans. It states that meal logging includes estimated calories and macros, then closes onboarding by inviting a typed update, voice note, or meal photo.
 - WhatsApp prompt reduction is implemented before any model change. The platform toolset is now empty: computer tools dropped from 30 to 0, tool-schema payload from 51,636 bytes to 2, and the skills index from 8,186 characters to 0. `SOUL.md` was compressed from 12,137 to 5,715 characters while retaining identity, onboarding, voice, coaching, input boundaries, recaps, and safety. The full fixed system prompt fell from 33,825 to 10,082 characters; roughly 4,300 remaining characters are Hermes's own platform guidance and cannot be removed through supported profile configuration. A fresh five-message test is pending before any model change.
 - Legacy local adapter, worker, simulator, API route, and tests remain in the repository but are not the product direction and must not be extended.
-- Ted's calorie safety rules now run as the enabled `ted-safety-gates` Hermes plugin instead of prompt-only instructions. The live output gate requires a supplied adult age before any calorie number, requires height, weight, formula sex, and activity one at a time before maintenance, calculates Mifflin–St Jeor maintenance from those supplied values, and never returns a deficit target. Eight focused Python tests cover the original 2,300/1,400 failure, the exact ragi-roti replay, under-18 blocking, missing inputs, onboarding order, and unproven action claims.
+- Ted's calorie safety rules now run as the enabled `ted-safety-gates` Hermes plugin instead of prompt-only instructions. The live output gate requires a supplied adult age before any calorie number, requires height, weight, formula sex, and activity one at a time before maintenance, calculates Mifflin–St Jeor maintenance from those supplied values, and never returns a deficit target. The 27 focused Python tests cover the original 2,300/1,400 failure, the exact ragi-roti replay, under-18 blocking, missing inputs, onboarding order, and unproven action claims.
 - Consent is also hard-gated by the same plugin: after a user answers the name question, the disclosure with the privacy URL replaces any attempted next response until it appears in that conversation. The plugin logs `consent_disclosure_sent` when the gated disclosure is produced. A fresh real WhatsApp thread is still needed for the four-message delivery proof.
-- The same output gate now removes claims such as “saved”, “scheduled”, or “noted” unless a tool succeeded in that turn. This was added after the Sonnet 5 test produced “33 noted” without a save call. Eight focused Python tests now pass.
+- The same output gate now removes claims such as “saved”, “scheduled”, or “noted” unless a tool succeeded in that turn. This was added after an earlier model test produced “33 noted” without a save call. The focused Python tests now pass.
 - The calorie gate now includes the current incoming message when extracting the age profile, including a bare reply such as “33”. This closes the loop caused by Hermes delivering a transformed age prompt without persisting that transformed text into the durable transcript. The golden-path replay reaches beyond the age gate; a fresh WhatsApp turn is still the final live proof.
+- On 2 September, the previous provider stream stalled for 4,491.5 seconds and exhausted five retries. Hermes exposed raw provider and gateway errors in WhatsApp. Those internal errors must be replaced with one short user-safe retry message before public beta.
+- The later repeated “What should I call you?” replies are a separate consent-gate bug, not a model outage. The gate replaces the model's answer with the name question but Hermes persists the original answer, so the next name reply cannot advance onboarding. This loop was reproduced locally and is not fixed yet.
+- Hermes was restarted after the primary/fallback change. The gateway is running, but a later status check again reported the launch service as not loaded and the process as detached. Automatic startup and crash recovery are therefore still not reliable.
 
 ## Code status
 
@@ -59,16 +63,16 @@ Last updated: Tue 1 Sep 2026, Asia/Kolkata
 - The WhatsApp buttons pre-fill “Okay Ted, let's do this!” and read Ted's number from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER`; the number is configured locally and on Vercel.
 - The website-matched Ted profile picture and cover image are saved in `docs/brand/` and have been uploaded to the WhatsApp Business profile.
 - The latest landing page is live in production at `https://whatsapp-accountability-partner-ted.vercel.app`. It uses the shorter four-section story, the WhatsApp conversation hero, the new split `Message Ted` action, and no visible dash punctuation in user-facing copy.
-- Current official OpenAI documentation confirms support for typed text, meal photos, voice-note transcription and health-plan PDFs. The chosen starting models are `gpt-5.6-terra` for Responses API inputs and `gpt-transcribe` for voice notes.
-- OpenAI accepted the locally configured API key. Paid model responses and output quality are not yet tested.
+- Official OpenAI documentation confirms that `gpt-5.3-codex` accepts text and image input but not audio. Voice-note transcription therefore remains separate from the conversational model.
+- Hermes now uses OpenRouter with `anthropic/claude-sonnet-5` as primary and `openai/gpt-5.3-codex` as its sole fallback. Separate direct Hermes calls returned the exact requested replies from Codex before the switch and Sonnet after it. The WhatsApp path and a forced fallback event have not been re-verified after this change.
 - The default production Convex deployment is `hardy-scorpion-901` in Europe (Ireland).
 - Vercel deploys Convex functions and the Next.js application together on every production build.
+- The local Vercel CLI was upgraded to version 59.11.2 on 2 September 2026.
 - The production build deliberately uses Webpack during Build Week because this is the path already verified locally and on Vercel. Reconsider the default Turbopack build after the demo instead of changing the build path mid-week.
 - The production Convex schema defines user-owned records for consent and identity, resumable onboarding, per-user facts, targets, reminder settings, and day-scoped progress entries. It includes user/date indexes, deduplication keys, corrections, and a separate pending-clarification state so uncertainty is not saved as confirmed data.
 - The Convex data-contract tests, Convex TypeScript check, and lint pass. The schema and authenticated `/ted-memory` endpoint are deployed to production. The endpoint accepts only the shared Hermes secret; internal queries and mutations are not public.
 - Hermes `SOUL.md` was rolled back from the compressed 5,715-character rewrite to the exact earlier Ted persona recovered from the 9:24 PM request snapshot (11,270 bytes). WhatsApp access and gateway settings were not changed.
 - A static `/privacy` route now answers what is stored, who can see it, how long it is kept, and exactly how to request deletion. The existing landing-page footer links to it. It is live at `https://whatsapp-accountability-partner-ted.vercel.app/privacy` and returned HTTP 200 from an unauthenticated public request. All 9 web tests, lint, and the production build pass; no interactive browser was connected in this session.
-- OpenRouter's model endpoint verified the exact ID `anthropic/claude-sonnet-5`, which is the model already selected in Hermes. A five-message test ran against that model and then through the live gates: name onboarding, linked disclosure, age request before calories, removal of the unproven “33 noted” claim, and a single height request before maintenance.
 
 ## Web product we are building
 
@@ -81,7 +85,7 @@ The stripped-down landing page passes its focused tests, lint, TypeScript, and a
 ## Exact next step
 
 - Website track: visually check the live `/privacy` page in a signed-out browser when one is connected, then collect landing-page feedback.
-- Beta track: send one fresh message from Vandy, verify the per-user Convex facts were loaded and a new confirmed fact was saved, then resume tester onboarding. Do not onboard another tester before this proof.
+- Beta track: fix the repeating name/consent state, hide raw provider errors, force-test the Codex fallback, and then run a fresh WhatsApp conversation through onboarding and one Convex fact save. Do not onboard another tester before all four checks pass.
 - Backend track: per-user fact memory is live in production. Full Convex onboarding writes, meal/progress logs, and a resume-from-field engine remain next; Hermes shared memory must stay disabled.
 - Build check: focused page tests, lint, and the production build pass for the restored local design.
 
