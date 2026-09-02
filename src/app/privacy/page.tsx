@@ -40,6 +40,12 @@ export default function PrivacyPage() {
           <p>Two things sit outside that automatic deletion, and we would rather say so than let you assume otherwise. The photos and voice notes you sent, and Ted&rsquo;s own record of your conversation, are held on the machine that runs Ted; reply in the chat asking for those to be removed and Vandy will delete them by hand. The WhatsApp chat on your own phone belongs to you &mdash; clearing it there is yours to do.</p>
         </section>
 
+        <section>
+          <h2>How to reach us</h2>
+          <p>Message Ted in your WhatsApp chat for anything about your data &mdash; a question, a correction, a deletion, or a complaint. Vandana Agarwal runs this beta independently and reads those messages. Say <strong>this is for Vandy</strong> at the start and Ted will pass it on rather than coach you about it.</p>
+          <p>The chat is the only contact route during the private beta, so keep it if you may want to reach us later: once you delete the chat on your own phone, and Ted has deleted your data, there is nothing left connecting you to us.</p>
+        </section>
+
         <p className="privacy-boundary">Ted is a habit coach, not a doctor. Do not use it for emergencies, diagnosis, or treatment.</p>
       </article>
     </main>

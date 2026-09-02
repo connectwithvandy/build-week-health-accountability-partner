@@ -26,7 +26,7 @@ def message(role: str, content: str) -> dict[str, str]:
     return {"role": role, "content": content}
 
 
-VANDY_DISCLOSURE = f"hey Vandy 🙂\n\n{DISCLOSURE_MESSAGE}"
+VANDY_DISCLOSURE = f"hey Vandy 🙂\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
 
 
 class TedSafetyGatesTest(unittest.TestCase):
@@ -160,14 +160,24 @@ class TedSafetyGatesTest(unittest.TestCase):
         ]
         self.assertEqual(consent_gate(history, GOAL_QUESTION), VANDY_DISCLOSURE)
 
-    def test_disclosure_is_one_short_message_without_the_goal(self) -> None:
+    def test_disclosure_and_goal_go_out_as_one_message(self) -> None:
+        """SCOPING.md §3.4: both in the same message, so neither can be lost."""
         self.assertEqual(
             DISCLOSURE_MESSAGE,
             "Ted stores your profile, messages, plans, logs and uploads. Read "
             "more: https://heyted.vercel.app/privacy. Send “delete my data” "
             "anytime to delete everything.",
         )
+        # The constant stays the disclosure alone; the two are joined at
+        # send time so the privacy text has exactly one definition.
         self.assertNotIn(GOAL_QUESTION, DISCLOSURE_MESSAGE)
+        delivered = gates._personalized_disclosure("Vandy")
+        self.assertIn(DISCLOSURE_MESSAGE, delivered)
+        self.assertIn(GOAL_QUESTION, delivered)
+        self.assertTrue(delivered.endswith(GOAL_QUESTION))
+        # No background sender left to stall.
+        self.assertFalse(hasattr(gates, "_schedule_goal_question"))
+        self.assertFalse(hasattr(gates, "_send_goal_question"))
 
     def test_calorie_gate_does_not_skip_name_or_disclosure(self) -> None:
         first_turn = [message("user", "Track calories")]
@@ -337,10 +347,7 @@ class TedSafetyGatesTest(unittest.TestCase):
             VANDY_DISCLOSURE,
         )
 
-        with (
-            patch.object(gates, "_persist_disclosure_state"),
-            patch.object(gates, "_schedule_goal_question") as schedule,
-        ):
+        with patch.object(gates, "_persist_disclosure_state"):
             _log_disclosure(
                 platform="whatsapp",
                 session_id=session_id,
@@ -351,7 +358,6 @@ class TedSafetyGatesTest(unittest.TestCase):
                 session_id=session_id,
                 assistant_response=VANDY_DISCLOSURE,
             )
-            schedule.assert_called_once_with(sender_id, user_key)
 
         history_without_transformed_reply = named_history + [
             message("assistant", "What do you want to change?"),
@@ -384,10 +390,7 @@ class TedSafetyGatesTest(unittest.TestCase):
             message("user", "Vandy"),
         ]
 
-        with (
-            patch.object(gates, "_persist_disclosure_state"),
-            patch.object(gates, "_schedule_goal_question"),
-        ):
+        with patch.object(gates, "_persist_disclosure_state"):
             _capture_turn(
                 platform="whatsapp",
                 session_id=first_session,
@@ -439,16 +442,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
         visible_replies: list[str] = []
 
-        with (
-            patch.object(gates, "_persist_disclosure_state"),
-            patch.object(
-                gates,
-                "_schedule_goal_question",
-                side_effect=lambda _chat_id, _user_key: visible_replies.append(
-                    GOAL_QUESTION
-                ),
-            ),
-        ):
+        with patch.object(gates, "_persist_disclosure_state"):
             for user_text, model_reply in zip(
                 ("Vandy", "Routine", "routine", "okay understood"),
                 model_replies,
@@ -478,12 +472,13 @@ class TedSafetyGatesTest(unittest.TestCase):
                 history.append(message("assistant", model_reply))
 
         self.assertEqual(visible_replies.count(VANDY_DISCLOSURE), 1)
-        self.assertEqual(visible_replies.count(GOAL_QUESTION), 1)
+        # The goal question rides inside the disclosure now, so it is asked
+        # exactly once and never as a second bubble that can fail alone.
+        self.assertEqual(sum(GOAL_QUESTION in reply for reply in visible_replies), 1)
         self.assertEqual(
             visible_replies,
             [
                 VANDY_DISCLOSURE,
-                GOAL_QUESTION,
                 model_replies[1],
                 model_replies[2],
                 model_replies[3],
@@ -2185,6 +2180,302 @@ class ConvexCompatibilityCheckTest(unittest.TestCase):
         self.assertEqual(
             set(re.findall(r'"(\w+)"', block)),
             set(gates.REQUIRED_CONVEX_ACTIONS),
+        )
+
+
+class RoughInputTest(unittest.TestCase):
+    """Order 13: names and messages that are not the happy path."""
+
+    def _fresh_key(self, name: str) -> str:
+        key = f"rough-input-{name}"
+        gates._DISCLOSURE_SENT_KEYS.discard(key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(key, None)
+        return key
+
+    def test_a_trailing_emoji_is_not_part_of_the_name(self) -> None:
+        self.assertEqual(gates._clean_name("call me Vandy \U0001f604"), "Vandy")
+        self.assertEqual(gates._clean_name("I'm Vandy \U0001fae1\U0001f642"), "Vandy")
+        self.assertEqual(gates._clean_name("\U0001f604 Vandy"), "Vandy")
+
+    def test_an_emoji_only_name_is_refused_rather_than_stored(self) -> None:
+        for text in ("\U0001fae1", "\U0001f604\U0001f642", "   \U0001fae1   "):
+            with self.subTest(text=text):
+                self.assertIsNone(gates._clean_name(text))
+
+    def test_a_name_too_long_is_refused_rather_than_truncated(self) -> None:
+        long_name = "Vandana " * 40
+        self.assertIsNone(gates._clean_name(long_name))
+        # The old parser kept the first 40 characters, mid-word, silently.
+        self.assertNotEqual(gates._clean_name(long_name), long_name.strip()[:40])
+
+    def test_an_ordinary_name_still_survives(self) -> None:
+        self.assertEqual(gates._clean_name("call me Vandy"), "Vandy")
+        self.assertEqual(gates._clean_name("my name is Vandana Agarwal"), "Vandana Agarwal")
+        self.assertEqual(gates._clean_name("\u0935\u0902\u0926\u0928\u093e"), "\u0935\u0902\u0926\u0928\u093e")
+
+    def test_an_emoji_only_answer_makes_the_gate_ask_again(self) -> None:
+        user_key = self._fresh_key("emoji-name")
+        history = [
+            message("assistant", "What should I call you?"),
+            message("user", "\U0001fae1"),
+        ]
+        reply = consent_gate(history, "nice to meet you", user_key)
+        self.assertEqual(reply, "What should I call you?")
+
+    def test_the_prepared_message_sent_twice_is_acknowledged(self) -> None:
+        user_key = self._fresh_key("double-press")
+        history = [
+            message("user", "Okay Ted, let's do this \U0001fae1"),
+            message("assistant", OPENING_MESSAGE),
+        ]
+        self.assertEqual(
+            transform_response(
+                history=history,
+                user_message="Okay Ted, let's do this \U0001fae1",
+                response_text="hey again!",
+                user_key=user_key,
+            ),
+            gates.ALREADY_STARTED_MESSAGE,
+        )
+
+    def test_an_empty_message_during_onboarding_asks_for_the_name(self) -> None:
+        user_key = self._fresh_key("empty-onboarding")
+        history = [message("assistant", "What should I call you?")]
+        self.assertEqual(
+            transform_response(
+                history=history,
+                user_message="   ",
+                response_text="",
+                user_key=user_key,
+            ),
+            gates.NAME_NOT_USABLE_MESSAGE,
+        )
+
+    def test_a_media_only_message_after_onboarding_is_left_alone(self) -> None:
+        """A meal photo is the product. Only the name question intercepts it."""
+        user_key = self._fresh_key("media-after")
+        history = [
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+            message("assistant", gates._personalized_disclosure("Vandy")),
+            message("user", "routine"),
+        ]
+        reply = transform_response(
+            history=history,
+            user_message="",
+            response_text="that looks like about 500 kcal",
+            user_key=user_key,
+            action_succeeded=True,
+        )
+        self.assertNotEqual(reply, gates.NAME_NOT_USABLE_MESSAGE)
+
+
+class GoalQuestionDeliveryTest(unittest.TestCase):
+    """Order 08: the goal question cannot be lost, because it is not a send."""
+
+    def test_a_restart_between_the_two_sends_cannot_lose_it(self) -> None:
+        user_key = "goal-question-restart"
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(user_key, None)
+        history = [
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+        ]
+        delivered = consent_gate(history, "anything at all", user_key)
+        # One message carries both, so there is no window in which the
+        # disclosure has landed and the goal question is still owed.
+        self.assertIn(gates.PRIVACY_URL, delivered)
+        self.assertIn(GOAL_QUESTION, delivered)
+        gates._DISCLOSURE_SENT_KEYS.discard(user_key)
+
+
+class GoldenPathTest(unittest.TestCase):
+    """Order 14(2): the whole V1 conversation, replayed through the live gates."""
+
+    def setUp(self) -> None:
+        self.user_key = "golden-path-e2e"
+        gates._DISCLOSURE_SENT_KEYS.discard(self.user_key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(self.user_key, None)
+        self.history: list[dict[str, str]] = []
+        self.visible: list[str] = []
+
+    def tearDown(self) -> None:
+        gates._DISCLOSURE_SENT_KEYS.discard(self.user_key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(self.user_key, None)
+
+    def turn(self, user_text: str, model_reply: str, **kwargs: object) -> str:
+        """One WhatsApp round trip. Returns what the user actually sees."""
+        self.history.append(message("user", user_text))
+        gated = transform_response(
+            history=list(self.history),
+            user_message=user_text,
+            response_text=model_reply,
+            user_key=self.user_key,
+            **kwargs,
+        )
+        reply = model_reply if gated is None else gated
+        self.history.append(message("assistant", reply))
+        self.visible.append(reply)
+        return reply
+
+    def test_the_whole_conversation_end_to_end(self) -> None:
+        # 1. The prepared start message. Ted's opener replaces whatever the
+        #    model wrote, so the promise and the name question are exact.
+        self.assertEqual(
+            self.turn("Okay Ted, let's do this \U0001fae1", "hey, and you are?"),
+            OPENING_MESSAGE,
+        )
+
+        # 2. The name. Disclosure and goal question arrive as ONE message.
+        disclosure = self.turn("Vandy", "nice to meet you")
+        self.assertEqual(disclosure, VANDY_DISCLOSURE)
+        self.assertIn(gates.PRIVACY_URL, disclosure)
+        self.assertIn(GOAL_QUESTION, disclosure)
+
+        # 3. The goal, then the check-in time. Ted's own words survive.
+        self.assertEqual(
+            self.turn("eat more protein", "good one. what time should i check in?"),
+            "good one. what time should i check in?",
+        )
+        self.assertEqual(self.turn("8pm, Bangalore", "locked."), "locked.")
+
+        # 4. First meal by text, with the log tool actually succeeding. A
+        #    per-food estimate is not a target, so the numbers go out intact.
+        meal = self.turn(
+            "3 rotis and dal for lunch",
+            "roughly 480 calories, 18g protein.",
+            action_succeeded=True,
+        )
+        self.assertEqual(meal, "roughly 480 calories, 18g protein.")
+
+        # 5. A correction. The recalculated numbers must survive the claim gate.
+        correction = self.turn(
+            "actually it was 2 rotis",
+            "updated — that's about 380 calories, 15g protein now.",
+            action_succeeded=True,
+        )
+        self.assertIn("380", correction)
+        self.assertIn("15g protein", correction)
+
+        # 6. "how am I doing today?" — today's totals reach the user whole.
+        totals = self.turn(
+            "how am i doing today?",
+            "2 meals logged, water done, steps short by 2k.",
+        )
+        self.assertEqual(totals, "2 meals logged, water done, steps short by 2k.")
+        self.assertIn("2 meals logged", totals)
+
+        # 7. The evening review keeps its counts.
+        review = self.turn(
+            "wrap up my day",
+            "3 meals logged, water done, walk done. tomorrow: protein at breakfast.",
+        )
+        self.assertIn("3 meals logged", review)
+        self.assertIn("tomorrow: protein at breakfast", review)
+
+        # 8. "delete my data" — claiming deletion with no tool behind it is
+        #    replaced, however confidently the model said it.
+        refused = self.turn("delete my data", "Done, everything has been deleted.")
+        self.assertEqual(refused, gates.CLAIM_NOT_DONE)
+
+        # 9. Confirmed, with the delete tool proven this turn. Only now does a
+        #    deletion confirmation reach the user.
+        confirmed = self.turn(
+            "yes",
+            "Done, everything has been deleted.",
+            successful_actions={"delete"},
+        )
+        self.assertEqual(confirmed, "Done, everything has been deleted.")
+
+        # The name is asked exactly once across the whole conversation.
+        self.assertEqual(
+            sum(gates._asks_for_name(reply) for reply in self.visible), 1
+        )
+        # And the disclosure went out exactly once.
+        self.assertEqual(
+            sum(gates.PRIVACY_URL in reply for reply in self.visible), 1
+        )
+
+
+class LoadBearingSafetyTest(unittest.TestCase):
+    """Order 14(3): the two rules that must survive every change above."""
+
+    ADULT = [
+        message("assistant", "how old are you?"),
+        message("user", "33"),
+        message("assistant", "how tall are you?"),
+        message("user", "170"),
+        message("assistant", "and your weight?"),
+        message("user", "62"),
+        message("assistant", "are you male or female?"),
+        message("user", "female"),
+        message("assistant", "how active are you?"),
+        message("user", "sedentary"),
+    ]
+    MINOR = [message("assistant", "how old are you?"), message("user", "15")]
+
+    def test_a_minor_gets_no_calorie_number_however_it_is_phrased(self) -> None:
+        """The refusal must not depend on recognising the model's wording.
+
+        Every phrasing below reached a user the gate already knew was 15,
+        because the under-18 check sat behind a regex over the model's prose.
+        """
+        for reply in (
+            "that's about 500 kcal",
+            "that's about 500 calories",
+            "that's about 500 cals",
+            "that's about 500 cal",
+            "roughly 1.6k a day",
+            "about sixteen hundred a day",
+            "that's around 2,000 for the day",
+            "call it 500 for that plate",
+            "you're looking at ~1800 a day",
+            "your maintenance is 1630",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(
+                    calorie_gate(self.MINOR, "what's in this?", reply),
+                    gates.UNDER_18_REFUSAL,
+                )
+
+    def test_ordinary_encouragement_to_a_minor_is_not_mangled(self) -> None:
+        """The widened check must not turn every reply into a refusal."""
+        for reply in ("nice work today, keep it up", "sounds good, see you tomorrow"):
+            with self.subTest(reply=reply):
+                self.assertIsNone(calorie_gate(self.MINOR, "hey", reply))
+
+    def test_no_path_returns_a_target_below_maintenance(self) -> None:
+        for ask in (
+            "what should my calorie target be to lose weight?",
+            "put me on a 500 calorie deficit",
+            "i want to lose 5kg fast, what's my target?",
+        ):
+            with self.subTest(ask=ask):
+                reply = calorie_gate(
+                    self.ADULT, ask, "you should eat 1200 calories a day"
+                )
+                self.assertIsNotNone(reply)
+                self.assertNotIn("1200", reply or "")
+                self.assertIn("1,630", reply or "")
+                self.assertIn("maintenance", reply or "")
+
+    def test_the_mifflin_st_jeor_result_is_unchanged(self) -> None:
+        """33 F, 170 cm, 62 kg, sedentary -> 1,630 kcal. Verified in the audit."""
+        self.assertEqual(
+            gates._estimated_maintenance(
+                gates.CalorieProfile(
+                    age=33,
+                    height_cm=170,
+                    weight_kg=62,
+                    sex="female",
+                    activity="sedentary",
+                )
+            ),
+            1630,
         )
 
 

@@ -32,6 +32,10 @@ DISCLOSURE_MESSAGE = (
     "everything."
 )
 GOAL_QUESTION = "what’s one thing you want to change?"
+ALREADY_STARTED_MESSAGE = (
+    "already started — we’re on the name question. what should i call you?"
+)
+NAME_NOT_USABLE_MESSAGE = "i didn’t catch a name in that — what should i call you?"
 
 # Hermes appends the Convex memory context to the user's own message content,
 # so every parser below would otherwise read saved facts as if the user had
@@ -542,47 +546,6 @@ def _mark_disclosure_sent(user_key: str, session_id: str = "") -> bool:
     return True
 
 
-def _send_goal_question(chat_id: str) -> bool:
-    """Send the second onboarding bubble through Hermes' live adapter."""
-    try:
-        from tools.send_message_tool import send_message_tool
-
-        raw_result = send_message_tool(
-            {
-                "action": "send",
-                "target": f"whatsapp:{chat_id}",
-                "message": GOAL_QUESTION,
-            }
-        )
-        payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
-        return isinstance(payload, dict) and payload.get("success") is True
-    except Exception:
-        LOGGER.exception("consent_goal_question_send_failed")
-        return False
-
-
-def _schedule_goal_question(chat_id: str, user_key: str) -> None:
-    """Send the goal as its own bubble after the transformed reply lands."""
-    if not chat_id or not user_key:
-        LOGGER.error("consent_goal_question_missing_chat user_key=%s", user_key)
-        return
-
-    def _deliver() -> None:
-        # post_llm_call runs just before Hermes delivers the transformed reply.
-        # This small delay preserves disclosure-first ordering on WhatsApp.
-        time.sleep(1.0)
-        if _send_goal_question(chat_id):
-            LOGGER.info("consent_goal_question_sent user_key=%s", user_key)
-        else:
-            LOGGER.error("consent_goal_question_delivery_failed user_key=%s", user_key)
-
-    threading.Thread(
-        target=_deliver,
-        name="ted-consent-goal-question",
-        daemon=True,
-    ).start()
-
-
 @dataclass(frozen=True)
 class CalorieProfile:
     age: int | None = None
@@ -629,7 +592,33 @@ def _disclosure_was_sent(history: Iterable[dict[str, Any]]) -> bool:
     )
 
 
+# Wide enough for the emoji people actually send: pictographs, symbols,
+# arrows, flags, skin-tone modifiers, the variation selectors that follow
+# them and the zero-width joiner that glues multi-part emoji together. None
+# of these ranges overlap Latin, Devanagari or CJK name characters.
+_EMOJI_CHARS = (
+    "\U0001F000-\U0001FAFF"
+    "\U00002190-\U000021FF"
+    "\U00002300-\U000023FF"
+    "\U00002500-\U00002BFF"
+    "\U0000FE00-\U0000FE0F"
+    "\U000024C2"
+    "\U000020E3"
+    "\U00003030"
+    "\U0000200D"
+)
+_EMOJI_EDGE = re.compile(f"^[{_EMOJI_CHARS}\\s]+|[{_EMOJI_CHARS}\\s]+$")
+_MAX_NAME_LENGTH = 40
+
+
 def _clean_name(text: str) -> str | None:
+    """The name the user gave, or None when there is not a usable one.
+
+    None makes the consent gate ask again, which is the point. The old version
+    accepted "🫡" as a name, kept the trailing emoji in "Vandy 😄" so Ted
+    greeted them that way forever, and cut a 300-character message to 40
+    characters mid-word without ever saying so.
+    """
     name = re.sub(
         r"^(?:i(?:'m| am)|my name is|call me)\s+",
         "",
@@ -637,7 +626,15 @@ def _clean_name(text: str) -> str | None:
         flags=re.IGNORECASE,
     )
     name = re.sub(r"\s+", " ", name).strip(" .,!?")
-    return name[:40] if name else None
+    name = _EMOJI_EDGE.sub("", name).strip(" .,!?")
+    if not name:
+        # Emoji-only, or nothing but punctuation. Ask again.
+        return None
+    if len(name) > _MAX_NAME_LENGTH:
+        # Too long to be a name someone wants to be called. Ask again rather
+        # than silently keeping the first 40 characters.
+        return None
+    return name
 
 
 def _given_name(
@@ -660,9 +657,17 @@ def _given_name(
 
 
 def _personalized_disclosure(name: str | None) -> str:
+    """Disclosure and goal question in one message, per SCOPING.md §3.4.
+
+    These used to be two sends, the second fired from a daemon thread after a
+    one-second sleep. A failed send — or a gateway restart inside that second
+    — left onboarding stalled: no goal question, and no record anywhere that
+    one was owed. One message removes the thread, the sleep, and the whole
+    failure mode rather than adding a retry to work around it.
+    """
     if name:
-        return f"hey {name} 🙂\n\n{DISCLOSURE_MESSAGE}"
-    return DISCLOSURE_MESSAGE
+        return f"hey {name} 🙂\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
+    return f"{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
 
 
 def _asks_for_name(text: str) -> bool:
@@ -687,6 +692,27 @@ def _is_prepared_start(history: Iterable[dict[str, Any]], user_message: str) -> 
         and "okay ted" in user_message.lower()
         and len(user_message) <= 80
     )
+
+
+def _awaiting_name(history: Iterable[dict[str, Any]], user_key: str) -> bool:
+    """Onboarding has not got past the name yet."""
+    return not _disclosure_was_sent(history) and not _given_name(history, user_key)
+
+
+def _is_repeat_prepared_start(
+    history: Iterable[dict[str, Any]], user_message: str, user_key: str
+) -> bool:
+    """The WhatsApp button pressed again while onboarding is still running.
+
+    _is_prepared_start only fires when no assistant turn exists yet, so the
+    second press used to fall through to an ordinary model reply that
+    acknowledged nothing at all.
+    """
+    if not any(role == "assistant" for role, _ in _messages(history)):
+        return False
+    if "okay ted" not in user_message.lower() or len(user_message) > 80:
+        return False
+    return _awaiting_name(history, user_key)
 
 
 def consent_gate(
@@ -1014,14 +1040,63 @@ def _calorie_flow_active(history: Iterable[dict[str, Any]], user_message: str) -
     return any(term in joined for term in _TARGET_FLOW_TERMS)
 
 
+# Nutrition vocabulary, used only to decide what a minor must not receive.
+_NUTRITION_WORDS = re.compile(
+    r"\b(?:k?cals?|calories?|kilocalories?|macros?|protein|carbs?|"
+    r"fats?|fibre|fiber|maintenance|deficit|surplus|tdee|bmr|target)\b",
+    re.IGNORECASE,
+)
+_SPELLED_AMOUNT = re.compile(
+    r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)"
+    r"[\s-]+(?:hundred|thousand)\b",
+    re.IGNORECASE,
+)
+
+
 def _response_has_calorie_number(response_text: str) -> bool:
+    """A calorie figure in the model's reply, in the shapes it actually uses.
+
+    The old pattern wanted the literal word "kcal" or "calories" next to the
+    digits, so "500 cal", "1.6k a day", "2,000 for the day" and "sixteen
+    hundred" all read as no number at all. See _minor_unsafe_response for why
+    the under-18 rule no longer rests on this function alone.
+    """
     return bool(
         re.search(
-            r"(?:\b\d[\d,.]*\s*(?:kcal|calories?)\b|"
-            r"\b(?:maintenance|deficit|target)\D{0,30}\d[\d,.]*)",
+            # "500 kcal", "500 calories", "500 cals", "500 cal"
+            r"(?:\b\d[\d,.]*\s*k?cals?\b"
+            r"|\b\d[\d,.]*\s*calories?\b"
+            # "maintenance is about 1630", "target of 1,800"
+            r"|\b(?:maintenance|deficit|surplus|target|tdee|bmr)\D{0,30}\d[\d,.]*"
+            # "1.6k a day", "2,000 for the day", "1800 per day"
+            r"|\b\d[\d,.]*\s*k?\s*(?:a|per)\s+day\b"
+            r"|\b\d[\d,.]*\s*k?\s*for\s+the\s+day\b)",
             response_text,
             re.IGNORECASE,
         )
+    ) or bool(
+        # "about sixteen hundred a day" — no digits at all.
+        _SPELLED_AMOUNT.search(response_text)
+        and _NUTRITION_WORDS.search(response_text)
+    )
+
+
+def _minor_unsafe_response(response_text: str) -> bool:
+    """Anything a known minor must not be sent.
+
+    Deliberately broader than _response_has_calorie_number, and deliberately
+    not a phrasing list: any digit, or any nutrition word, is enough. The
+    under-18 refusal is load-bearing, and hanging it on recognising how the
+    model happened to word a number is how "500 cal", "roughly 1.6k a day"
+    and "about sixteen hundred" reached a user the gate already knew was 15.
+    """
+    return bool(
+        re.search(r"\d", response_text)
+        or _NUTRITION_WORDS.search(response_text)
+        # "about sixteen hundred a day" carries no digit and no
+        # nutrition word, and is still a calorie number.
+        or _SPELLED_AMOUNT.search(response_text)
     )
 
 
@@ -1085,15 +1160,23 @@ def calorie_gate(
     target_flow = _calorie_flow_active(
         history, user_message
     ) or _maintenance_or_target_flow(user_message, response_text)
-    if not target_flow and not _response_has_calorie_number(response_text):
-        return None
+    has_number = _response_has_calorie_number(response_text)
 
+    # The age is read before the early return on purpose. It used to be read
+    # after, which put the load-bearing under-18 refusal behind a regex over
+    # the model's own prose: phrase the number as "500 cal" outside a target
+    # conversation and the gate returned None for a user it knew was 15.
     profile = extract_calorie_profile(history, user_message)
 
-    # Load-bearing and unchanged: once we know the user is a minor, no calorie
-    # number goes out at all — target flow or not.
+    # Load-bearing: once we know the user is a minor, no calorie number goes
+    # out at all — target flow or not, and whatever words the model chose.
     if profile.age is not None and profile.age < 18:
-        return UNDER_18_REFUSAL
+        if target_flow or has_number or _minor_unsafe_response(response_text):
+            return UNDER_18_REFUSAL
+        return None
+
+    if not target_flow and not has_number:
+        return None
 
     # A per-food estimate is not a target, so it must not trigger the age
     # question. Only the target flow gets that far.
@@ -1259,6 +1342,14 @@ def transform_response(
         # OPENING_MESSAGE ends with the name question, so it counts as asking.
         _record_name_ask(user_key)
         return OPENING_MESSAGE
+    if _is_repeat_prepared_start(history, user_message, user_key):
+        return ALREADY_STARTED_MESSAGE
+    # An empty or media-only message while the name is still outstanding. A
+    # photo or a voice note cannot be a name, and _message_text renders both
+    # as "" — which the name parser would otherwise take at face value. Only
+    # during onboarding: after that, media is the product, not an error.
+    if not user_message.strip() and _awaiting_name(history, user_key):
+        return NAME_NOT_USABLE_MESSAGE
     # Milestone 11, before anything else reads the model's reply: a user
     # reporting a bad answer must get the same confirmation every time,
     # whatever the model decided to say about it.
@@ -1426,12 +1517,9 @@ def _log_disclosure(**kwargs: Any) -> None:
         with _TURN_LOCK:
             context = dict(_TURN_CONTEXT.get(session_id, {}))
         user_key = str(context.get("user_key") or session_id)
-        first_send = _mark_disclosure_sent(user_key, session_id)
-        if first_send:
-            _schedule_goal_question(
-                str(context.get("chat_id") or ""),
-                user_key,
-            )
+        # The goal question rides along inside the disclosure now, so there is
+        # no second send to schedule and nothing left to fail on its own.
+        _mark_disclosure_sent(user_key, session_id)
         LOGGER.info(
             "consent_disclosure_sent session=%s user_key=%s privacy_url=%s",
             session_id,
