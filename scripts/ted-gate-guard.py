@@ -44,6 +44,29 @@ def _fail(message: str) -> str:
     return f"  FAIL  {message}"
 
 
+def patch_guard_report() -> tuple[list[str], bool]:
+    """Lines from the Hermes-patch check, and whether anything is missing.
+
+    Two of Ted's fixes live in the Hermes checkout rather than this repo, and a
+    `hermes update` can silently drop them (it stashes, pulls, and on a
+    conflicting re-apply resets the tree). Folded in here because this is the
+    script that already gets run after every restart. Fail-soft: a missing or
+    broken patch guard must never stop this one from reporting on the gates.
+    """
+    import importlib.util
+
+    module_path = Path(__file__).resolve().parent / "hermes-patch-guard.py"
+    if not module_path.exists():
+        return [], False
+    try:
+        spec = importlib.util.spec_from_file_location("ted_hermes_patch_guard", module_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.report(), bool(module.missing())
+    except Exception as error:  # noqa: BLE001 - never break the gate report
+        return [_fail(f"could not run the Hermes patch check: {error}")], False
+
+
 def _ok(message: str) -> str:
     return f"  ok    {message}"
 
@@ -235,6 +258,9 @@ def main() -> int:
     else:
         report.append(_ok("Convex memory variables are set"))
 
+    patch_lines, patches_missing = patch_guard_report()
+    report.extend(patch_lines)
+
     print("\n".join(report))
 
     if not ungated:
@@ -256,6 +282,16 @@ def main() -> int:
             return 1
         if absent:
             print("\nGates are on. Memory is off — see the FAIL line above.")
+            return 1
+        if patches_missing:
+            # Not ungated. Ted still refuses under-18s, still never returns a
+            # deficit, still keeps users apart. He is just noisy again and
+            # mismeasures provider stalls, so this is a warning, not a stop.
+            print(
+                "\nGates are on. The Hermes gateway patches are NOT applied — "
+                "Ted will leak\nprovider diagnostics into chat and charge laptop "
+                "sleep to the provider.\nRe-apply: npm run hermes:patch"
+            )
             return 1
         print("\nGates are on.")
         return 0

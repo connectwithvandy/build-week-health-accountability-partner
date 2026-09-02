@@ -1,0 +1,112 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -382,24 +382,76 @@
+     )
+ 
+ 
+-def _gateway_provider_error_reply(text: str) -> str:
+-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+-    if _GATEWAY_AUTH_ERROR_RE.search(text):
+-        return (
+-            "⚠️ Provider authentication failed. Check the configured credentials; "
+-            "raw provider details are in the gateway logs."
+-        )
+-    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
+-        return (
+-            "⚠️ The model provider rejected the request. I kept the raw provider "
+-            "error out of chat; check gateway logs for details or try rephrasing."
+-        )
+-    if _GATEWAY_RATE_LIMIT_RE.search(text):
+-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+-    return (
++# Operational status that names the model/provider or narrates the retry
++# machinery. SOUL-style personas ("never expose model names, provider names,
++# gateway events") need these gone from chat, and they carry no action a chat
++# user can take. Detail still reaches agent.log via the logger.warning at each
++# emission site — only the chat copy is affected.
++_GATEWAY_PROVIDER_STALL_RE = re.compile(
++    r"("
++    r"no\s+response\s+from\s+provider\s+for\s+\d+"
++    r"|no\s+output\s+from\s+provider\s+for\s+\d+"
++    r"|codex\s+stream\s+sent\s+no\s+events\s+for\s+\d+"
++    r"|no\s+events\s+from\s+bedrock\s+for\s+\d+"
++    r")",
++    re.IGNORECASE,
++)
++
++# User-facing copy for each provider-failure category, overridable per install
++# via ``display.provider_messages.<key>`` in config.yaml so a persona-driven
++# gateway can speak in its own voice without patching this file. Defaults
++# reproduce the historical wording exactly. A key set to an empty string
++# suppresses that category from chat entirely (it still reaches the logs).
++_GATEWAY_PROVIDER_MESSAGE_DEFAULTS = {
++    "auth": (
++        "⚠️ Provider authentication failed. Check the configured credentials; "
++        "raw provider details are in the gateway logs."
++    ),
++    "policy": (
++        "⚠️ The model provider rejected the request. I kept the raw provider "
++        "error out of chat; check gateway logs for details or try rephrasing."
++    ),
++    "rate_limit": (
++        "⏱️ The model provider is rate-limiting requests. Please wait a moment "
++        "and try again."
++    ),
++    "generic": (
+         "⚠️ The model provider failed after retries. I kept raw provider details "
+         "out of chat; check gateway logs for diagnostics."
+-    )
++    ),
++    # Mid-call stall chatter. Defaults to suppression: it names the model and
++    # context size, repeats once per reconnect, and the user has nothing to do
++    # with it. On terminal failure the "generic" line above is still delivered,
++    # so a failed turn is never silent.
++    "stall": "",
++}
++
++
++def _gateway_provider_message(key: str) -> str:
++    """Resolve user-facing provider-failure copy, honouring config overrides."""
++    default = _GATEWAY_PROVIDER_MESSAGE_DEFAULTS.get(key, "")
++    try:
++        from hermes_cli.config import load_config_readonly
++
++        override = cfg_get(
++            load_config_readonly(), "display", "provider_messages", key
++        )
++    except Exception:
++        return default
++    if override is None:
++        return default
++    return str(override).strip()
++
++
++def _gateway_provider_error_reply(text: str) -> str:
++    """Map raw provider/API errors to a short user-safe chat reply."""
++    if _GATEWAY_AUTH_ERROR_RE.search(text):
++        return _gateway_provider_message("auth")
++    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
++        return _gateway_provider_message("policy")
++    if _GATEWAY_RATE_LIMIT_RE.search(text):
++        return _gateway_provider_message("rate_limit")
++    return _gateway_provider_message("generic")
+ 
+ 
+ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
+@@ -481,6 +533,16 @@
+     text = _redact_gateway_user_facing_secrets(text)
+     if _TELEGRAM_NOISY_STATUS_RE.search(text):
+         return None
++    # Mid-call stall notices leak the model name, provider name and context
++    # size into chat, and repeat once per reconnect (observed: five copies of
++    # "No response from provider for 1019s (model: ..., context: ~9,257
++    # tokens)" flushed into one WhatsApp thread). Replace with configured copy,
++    # or drop entirely when that copy is empty — the raw line is already in
++    # agent.log, and a turn that ultimately fails still delivers the terminal
++    # provider-error reply.
++    if _GATEWAY_PROVIDER_STALL_RE.search(text):
++        replacement = _gateway_provider_message("stall")
++        return replacement or None
+     if _looks_like_gateway_provider_error(text):
+         return _gateway_provider_error_reply(text)
+     return text

@@ -585,7 +585,8 @@ class TedSafetyGatesTest(unittest.TestCase):
         request.assert_called_once_with(
             "save",
             expected_user_key,
-            [{"key": "name", "value": "Vandy"}],
+            facts=[{"key": "name", "value": "Vandy"}],
+            body=None,
         )
 
     def test_successful_convex_memory_save_unlocks_a_save_claim(self) -> None:
@@ -1319,6 +1320,233 @@ class RegistrationVisibilityTest(unittest.TestCase):
         self.assertIn("ted_safety_gates_registered", "\n".join(captured.output))
         self.assertIn("ted_memory_save", ctx.tools)
         self.assertIn("transform_llm_output", ctx.hooks)
+
+
+class StorageOutageTest(unittest.TestCase):
+    """When Convex is down the user is told the update did not save.
+
+    SCOPING.md #27. The claim gate's "I haven't completed that action" is a
+    different statement — it means Ted claimed something no tool did — and a
+    tester cannot tell from it whether their meal is in the database.
+    """
+
+    SESSION = "storage-outage-session"
+    SENDER = "outage@s.whatsapp.net"
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="two rotis and dal",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+
+    @staticmethod
+    def outage() -> dict[str, object]:
+        return {
+            "success": False,
+            "error": gates._STORAGE_UNAVAILABLE,
+            "storage_error": True,
+        }
+
+    def test_a_failed_log_tells_the_user_it_did_not_save(self) -> None:
+        with patch.object(gates, "_convex_request", return_value=self.outage()):
+            gates._log_daily_entry(
+                {
+                    "entry_type": "meal",
+                    "meal": {"items": ["2 rotis", "dal"], "calories": 420},
+                },
+                session_id=self.SESSION,
+            )
+
+        reply = _transform_live_response(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            response_text="logged it — roughly 420 calories.",
+        )
+
+        self.assertEqual(reply, gates.STORAGE_NOT_SAVED)
+        self.assertNotEqual(reply, gates.CLAIM_NOT_DONE)
+
+    def test_the_outage_line_is_not_the_claim_gate_line(self) -> None:
+        """Distinct strings, so a tester can tell the two failures apart."""
+        self.assertNotEqual(gates.STORAGE_NOT_SAVED, gates.CLAIM_NOT_DONE)
+        self.assertIn("save", gates.STORAGE_NOT_SAVED)
+        self.assertIn("again", gates.STORAGE_NOT_SAVED)
+
+    def test_a_silent_failure_still_reaches_the_user(self) -> None:
+        """The reply claimed nothing, so the claim gate would have said nothing."""
+        with patch.object(gates, "_convex_request", return_value=self.outage()):
+            gates._log_daily_entry(
+                {"entry_type": "water", "water_ml": 500},
+                session_id=self.SESSION,
+            )
+
+        self.assertEqual(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                response_text="nice, that's 500ml.",
+            ),
+            gates.STORAGE_NOT_SAVED,
+        )
+
+    def test_a_reading_is_kept_but_never_implies_the_write_landed(self) -> None:
+        self.assertEqual(
+            gates.action_claim_gate(
+                "I've saved that. 3 meals logged, 4,200 steps.",
+                storage_failed=True,
+            ),
+            f"3 meals logged, 4,200 steps. {gates.STORAGE_NOT_SAVED}",
+        )
+
+    def test_a_healthy_turn_is_completely_unchanged(self) -> None:
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True, "logged": 1}
+        ):
+            gates._log_daily_entry(
+                {
+                    "entry_type": "meal",
+                    "meal": {"items": ["2 rotis", "dal"], "calories": 420},
+                },
+                session_id=self.SESSION,
+            )
+
+        with gates._TURN_LOCK:
+            self.assertFalse(gates._TURN_CONTEXT[self.SESSION].get("storage_failed"))
+        self.assertIsNone(
+            gates.action_claim_gate("3 meals logged, 4,200 steps.", storage_failed=False)
+        )
+
+    def test_a_validation_refusal_is_not_reported_as_an_outage(self) -> None:
+        """Bad model arguments are Ted's problem, not the database's."""
+        gates._log_daily_entry({"entry_type": "nonsense"}, session_id=self.SESSION)
+
+        with gates._TURN_LOCK:
+            self.assertFalse(gates._TURN_CONTEXT[self.SESSION].get("storage_failed"))
+
+
+class MemoryCacheTest(unittest.TestCase):
+    """The pre-LLM Convex read is not repeated on every single turn."""
+
+    USER = "whatsapp:sha256:cache-test"
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+
+    def test_repeat_reads_inside_the_ttl_hit_the_cache(self) -> None:
+        payload = {"success": True, "facts": [{"key": "name", "value": "Vandy"}]}
+        with patch.object(
+            gates, "_convex_request", return_value=payload
+        ) as request:
+            first = gates._cached_user_memory(self.USER)
+            second = gates._cached_user_memory(self.USER)
+            third = gates._cached_user_memory(self.USER)
+
+        self.assertEqual(request.call_count, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(second, third)
+
+    def test_a_write_invalidates_the_cache(self) -> None:
+        """A saved fact must be visible on the very next turn, not in 5 minutes."""
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={"success": True, "facts": []},
+        ) as request:
+            gates._cached_user_memory(self.USER)
+            gates._convex_write("save", self.USER, "", facts=[{"key": "a", "value": "b"}])
+            gates._cached_user_memory(self.USER)
+
+        self.assertEqual(
+            [call.args[0] for call in request.call_args_list],
+            ["get", "save", "get"],
+        )
+
+    def test_a_failed_read_is_never_cached(self) -> None:
+        """One unlucky read must not leave Ted amnesiac for the whole TTL."""
+        with patch.object(
+            gates, "_convex_request", return_value={"success": False}
+        ) as request:
+            gates._cached_user_memory(self.USER)
+            gates._cached_user_memory(self.USER)
+
+        self.assertEqual(request.call_count, 2)
+
+    def test_an_expired_entry_is_refetched(self) -> None:
+        payload = {"success": True, "facts": []}
+        with patch.object(gates, "_convex_request", return_value=payload) as request:
+            gates._cached_user_memory(self.USER)
+            stamp, value = gates._MEMORY_CACHE[self.USER]
+            gates._MEMORY_CACHE[self.USER] = (stamp - gates._MEMORY_CACHE_TTL - 1, value)
+            gates._cached_user_memory(self.USER)
+
+        self.assertEqual(request.call_count, 2)
+
+    def test_users_do_not_share_a_cache_entry(self) -> None:
+        """Per-user isolation is the whole point of the SHA-256 keying."""
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True, "facts": []}
+        ) as request:
+            gates._cached_user_memory("whatsapp:sha256:aaa")
+            gates._cached_user_memory("whatsapp:sha256:bbb")
+            gates._cached_user_memory("whatsapp:sha256:aaa")
+
+        self.assertEqual(request.call_count, 2)
+
+
+class ConvexTimeoutTest(unittest.TestCase):
+    """The read on the pre-LLM path is short; a write may wait longer."""
+
+    def _timeout_for(self, action: str) -> float:
+        seen: dict[str, float] = {}
+
+        class _Response:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *_: object) -> bool:
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b'{"success": true}'
+
+        def _urlopen(_request: object, timeout: float = 0.0) -> object:
+            seen["timeout"] = timeout
+            return _Response()
+
+        with patch.dict(
+            gates.os.environ,
+            {
+                "TED_CONVEX_SITE_URL": "https://example.convex.site",
+                "TED_HERMES_SHARED_SECRET": "shh",
+            },
+            clear=True,
+        ):
+            with patch.object(gates.urllib.request, "urlopen", _urlopen):
+                gates._convex_request(action, "whatsapp:sha256:timeout")
+        return seen["timeout"]
+
+    def test_the_per_turn_read_is_the_short_timeout(self) -> None:
+        self.assertEqual(self._timeout_for("get"), gates._CONVEX_READ_TIMEOUT)
+
+    def test_a_write_keeps_the_longer_timeout(self) -> None:
+        for action in ("save", "log", "target", "reminder", "onboarding", "delete"):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    self._timeout_for(action), gates._CONVEX_WRITE_TIMEOUT
+                )
+
+    def test_the_read_timeout_is_shorter_than_it_was(self) -> None:
+        """5s on every turn was up to 5s of dead air before Ted even thought."""
+        self.assertLess(gates._CONVEX_READ_TIMEOUT, 5.0)
 
 
 if __name__ == "__main__":

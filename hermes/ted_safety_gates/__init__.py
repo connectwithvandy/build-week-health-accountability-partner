@@ -218,7 +218,7 @@ def _delete_user_data(
             }
         )
 
-    result = _convex_request("delete", user_key)
+    result = _convex_write("delete", user_key, context_id)
     if result.get("success"):
         _forget_user(user_key)
         LOGGER.info(
@@ -293,6 +293,26 @@ TED_MEMORY_SAVE_SCHEMA = {
 
 _REQUIRED_CONVEX_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
 
+# Reads sit on the pre-LLM path: every WhatsApp turn waits for one before the
+# model is even called, so a slow Convex is felt as dead air in the chat. Writes
+# are worth waiting longer for — a dropped save loses the user's meal.
+_CONVEX_READ_TIMEOUT = 2.0
+_CONVEX_WRITE_TIMEOUT = 5.0
+
+# A user's facts change only when Ted writes them, and every write here
+# invalidates this cache, so re-reading them on every single turn bought
+# nothing but latency. The TTL bounds how long an edit made outside Ted (the
+# Convex dashboard, say) stays invisible.
+_MEMORY_CACHE_TTL = 300.0
+_MEMORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+# Failure of the storage itself, as opposed to the model sending bad arguments.
+# SCOPING.md #27 requires the user be told an update was not saved, and that is
+# a different sentence from the claim gate's "you did not do that".
+_STORAGE_UNAVAILABLE = "Ted per-user storage is unavailable"
+_STORAGE_UNCONFIGURED = "Ted per-user storage is not configured"
+_STORAGE_BAD_RESPONSE = "Ted per-user storage returned an invalid response"
+
 
 def _missing_convex_env() -> list[str]:
     return [name for name in _REQUIRED_CONVEX_ENV if not os.environ.get(name)]
@@ -311,7 +331,11 @@ def _convex_request(
     site_url = os.environ.get("TED_CONVEX_SITE_URL", "").rstrip("/")
     secret = os.environ.get("TED_HERMES_SHARED_SECRET", "")
     if not site_url or not secret:
-        return {"success": False, "error": "Ted per-user storage is not configured"}
+        return {
+            "success": False,
+            "error": _STORAGE_UNCONFIGURED,
+            "storage_error": True,
+        }
 
     payload: dict[str, Any] = {
         "action": action,
@@ -338,16 +362,79 @@ def _convex_request(
         },
         method="POST",
     )
+    timeout = _CONVEX_READ_TIMEOUT if action == "get" else _CONVEX_WRITE_TIMEOUT
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, ValueError) as error:
-        LOGGER.warning("ted_convex_request_failed action=%s error=%s", action, error)
-        return {"success": False, "error": "Ted per-user storage is unavailable"}
-    return result if isinstance(result, dict) else {
-        "success": False,
-        "error": "Ted per-user storage returned an invalid response",
-    }
+        LOGGER.warning(
+            "ted_convex_request_failed action=%s timeout=%.1fs error=%s",
+            action,
+            timeout,
+            error,
+        )
+        return {
+            "success": False,
+            "error": _STORAGE_UNAVAILABLE,
+            "storage_error": True,
+        }
+    if not isinstance(result, dict):
+        LOGGER.warning("ted_convex_bad_response action=%s type=%s", action, type(result))
+        return {
+            "success": False,
+            "error": _STORAGE_BAD_RESPONSE,
+            "storage_error": True,
+        }
+    return result
+
+
+def _invalidate_user_memory(user_key: str) -> None:
+    with _TURN_LOCK:
+        _MEMORY_CACHE.pop(user_key, None)
+
+
+def _cached_user_memory(user_key: str) -> dict[str, Any]:
+    """Read a user's stored facts, at most once per _MEMORY_CACHE_TTL."""
+    now = time.monotonic()
+    with _TURN_LOCK:
+        cached = _MEMORY_CACHE.get(user_key)
+    if cached is not None and now - cached[0] < _MEMORY_CACHE_TTL:
+        return cached[1]
+    result = _convex_request("get", user_key)
+    # Never cache a failure: a single unlucky read would otherwise leave Ted
+    # amnesiac for the whole TTL.
+    if result.get("success"):
+        with _TURN_LOCK:
+            _MEMORY_CACHE[user_key] = (now, result)
+    return result
+
+
+def _note_storage_failure(context_id: str) -> None:
+    """Record that a save failed, so the turn can say so in Ted's own words."""
+    if not context_id:
+        return
+    with _TURN_LOCK:
+        context = _TURN_CONTEXT.get(context_id)
+        if context is not None:
+            context["storage_failed"] = True
+
+
+def _convex_write(
+    action: str,
+    user_key: str,
+    context_id: str = "",
+    facts: list[dict[str, str]] | None = None,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A write, plus the two things every write must do: invalidate the
+    cached facts it may have changed, and flag a storage outage for the turn."""
+    result = _convex_request(action, user_key, facts=facts, body=body)
+    if result.get("success"):
+        _invalidate_user_memory(user_key)
+    elif result.get("storage_error"):
+        _invalidate_user_memory(user_key)
+        _note_storage_failure(context_id)
+    return result
 
 
 def _format_user_memory(result: dict[str, Any]) -> str:
@@ -392,7 +479,9 @@ def _save_user_facts(
         if not key or not value or len(key) > 80 or len(value) > 500:
             return json.dumps({"success": False, "error": "Invalid fact length"})
         facts.append({"key": key, "value": value})
-    return json.dumps(_convex_request("save", user_key, facts), ensure_ascii=False)
+    return json.dumps(
+        _convex_write("save", user_key, context_id, facts=facts), ensure_ascii=False
+    )
 
 
 def _persist_disclosure_state() -> None:
@@ -1093,20 +1182,32 @@ def _claim_types(text: str) -> set[str]:
     return claims
 
 
+# Two different truths, and the user needs to be able to tell them apart.
+# NOT_DONE means Ted claimed an action no tool performed. NOT_SAVED means the
+# tool ran and the storage was down — SCOPING.md #27: say the update was not
+# saved and ask them to send it again.
+CLAIM_NOT_DONE = "I haven’t completed that action."
+STORAGE_NOT_SAVED = "that didn’t save — send it again in a minute."
+
+
 def action_claim_gate(
     response_text: str,
     action_succeeded: bool = False,
     successful_actions: set[str] | None = None,
+    storage_failed: bool = False,
 ) -> str | None:
     """Remove action claims unless a tool succeeded in the same turn."""
     claims = _claim_types(response_text)
     if not claims:
-        return None
+        # Nothing was claimed, but a save still failed this turn — the user is
+        # owed the news either way, or they walk off believing a logged meal is
+        # in there.
+        return STORAGE_NOT_SAVED if storage_failed else None
     allowed = set(successful_actions or ())
     if action_succeeded:
         allowed.update(claims)
     if claims.issubset(allowed):
-        return None
+        return STORAGE_NOT_SAVED if storage_failed else None
     kept_sentences = [
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?])\s+", response_text.strip())
@@ -1114,8 +1215,11 @@ def action_claim_gate(
     ]
     if kept_sentences:
         cleaned = re.sub(r"^(?:But|And)\s+", "", " ".join(kept_sentences))
-        return cleaned[:1].upper() + cleaned[1:]
-    return "I haven’t completed that action."
+        cleaned = cleaned[:1].upper() + cleaned[1:]
+        # Keep the readings Ted gave (orders 03 and 05), but do not let them
+        # stand alone implying the write landed.
+        return f"{cleaned} {STORAGE_NOT_SAVED}" if storage_failed else cleaned
+    return STORAGE_NOT_SAVED if storage_failed else CLAIM_NOT_DONE
 
 
 def transform_response(
@@ -1126,6 +1230,7 @@ def transform_response(
     action_succeeded: bool = False,
     successful_actions: set[str] | None = None,
     user_key: str = "",
+    storage_failed: bool = False,
 ) -> str | None:
     history = list(history)
     if _is_prepared_start(history, user_message):
@@ -1144,6 +1249,7 @@ def transform_response(
         response_text,
         action_succeeded=action_succeeded,
         successful_actions=successful_actions,
+        storage_failed=storage_failed,
     )
 
 
@@ -1188,7 +1294,7 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
                 kwargs, ("message_id", "external_message_id", "wa_message_id", "msg_id")
             ),
         }
-    result = _convex_request("get", user_key)
+    result = _cached_user_memory(user_key)
     _remember_name_from_facts(user_key, result)
     _capture_name_answer(
         user_key, _strip_memory_context(str(kwargs.get("user_message") or ""))
@@ -1212,6 +1318,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         response_text=str(kwargs.get("response_text") or ""),
         successful_actions=set(context.get("successful_actions", set())),
         user_key=str(context.get("user_key", "")),
+        storage_failed=bool(context.get("storage_failed")),
     )
 
 
@@ -1592,7 +1699,9 @@ def _log_daily_entry(
     if message_id:
         body["externalMessageId"] = message_id
 
-    result = _convex_request("log", user_key, body=body)
+    result = _convex_write(
+        "log", user_key, session_id or task_id, body=body
+    )
     if result.get("success"):
         LOGGER.info(
             "ted_entry_logged user_key=%s type=%s duplicate=%s",
@@ -1613,7 +1722,10 @@ def _day_summary(
     if isinstance(args, dict):
         local_date = str(args.get("local_date") or "")
     body = {"localDate": local_date or _today()}
-    return json.dumps(_convex_request("day", user_key, body=body), ensure_ascii=False)
+    result = _convex_request("day", user_key, body=body)
+    if result.get("storage_error"):
+        _note_storage_failure(session_id or task_id)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def _set_target(
@@ -1625,7 +1737,8 @@ def _set_target(
     if not isinstance(args, dict) or not args:
         return _refused("Send at least one target field")
     return json.dumps(
-        _convex_request("target", user_key, body=_camel(args)), ensure_ascii=False
+        _convex_write("target", user_key, session_id or task_id, body=_camel(args)),
+        ensure_ascii=False,
     )
 
 
@@ -1641,7 +1754,8 @@ def _set_reminder(
     if "pausedUntil" not in body and args.get("paused_until", "missing") is None:
         body["pausedUntil"] = None
     return json.dumps(
-        _convex_request("reminder", user_key, body=body), ensure_ascii=False
+        _convex_write("reminder", user_key, session_id or task_id, body=body),
+        ensure_ascii=False,
     )
 
 
@@ -1665,7 +1779,8 @@ def _save_onboarding(
     if isinstance(profile, dict) and profile:
         body["profile"] = _camel(profile)
     return json.dumps(
-        _convex_request("onboarding", user_key, body=body), ensure_ascii=False
+        _convex_write("onboarding", user_key, session_id or task_id, body=body),
+        ensure_ascii=False,
     )
 
 

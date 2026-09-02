@@ -1,0 +1,190 @@
+diff --git a/agent/chat_completion_helpers.py b/agent/chat_completion_helpers.py
+index b2e5c8653..6a73ad145 100644
+--- a/agent/chat_completion_helpers.py
++++ b/agent/chat_completion_helpers.py
+@@ -752,7 +752,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
+         agent._codex_stream_last_event_ts = None
+         agent._codex_stream_last_progress_ts = None
+ 
+-    _call_start = time.time()
++    # Sleep-aware (see last_chunk_mono in the streaming path): time.time()
++    # keeps running while the host is suspended, so a laptop that sleeps
++    # mid-request wakes up and charges the whole sleep to the provider as a
++    # bogus stall. time.monotonic() pauses with the machine. Every comparison
++    # against _call_start below — and _codex_stream_last_event_ts, written in
++    # codex_runtime._on_event — uses the same monotonic clock.
++    _call_start = time.monotonic()
+     agent._touch_activity("waiting for non-streaming API response")
+ 
+     t = threading.Thread(target=_call, daemon=True)
+@@ -768,7 +774,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
+         # spinner (the "infinite thinking" complaint — the wait itself is
+         # usually a slow/overloaded provider, but the UI never said so).
+         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
+-            _elapsed = time.time() - _call_start
++            _elapsed = time.monotonic() - _call_start
+             try:
+                 _recovery = _codex_wait_notice_recovery(
+                     stale_timeout=_stale_timeout,
+@@ -790,7 +796,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
+             except Exception:
+                 logger.debug("wait-notice construction failed", exc_info=True)
+ 
+-        _elapsed = time.time() - _call_start
++        _elapsed = time.monotonic() - _call_start
+ 
+         # TTFB detector: the Codex stream has produced no event at all and
+         # we're past the first-byte cutoff → the backend opened the
+@@ -863,7 +869,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
+             and _last_codex_event_ts is not None
+             and (time.time() - _last_codex_event_ts) > _codex_idle_timeout
+         ):
+-            _event_stale_elapsed = time.time() - _last_codex_event_ts
++            _event_stale_elapsed = time.monotonic() - _last_codex_event_ts
+             logger.warning(
+                 "Codex stream produced no SSE events for %.0fs after first byte "
+                 "(threshold %.0fs, model=%s, context=~%s tokens). Killing "
+@@ -2283,7 +2289,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+         # events wedges the thread forever. on_event stamps this on EVERY
+         # yielded Bedrock event (text/tool/metadata) — the poll loop below
+         # trips a watchdog when the gap exceeds the stale timeout.
+-        _bedrock_last_event = {"t": time.time()}
++        # Monotonic: pauses with a suspended host, so sleep is never
++        # charged to the provider as stream silence (see last_chunk_mono).
++        _bedrock_last_event = {"t": time.monotonic()}
+         # Region captured for the poll-loop client eviction below.  Read
+         # (not popped) here so the worker's own pop inside _bedrock_call still
+         # resolves the same value.
+@@ -2372,7 +2380,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                     on_tool_start=_on_tool,
+                     on_reasoning_delta=_on_reasoning if agent.reasoning_callback or agent.stream_delta_callback else None,
+                     on_interrupt_check=lambda: agent._interrupt_requested,
+-                    on_event=lambda: _bedrock_last_event.__setitem__("t", time.time()),
++                    on_event=lambda: _bedrock_last_event.__setitem__("t", time.monotonic()),
+                 )
+             except Exception as e:
+                 result["error"] = e
+@@ -2387,7 +2395,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+             # timeout means the stream has wedged (open socket, keep-alives but
+             # no data, or a silently hung provider).  Without this the worker
+             # blocks in ``for event in event_stream`` indefinitely.
+-            _stale_elapsed = time.time() - _bedrock_last_event["t"]
++            _stale_elapsed = time.monotonic() - _bedrock_last_event["t"]
+             if _stale_elapsed > _bedrock_stale_timeout:
+                 logger.warning(
+                     "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
+@@ -2418,7 +2426,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                     )
+                 # Reset the timer so a repeated trip (should the worker somehow
+                 # survive) waits a fresh interval rather than re-firing instantly.
+-                _bedrock_last_event["t"] = time.time()
++                _bedrock_last_event["t"] = time.monotonic()
+                 # Escalate across turns: raises RuntimeError once the streak
+                 # crosses HERMES_STREAM_STALE_GIVEUP, so a persistently wedged
+                 # Bedrock provider aborts fast instead of re-waiting the timeout.
+@@ -2517,6 +2525,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+     # poll loop uses this to detect stale connections that keep receiving
+     # SSE keep-alive pings but no actual data.
+     last_chunk_time = {"t": time.time()}
++    # Sleep-aware companion to ``last_chunk_time``, used ONLY by the stale
++    # detector and the waiting heartbeat below.  ``time.time()`` keeps ticking
++    # while the host is suspended, so on a laptop that sleeps mid-request the
++    # detector wakes up, measures the whole sleep as provider silence, and
++    # reports a bogus multi-minute stall (observed: "stale for 1019s
++    # (threshold 180s)" across a clamshell sleep, five times in one call).
++    # ``time.monotonic()`` pauses with the machine on macOS/Linux, so suspended
++    # time is not counted against the provider.  Kept separate from
++    # ``last_chunk_time`` because stream_diag compares that value against a
++    # wall-clock ``started_at`` to compute TTFB.
++    last_chunk_mono = {"t": time.monotonic()}
+     # Stale-stream patience, shared between the httpx socket read timeout
+     # (built in ``_call_chat_completions`` below) and the stale-stream detector
+     # (computed further down, before the worker thread starts).  Initialized
+@@ -2673,6 +2692,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+         # Reset stale-stream timer so the detector measures from this
+         # attempt's start, not a previous attempt's last chunk.
+         last_chunk_time["t"] = time.time()
++        last_chunk_mono["t"] = time.monotonic()
+         agent._touch_activity("waiting for provider response (streaming)")
+         # Initialize per-attempt stream diagnostics so the retry block can
+         # reach for them after the stream dies.  Lives on
+@@ -2770,6 +2790,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                 )
+                 break
+             last_chunk_time["t"] = time.time()
++            last_chunk_mono["t"] = time.monotonic()
+             agent._touch_activity("receiving stream response")
+ 
+             # Update per-attempt diagnostic counters.  Best-effort —
+@@ -3090,6 +3111,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+ 
+         # Reset stale-stream timer for this attempt
+         last_chunk_time["t"] = time.time()
++        last_chunk_mono["t"] = time.monotonic()
+         # Per-attempt diagnostic dict for the retry block to consume.
+         _diag = agent._stream_diag_init()
+         request_client_holder["diag"] = _diag
+@@ -3135,6 +3157,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+                 # actively arriving (the chat_completions path
+                 # already does this at the top of its chunk loop).
+                 last_chunk_time["t"] = time.time()
++                last_chunk_mono["t"] = time.monotonic()
+                 agent._touch_activity("receiving stream response")
+ 
+                 # Update per-attempt diagnostic counters (best-effort).
+@@ -3614,7 +3637,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+ 
+     t = threading.Thread(target=_call, daemon=True)
+     t.start()
+-    _last_heartbeat = time.time()
++    _last_heartbeat = time.monotonic()  # same clock as _hb_now below
+     _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+     while t.is_alive():
+         t.join(timeout=0.3)
+@@ -3627,10 +3650,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+         # activity on each chunk, but the gap between API call start
+         # and first chunk can exceed the gateway timeout — especially
+         # when the stale-stream timeout is disabled (local providers).
+-        _hb_now = time.time()
++        _hb_now = time.monotonic()
+         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
+             _last_heartbeat = _hb_now
+-            _waiting_secs = int(_hb_now - last_chunk_time["t"])
++            # Sleep-aware: a suspended host must not be reported back to the
++            # user as the provider having gone quiet for hours.
++            _waiting_secs = int(_hb_now - last_chunk_mono["t"])
+             if _waiting_secs >= _HEARTBEAT_INTERVAL:
+                 # No chunks for 30s+ — rewrite the live spinner/status line
+                 # so CLI/TUI/Desktop users see WHAT the wait is (slow or
+@@ -3658,7 +3683,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+         # Detect stale streams: connections kept alive by SSE pings
+         # but delivering no real chunks.  Kill the client so the
+         # inner retry loop can start a fresh connection.
+-        _stale_elapsed = time.time() - last_chunk_time["t"]
++        _stale_elapsed = time.monotonic() - last_chunk_mono["t"]
+         if _stale_elapsed > _stream_stale_timeout:
+             _est_ctx = estimate_request_context_tokens(api_kwargs)
+             logger.warning(
+@@ -3700,6 +3725,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
+             # Reset the timer so we don't kill repeatedly while
+             # the inner thread processes the closure.
+             last_chunk_time["t"] = time.time()
++            last_chunk_mono["t"] = time.monotonic()
+             agent._emit_wait_notice(
+                 f"⚠ no output from provider for {int(_stale_elapsed)}s — "
+                 f"reconnecting..."
+diff --git a/agent/codex_runtime.py b/agent/codex_runtime.py
+index 91c2af3e9..983d977fd 100644
+--- a/agent/codex_runtime.py
++++ b/agent/codex_runtime.py
+@@ -1204,7 +1204,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
+ 
+     def _on_event(event: Any) -> None:
+         # TTFB watchdog and activity touch — runs once per SSE event.
+-        agent._codex_stream_last_event_ts = time.time()
++        # Monotonic to match the watchdog comparisons in
++        # chat_completion_helpers — a suspended host must not read as a stall.
++        agent._codex_stream_last_event_ts = time.monotonic()
+         agent._touch_activity("receiving stream response")
+ 
+     for attempt in range(max_stream_retries + 1):
