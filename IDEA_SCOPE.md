@@ -34,7 +34,7 @@ Read and apply `PRODUCT_BUILD_GUARDRAILS.md` alongside this document before maki
 | The one person | Vandy, 33, a sales professional working 9–10 hour desk-based days who already tries to exercise, eat well and follow a health routine. |
 | The one moment | Around dinner, when Vandy realizes that steps, protein or another commitment slipped and there is little time left to recover the day. |
 | Current workaround | Separate alarms, calorie apps, notes and repeated manual checking of a diet plan. |
-| Core action (user does X → gets Y) | User sets daily fitness commitments in WhatsApp → coach remembers them, nudges at useful times, accepts progress updates and closes the day with a review. |
+| Core action (user does X → gets Y) | User sets daily health commitments in WhatsApp → coach remembers them, nudges at useful times, accepts progress updates and closes the day with a review. |
 | The one outcome the product must deliver | At day's end, the user knows what they logged, what they completed or missed and the single next improvement. |
 | Hard input or hard case | A mixed-language voice note or unclear photo of an Indian meal. |
 | Primary track | AI Agent as a Service |
@@ -53,11 +53,11 @@ Read and apply `PRODUCT_BUILD_GUARDRAILS.md` alongside this document before maki
 - **User:** Vandy, 33, works in sales for 9–10 hours a day in a mostly desk-based role.
 - **Existing routine:** Gym or walking about three days a week, a step goal, daily water, protein intake and meal awareness.
 - **Frustrating moment:** Around dinner, Vandy realizes that one or more parts of the routine have slipped—steps are short, water was missed, or meals lacked protein. There is little time left to recover, so the day ends with guilt.
-- **Current workaround:** Several fitness apps, alarms and self-messages. Alarms get snoozed, app notifications get disabled and self-messages disappear among unrelated WhatsApp notes. After one or two weeks, tracking usually stops.
+- **Current workaround:** Several health apps, alarms and self-messages. Alarms get snoozed, app notifications get disabled and self-messages disappear among unrelated WhatsApp notes. After one or two weeks, tracking usually stops.
 
 #### core product decision
 
-> Vandy sets daily fitness commitments in WhatsApp → the coach remembers them, nudges Vandy at useful times, accepts completion and meal updates, and closes the day with an accountable review.
+> Vandy sets daily health commitments in WhatsApp → the coach remembers them, nudges Vandy at useful times, accepts completion and meal updates, and closes the day with an accountable review.
 
 The product is intentionally a **whole-routine accountability partner**, not a single-purpose water or calorie tracker. The first version must connect steps, water, workouts, custom commitments and meals in one continuous conversation.
 
@@ -67,7 +67,7 @@ The product also needs a public landing page for discovery and user acquisition.
 
 > Website attracts and explains → WhatsApp onboards and coaches.
 
-The landing page must explain the product, show a realistic example conversation and move an interested user into WhatsApp through a clear **Start on WhatsApp** action. Personal fitness onboarding remains inside WhatsApp so users do not enter the same information twice.
+The landing page must explain the product, show a realistic example conversation and move an interested user into WhatsApp through a clear **Start on WhatsApp** action. Personal health onboarding remains inside WhatsApp so users do not enter the same information twice.
 
 ##### v1 public pages and states
 
@@ -81,7 +81,7 @@ Measure the acquisition path:
 
 > Visited → tapped WhatsApp → sent first message → completed onboarding → logged first update.
 
-Internal acquisition measurement may record landing-page visits, traffic source and WhatsApp-button clicks. This is build evidence, not a user-facing Ted feature. A page visit is not consent to process fitness information; explicit consent is still required inside WhatsApp before collecting goals, meals or health routines.
+Internal acquisition measurement may record landing-page visits, traffic source and WhatsApp-button clicks. This is build evidence, not a user-facing Ted feature. A page visit is not consent to process health information; explicit consent is still required inside WhatsApp before collecting goals, meals or health routines.
 
 ##### website v1 boundary
 
@@ -151,7 +151,7 @@ Current instructions, pauses, corrections and reminder changes must override pre
 
 #### the pain I feel
 
-Vandy follows a health routine while managing SDR teams across APAC and EMEA. Meals, water, gym, steps and follow-ups compete with a demanding workday. She already built a private coach because alarms and separate trackers did not complete the job. Ankita, Richa, Khushboo and Arpit share the fitness follow-through problem and are reachable this week.
+Vandy follows a health routine while managing SDR teams across APAC and EMEA. Meals, water, gym, steps and follow-ups compete with a demanding workday. She already built a private coach because alarms and separate trackers did not complete the job. Ankita, Richa, Khushboo and Arpit share the health follow-through problem and are reachable this week.
 
 #### decisive proof
 
@@ -162,7 +162,7 @@ A stranger completes onboarding in WhatsApp, sends a fresh meal as text, photo o
 ### user
 
 - Who (name, age, situation): Vandy as the archetype; 33, busy SaaS sales manager with a demanding desk schedule.
-- Context: Already has fitness intentions or a plan but execution is fragmented across the day.
+- Context: Already has health intentions or a plan but execution is fragmented across the day.
 - Frequency: Daily.
 - Existing behaviour: Uses reminders, WhatsApp, notes and separate health or calorie tools.
 - Existing cost, delay, risk or frustration: Missed actions, incomplete tracking, repeated mental load and guilt-driven restarts.
@@ -323,7 +323,7 @@ A “multi-agent” label on one prompt, simulated output called real WhatsApp o
 
 ### distribution posts, in my own words
 
-- Monday: “I rebuilt the fitness coach I use personally for busy people. Can I watch you set it up and log one real meal? I need honest friction, not compliments.”
+- Monday: “I rebuilt the health coach I use personally for busy people. Can I watch you set it up and log one real meal? I need honest friction, not compliments.”
 - Tuesday: “I know what to do for my health; my workday is what breaks it. I built a WhatsApp coach that remembers your targets, accepts a meal by text/photo/voice and closes the day with you. I am opening a few free test spots.”
 - Wednesday to Friday: one concrete change and one verified number each evening.
 - Saturday: what shipped, who used it, real completed tasks and the live URL.
@@ -405,7 +405,7 @@ Show what shipped and reproduce the numbers live. Do not pitch future features.
 
 ### one-sentence setup
 
-Busy professionals know their fitness plan; this coach turns daily WhatsApp messages into remembered tracking, timely follow-through and a usable end-of-day review.
+Busy professionals know their health plan; this coach turns daily WhatsApp messages into remembered tracking, timely follow-through and a usable end-of-day review.
 
 ### the proof
 

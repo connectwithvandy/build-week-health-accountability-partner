@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Define the first persistent, multi-user data model for consent, resumable onboarding, fitness targets, reminder preferences, and day-scoped progress.
+**Goal:** Define the first persistent, multi-user data model for consent, resumable onboarding, health targets, reminder preferences, and day-scoped progress.
 
 **Architecture:** Convex remains the provisioned database. Shared validators define the allowed values once, and `convex/schema.ts` composes them into user-owned tables with indexes for identity and daily lookups. This slice does not add public database writes; caller authentication must be designed before mutations are exposed.
 

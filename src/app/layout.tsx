@@ -20,7 +20,7 @@ const utility = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ted. Your fitness day, remembered",
+  title: "Ted. Your day, remembered",
   description:
     "Ted remembers your meals, movement, water, and commitments in WhatsApp. Then it gives you one useful thing you can still do today.",
 };

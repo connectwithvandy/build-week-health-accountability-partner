@@ -2,7 +2,7 @@
 
 > **For agentic workers:** Implement this plan task by task, stopping for review after every milestone.
 
-**Goal:** Build the WhatsApp fitness coach defined in `SCOPING.md`, without adding features outside that scope.
+**Goal:** Build the WhatsApp health coach defined in `SCOPING.md`, without adding features outside that scope.
 
 **Architecture:** A Next.js TypeScript app on Vercel provides the public landing page. A local WhatsApp worker runs beside Hermes, which pairs to an ordinary WhatsApp account by QR code. The worker receives and sends messages through Hermes on the local machine. Convex stores user state and media and runs scheduled reminders and reviews. OpenAI interprets text, photos, voice notes, and health-plan PDFs.
 

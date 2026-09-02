@@ -34,7 +34,7 @@ This behavior was added to Ted's Hermes instructions on 31 August 2026.
 
 ## Tester invitation
 
-> Hey, I’m testing Ted, a fitness coach that lives on WhatsApp. Could you use it for one normal day and message your meals or fitness updates as they happen? Try text, a photo, or a voice note. Please tell me the first moment that feels confusing, wrong, or annoying. Start here: [WhatsApp link]
+> Hey, I’m testing Ted, a health accountability coach that lives on WhatsApp. Could you use it for one normal day and message your meals or health updates as they happen? Try text, a photo, or a voice note. Please tell me the first moment that feels confusing, wrong, or annoying. Start here: [WhatsApp link]
 
 ## What Vandy records
 

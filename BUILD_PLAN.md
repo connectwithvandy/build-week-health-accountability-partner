@@ -1,4 +1,4 @@
-# Ted — WhatsApp Fitness Coach V1 Build Plan
+# Ted — WhatsApp Health Accountability V1 Build Plan
 
 This plan implements the complete V1 defined in `SCOPING.md`. No V1 requirement may be moved to a later bucket without first changing the scoping document.
 

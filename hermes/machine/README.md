@@ -35,4 +35,4 @@ Two settings here are Ted-specific:
 - `cron.wrap_response: false` — Hermes otherwise wraps every scheduled
   reminder in a "Cronjob Response" header, the raw job_id, and footer
   instructions. SOUL.md forbids exposing internal status to the user, and a
-  job_id in a fitness chat breaks the product.
+  job_id in a health chat breaks the product.

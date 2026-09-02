@@ -219,7 +219,7 @@ class TedSafetyGatesTest(unittest.TestCase):
             transform_response(
                 history=history,
                 user_message="Hi",
-                response_text="What fitness goal are you working on?",
+                response_text="What health goal are you working on?",
             ),
             "What should I call you?",
         )
@@ -870,7 +870,7 @@ class DeleteMyDataTest(unittest.TestCase):
                     action_claim_gate(reply), "I haven’t completed that action."
                 )
 
-    def test_ordinary_fitness_talk_is_not_a_deletion_claim(self) -> None:
+    def test_ordinary_health_talk_is_not_a_deletion_claim(self) -> None:
         for reply in (
             "the bloating is gone, that's a good sign.",
             "your energy dip is gone once protein is up.",
@@ -2550,6 +2550,242 @@ class ProseMatchingHardeningTest(unittest.TestCase):
         self.assertIsNone(
             action_claim_gate("Done \u2713", successful_actions={"memory"})
         )
+
+
+class CronJobsFileShapeTest(unittest.TestCase):
+    """The reader must handle the shape Hermes actually writes.
+
+    `CronReminderGateTest` above writes its fixture as a bare list, which is a
+    shape production never produces. Hermes writes
+    ``{"jobs": [...], "updated_at": ...}``, and against that the old
+    ``list(raw.values())`` yielded the job list and a timestamp string — never
+    a job dict. Every lookup missed, `_cron_whatsapp_recipient` always returned
+    None, and the whole milestone-12 cron gate was dead in production while
+    these tests stayed green. This class pins the real shape.
+    """
+
+    SESSION = "cron_919661eba04c_20260903_084500"
+    CHAT = "144504426369026@lid"
+    JOB = {
+        "id": "919661eba04c",
+        "name": "CoQ10 reminder",
+        "origin": {"platform": "whatsapp", "chat_id": CHAT},
+    }
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = Path(self._dir.name) / "jobs.json"
+
+    def written(self, payload: object) -> object:
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+        return patch.object(gates, "_CRON_JOBS_PATH", self.path)
+
+    def test_the_shape_hermes_actually_writes_resolves(self) -> None:
+        wrapped = {"jobs": [self.JOB], "updated_at": "2026-09-02T23:57:11+05:30"}
+        with self.written(wrapped):
+            self.assertEqual(len(gates._load_cron_jobs()), 1)
+            self.assertEqual(
+                gates._cron_whatsapp_recipient(self.SESSION), self.CHAT
+            )
+
+    def test_a_bare_list_and_an_id_mapping_both_still_resolve(self) -> None:
+        for payload in ([self.JOB], {self.JOB["id"]: self.JOB}):
+            with self.subTest(shape=type(payload).__name__):
+                with self.written(payload):
+                    self.assertEqual(
+                        gates._cron_whatsapp_recipient(self.SESSION), self.CHAT
+                    )
+
+    def test_a_missing_or_unreadable_file_is_not_a_crash(self) -> None:
+        with patch.object(gates, "_CRON_JOBS_PATH", self.path / "nope.json"):
+            self.assertEqual(gates._load_cron_jobs(), [])
+        self.path.write_text("{not json", encoding="utf-8")
+        with patch.object(gates, "_CRON_JOBS_PATH", self.path):
+            self.assertEqual(gates._load_cron_jobs(), [])
+
+
+class CronScopeTest(unittest.TestCase):
+    """One beta user must never see or touch another's reminders.
+
+    `cronjob` is a Hermes platform tool over a machine-wide store, so
+    ``action='list'`` in any WhatsApp thread returned every job on the box. On
+    2 Sep 2026 a tester's live thread was handed five of the builder's
+    supplement reminders, doses included, along with job ids it could have
+    removed.
+    """
+
+    NIK = "277391083601962@lid"
+    VANDY = "144504426369026@lid"
+    MINE = {
+        "id": "mine01",
+        "name": "Nik omega-3",
+        "origin": {"platform": "whatsapp", "chat_id": NIK},
+    }
+    THEIRS = {
+        "id": "theirs01",
+        "name": "CoQ10 reminder",
+        "origin": {"platform": "whatsapp", "chat_id": VANDY},
+    }
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        path = Path(self._dir.name) / "jobs.json"
+        path.write_text(
+            json.dumps({"jobs": [self.MINE, self.THEIRS]}), encoding="utf-8"
+        )
+        patcher = patch.object(gates, "_CRON_JOBS_PATH", path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT["nik"] = {"chat_id": self.NIK}
+        self.addCleanup(
+            lambda: gates._TURN_CONTEXT.pop("nik", None)
+        )
+
+    def guard(self, session: str, **args: object) -> object:
+        return gates._cron_scope_guard(
+            tool_name="cronjob", session_id=session, args=args
+        )
+
+    def listing(self, session: str) -> object:
+        result = json.dumps(
+            {
+                "success": True,
+                "count": 2,
+                "jobs": [
+                    {"job_id": "mine01", "name": "Nik omega-3"},
+                    {"job_id": "theirs01", "prompt_preview": "Send Vandy a..."},
+                ],
+            }
+        )
+        return gates._filter_cron_listing(
+            tool_name="cronjob",
+            session_id=session,
+            args={"action": "list"},
+            result=result,
+        )
+
+    def test_another_chats_jobs_are_stripped_from_a_listing(self) -> None:
+        payload = json.loads(self.listing("nik"))
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual([j["job_id"] for j in payload["jobs"]], ["mine01"])
+        self.assertNotIn("Vandy", json.dumps(payload))
+
+    def test_acting_on_another_chats_job_is_blocked(self) -> None:
+        for action in ("remove", "update", "pause", "resume", "run"):
+            with self.subTest(action=action):
+                self.assertEqual(
+                    self.guard("nik", action=action, job_id="theirs01"),
+                    {"action": "block", "message": gates.CRON_NOT_YOURS},
+                )
+
+    def test_a_job_can_also_be_named_rather_than_addressed_by_id(self) -> None:
+        self.assertEqual(
+            self.guard("nik", action="remove", job_id="CoQ10 reminder"),
+            {"action": "block", "message": gates.CRON_NOT_YOURS},
+        )
+
+    def test_the_users_own_reminders_still_work(self) -> None:
+        self.assertIsNone(self.guard("nik", action="remove", job_id="mine01"))
+        self.assertIsNone(self.guard("nik", action="create", schedule="5m"))
+        self.assertIsNone(self.guard("nik", action="create", deliver="origin"))
+        self.assertIsNone(self.guard("nik", action="list"))
+
+    def test_delivery_to_another_surface_is_blocked(self) -> None:
+        for deliver in ("all", "origin,all", "telegram:-1001234567890", "sms:+15551234567"):
+            with self.subTest(deliver=deliver):
+                self.assertEqual(
+                    self.guard("nik", action="create", deliver=deliver),
+                    {"action": "block", "message": gates.CRON_DELIVER_ELSEWHERE},
+                )
+
+    def test_a_session_with_no_whatsapp_turn_is_left_alone(self) -> None:
+        """The builder at a terminal keeps full access to every job."""
+        self.assertIsNone(self.guard("cli", action="remove", job_id="theirs01"))
+        self.assertIsNone(self.listing("cli"))
+
+    def test_a_non_cron_tool_is_never_touched(self) -> None:
+        self.assertIsNone(
+            gates._cron_scope_guard(
+                tool_name="ted_log_entry", session_id="nik", args={"action": "remove"}
+            )
+        )
+
+
+class MinorFlagDurabilityTest(unittest.TestCase):
+    """The under-18 block must outlive the conversation it was stated in.
+
+    On 2 Sep 2026 the refusal fired correctly the moment a tester typed
+    "I am 15" — but the age was read only out of conversation history. Hermes
+    compresses at 50% of the window and protects only the last 20 messages, so
+    that turn is compacted away inside the *same* conversation after enough
+    messages, and the protection would have stopped firing with nothing said.
+    """
+
+    KEY = "whatsapp:sha256:minor-test"
+    ADULT = "whatsapp:sha256:adult-test"
+    LEAK = "today so far: 1 sandwich + pasta salad, 800 kcal total, 45g protein."
+
+    def setUp(self) -> None:
+        self.addCleanup(gates._forget_user, self.KEY)
+        self.addCleanup(gates._forget_user, self.ADULT)
+
+    def gate(self, history: list, message: str, reply: str, key: str = "") -> object:
+        return gates.calorie_gate(history, message, reply, key or self.KEY)
+
+    def test_the_age_is_recorded_the_moment_it_is_stated(self) -> None:
+        self.gate([], "I am 15", "15, noted. what hour works?")
+        self.assertTrue(gates._is_known_minor(self.KEY))
+
+    def test_the_refusal_survives_the_turn_being_compacted_away(self) -> None:
+        """The whole point: empty history, and the block still holds."""
+        self.gate([], "I am 15", "15, noted.")
+        self.assertEqual(self.gate([], "check my meal", self.LEAK), gates.UNDER_18_REFUSAL)
+
+    def test_a_later_higher_age_does_not_lift_the_block(self) -> None:
+        self.gate([], "I am 15", "15, noted.")
+        for message in ("actually I'm 30", "I'm 25 now", "I meant 21"):
+            with self.subTest(message=message):
+                self.assertEqual(
+                    self.gate([], message, self.LEAK), gates.UNDER_18_REFUSAL
+                )
+        self.assertTrue(gates._is_known_minor(self.KEY))
+
+    def test_a_target_request_from_a_known_minor_is_still_refused(self) -> None:
+        self.gate([], "I am 15", "15, noted.")
+        self.assertEqual(
+            self.gate([], "what's my calorie target?", "maintenance is 2100 calories"),
+            gates.UNDER_18_REFUSAL,
+        )
+
+    def test_deleting_your_data_really_does_clear_it(self) -> None:
+        """Erasure has to be honest, so the flag goes with everything else."""
+        self.gate([], "I am 15", "15, noted.")
+        gates._forget_user(self.KEY)
+        self.assertFalse(gates._is_known_minor(self.KEY))
+        self.assertIsNone(self.gate([], "check my meal", self.LEAK))
+
+    def test_an_adult_is_untouched_and_stops_being_re_asked(self) -> None:
+        self.gate([], "I'm 33", "got it")
+        self.assertEqual(gates._stored_age(self.KEY), 33)
+        self.assertFalse(gates._is_known_minor(self.KEY))
+        # A per-meal estimate was never gated for an adult and still is not.
+        self.assertIsNone(self.gate([], "check my meal", self.LEAK))
+
+    def test_a_restored_age_answers_the_target_flow_without_re_asking(self) -> None:
+        """An adult age that scrolled out of the window must not reset the flow."""
+        self.gate([], "I'm 33", "got it")
+        reply = self.gate([], "what's my maintenance?", "your maintenance is 2100 calories")
+        self.assertNotEqual(reply, gates.AGE_QUESTION)
+
+    def test_no_user_key_behaves_exactly_as_before(self) -> None:
+        """CLI and test call sites pass no key and must not start storing one."""
+        self.assertEqual(
+            gates.calorie_gate([], "I am 15", self.LEAK), gates.UNDER_18_REFUSAL
+        )
+        self.assertIsNone(gates.calorie_gate([], "check my meal", self.LEAK))
 
 
 if __name__ == "__main__":

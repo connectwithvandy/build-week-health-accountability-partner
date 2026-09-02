@@ -1,4 +1,4 @@
-# Ted — WhatsApp Fitness Coach V1 Scoping Doc
+# Ted — WhatsApp Health Accountability V1 Scoping Doc
 
 ## 1. USER — specific person
 

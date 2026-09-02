@@ -32,7 +32,7 @@ export default function Home() {
 
       <section className="hero page-shell" id="top">
         <div className="hero-copy">
-          <p className="eyebrow">Fitness accountability that lives in WhatsApp</p>
+          <p className="eyebrow">Health accountability that lives in WhatsApp</p>
           <h1>Your day slipped away. <span>You can still turn it around.</span></h1>
           <p className="hero-lede">Ted remembers your meals, movement, water, and commitments. Then it messages you with the one useful thing you can still do today.</p>
           <p className="hero-flow">Message Ted → tell it what you ate and did → get one nudge and an evening recap.</p>
@@ -62,7 +62,7 @@ export default function Home() {
       </section>
 
       <section className="final-cta"><div className="page-shell final-grid"><p className="final-time">Today, whenever you’re ready</p><h2>One message starts the conversation.</h2><WhatsAppLink /></div></section>
-      <footer className="site-footer page-shell"><a className="brand" href="#top"><TedLogo /></a><p>Fitness accountability in WhatsApp.</p><Link href="/privacy">Privacy</Link><p>© 2026 Ted</p></footer>
+      <footer className="site-footer page-shell"><a className="brand" href="#top"><TedLogo /></a><p>Health accountability in WhatsApp.</p><Link href="/privacy">Privacy</Link><p>© 2026 Ted</p></footer>
     </main>
   );
 }

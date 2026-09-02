@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -186,6 +186,47 @@ def _remember_name_from_facts(user_key: str, result: dict[str, Any]) -> None:
         if name:
             _remember_name(user_key, name)
             return
+
+
+def _stored_age(user_key: str) -> int | None:
+    """The age this user has already given, across compaction and restarts."""
+    value = _onboarding(user_key).get("age")
+    return value if isinstance(value, int) else None
+
+
+def _is_known_minor(user_key: str) -> bool:
+    """Whether this user has ever told Ted they are under 18.
+
+    Deliberately sticky. The age lives in the gate's own state, not in the
+    conversation and not in `userFacts`, for two reasons. Hermes compresses at
+    50% of the window and protects only the last 20 messages, so "i'm 15" is
+    compacted out of the *same* conversation after enough turns — on 2 Sep 2026
+    the under-18 refusal fired correctly and would then have silently stopped
+    firing. And `userFacts` is writable by the model through `ted_memory_save`,
+    which would put the one rule that must not be talked around inside reach of
+    the thing being gated.
+
+    Sticky also means a later, higher number does not lift it: "i'm 15" then
+    "actually i'm 30" leaves the block in place. The documented way out is the
+    one a real person would use anyway — "delete my data", which clears this
+    with the rest of `_forget_user`.
+    """
+    return bool(_onboarding(user_key).get("minor"))
+
+
+def _remember_age(user_key: str, age: int | None) -> None:
+    """Record an age the user stated. Never downgrades a known minor."""
+    if not user_key or age is None:
+        return
+    if _is_known_minor(user_key):
+        return
+    if _stored_age(user_key) == age:
+        return
+    fields: dict[str, Any] = {"age": age}
+    if age < 18:
+        fields["minor"] = True
+        LOGGER.info("ted_minor_recorded user_key=%s", user_key)
+    _update_onboarding(user_key, **fields)
 
 
 def _forget_user(user_key: str) -> None:
@@ -1177,7 +1218,10 @@ def _estimated_maintenance(profile: CalorieProfile) -> int:
 
 
 def calorie_gate(
-    history: Iterable[dict[str, Any]], user_message: str, response_text: str
+    history: Iterable[dict[str, Any]],
+    user_message: str,
+    response_text: str,
+    user_key: str = "",
 ) -> str | None:
     """Block or replace calorie output using only user-supplied values."""
     target_flow = _calorie_flow_active(
@@ -1191,9 +1235,15 @@ def calorie_gate(
     # conversation and the gate returned None for a user it knew was 15.
     profile = extract_calorie_profile(history, user_message)
 
+    # Persist the moment it is seen, so the rule outlives the conversation it
+    # was stated in. Reading it back also restores an adult age that scrolled
+    # out of the window, which is what stops the age question repeating.
+    _remember_age(user_key, profile.age)
+    age = profile.age if profile.age is not None else _stored_age(user_key)
+
     # Load-bearing: once we know the user is a minor, no calorie number goes
     # out at all — target flow or not, and whatever words the model chose.
-    if profile.age is not None and profile.age < 18:
+    if (age is not None and age < 18) or _is_known_minor(user_key):
         if target_flow or has_number or _minor_unsafe_response(response_text):
             return UNDER_18_REFUSAL
         return None
@@ -1206,8 +1256,9 @@ def calorie_gate(
     if not target_flow:
         return None
 
-    if profile.age is None:
+    if age is None:
         return AGE_QUESTION
+    profile = replace(profile, age=age)
 
     missing_reply = _missing_profile_reply(profile)
     if missing_reply:
@@ -1294,7 +1345,7 @@ _CRON_CLAIM = re.compile(
     re.IGNORECASE,
 )
 # Any confirmation that data is gone must be backed by a real deletion. The
-# subject has to be a data noun: "the bloating is gone" is a fitness sentence,
+# subject has to be a data noun: "the bloating is gone" is a health sentence,
 # "your logs are gone" is a promise about health data.
 _DATA_NOUN = (
     r"data|profile|logs?|uploads?|entr(?:y|ies)|records?|history|photos?"
@@ -1399,7 +1450,7 @@ def transform_response(
         return disclosure
     if not _disclosure_was_sent(history, user_key):
         return None
-    calorie = calorie_gate(history, user_message, response_text)
+    calorie = calorie_gate(history, user_message, response_text, user_key)
     if calorie:
         return calorie
     return action_claim_gate(
@@ -1875,27 +1926,57 @@ def _cron_job_id(session_id: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _cron_whatsapp_recipient(session_id: str) -> str | None:
-    """The WhatsApp id a cron job delivers to, or None if it is not ours."""
-    job_id = _cron_job_id(session_id)
-    if not job_id or not _CRON_JOBS_PATH.exists():
-        return None
+def _load_cron_jobs() -> list[dict[str, Any]]:
+    """Every stored cron job, whatever shape jobs.json is written in.
+
+    Load-bearing. Hermes writes ``{"jobs": [...], "updated_at": ...}``, and the
+    first version of this reader did ``list(raw.values())`` — which yields the
+    job *list* and a timestamp *string*, never a job dict. Every lookup missed,
+    so `_cron_whatsapp_recipient` always returned None and `_cron_reminder_gate`
+    returned early on every single run: quiet hours, the claim gate and the
+    calorie suppression were all dead code in production from the day they
+    shipped. Verified live on 2 Sep 2026, when a reminder was delivered at
+    23:55 — inside the 22:00-07:00 quiet window — with nothing logged.
+
+    All three shapes are accepted on purpose: the documented wrapper, a bare
+    list, and an id-keyed mapping. This function must never be the reason a
+    gate goes quiet again.
+    """
+    if not _CRON_JOBS_PATH.exists():
+        return []
     try:
         raw = json.loads(_CRON_JOBS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         LOGGER.warning("ted_cron_jobs_unreadable error=%s", error)
+        return []
+    if isinstance(raw, list):
+        candidates: list[Any] = raw
+    elif isinstance(raw, dict):
+        inner = raw.get("jobs")
+        candidates = inner if isinstance(inner, list) else list(raw.values())
+    else:
+        candidates = []
+    return [job for job in candidates if isinstance(job, dict) and job.get("id")]
+
+
+def _cron_job_chat_id(job: dict[str, Any]) -> str | None:
+    """The WhatsApp chat a job was created from, or None if it is not ours."""
+    origin = job.get("origin")
+    if not isinstance(origin, dict):
         return None
-    jobs = raw if isinstance(raw, list) else list(raw.values()) if isinstance(raw, dict) else []
-    for job in jobs:
-        if not isinstance(job, dict) or job.get("id") != job_id:
-            continue
-        origin = job.get("origin")
-        if not isinstance(origin, dict):
-            return None
-        if str(origin.get("platform") or "").lower() != "whatsapp":
-            return None
-        chat_id = str(origin.get("chat_id") or "")
-        return chat_id or None
+    if str(origin.get("platform") or "").lower() != "whatsapp":
+        return None
+    return str(origin.get("chat_id") or "") or None
+
+
+def _cron_whatsapp_recipient(session_id: str) -> str | None:
+    """The WhatsApp id a cron job delivers to, or None if it is not ours."""
+    job_id = _cron_job_id(session_id)
+    if not job_id:
+        return None
+    for job in _load_cron_jobs():
+        if job.get("id") == job_id:
+            return _cron_job_chat_id(job)
     return None
 
 
@@ -1962,6 +2043,128 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
         LOGGER.info("ted_reminder_calorie_suppressed user_key=%s", user_key)
         return CRON_SILENT
     return None
+
+
+# Cron job ownership — one beta user must never see or touch another's.
+#
+# `cronjob` is a Hermes platform tool and its store is machine-wide, so
+# `action='list'` in any WhatsApp thread returns every job on the box. On
+# 2 Sep 2026 a beta tester's thread was handed five of the builder's own
+# supplement reminders, names and doses included, and the model was holding
+# live job ids it could have removed or rescheduled. The isolated `userFacts`
+# path closed this for memory; this closes the same hole for reminders.
+#
+# Scoped by the WhatsApp chat a job was created from, because that is the only
+# identity Hermes records on a job. A session with no WhatsApp turn context is
+# the builder at a terminal — it is deliberately left alone.
+CRON_NOT_YOURS = "that reminder isn't one of yours, so i can't touch it."
+CRON_DELIVER_ELSEWHERE = "i can only set reminders that come back to this chat."
+
+# Actions that name an existing job. `create` is handled separately and `list`
+# is filtered after the fact, because a blocked list would break Ted's own
+# "let me check your reminders".
+_CRON_JOB_ACTIONS = frozenset({"update", "pause", "resume", "remove", "run"})
+
+
+def _whatsapp_chat_for_session(session_id: str) -> str | None:
+    """The chat this turn belongs to, or None when it is not a user turn."""
+    with _TURN_LOCK:
+        context = _TURN_CONTEXT.get(session_id)
+    if not isinstance(context, dict):
+        return None
+    return str(context.get("chat_id") or "") or None
+
+
+def _cron_scope_guard(**kwargs: Any) -> dict[str, str] | None:
+    """pre_tool_call: refuse to act on a reminder this chat does not own."""
+    if str(kwargs.get("tool_name") or "") != "cronjob":
+        return None
+    session_id = str(kwargs.get("session_id") or "")
+    caller = _whatsapp_chat_for_session(session_id)
+    if not caller:
+        return None
+    args = kwargs.get("args")
+    args = args if isinstance(args, dict) else {}
+    action = str(args.get("action") or "").strip().lower()
+
+    if action == "create":
+        # 'all' fans out to every connected channel and 'platform:chat_id'
+        # targets someone else outright, so a beta user could have Ted post
+        # into the builder's other surfaces. Omitting deliver means origin.
+        deliver = str(args.get("deliver") or "").strip().lower()
+        if deliver and deliver != "origin":
+            LOGGER.info(
+                "ted_cron_deliver_blocked session=%s deliver=%s", session_id, deliver
+            )
+            return {"action": "block", "message": CRON_DELIVER_ELSEWHERE}
+        return None
+
+    if action not in _CRON_JOB_ACTIONS:
+        return None
+
+    # The tool resolves a job by id OR by name, so both are checked. An
+    # unmatched id is left to the tool's own "not found" rather than guessed at.
+    wanted = str(args.get("job_id") or "").strip()
+    if not wanted:
+        return None
+    for job in _load_cron_jobs():
+        if wanted not in (job.get("id"), job.get("name")):
+            continue
+        if _cron_job_chat_id(job) == caller:
+            return None
+        LOGGER.info(
+            "ted_cron_scope_blocked session=%s action=%s job=%s",
+            session_id,
+            action,
+            wanted,
+        )
+        return {"action": "block", "message": CRON_NOT_YOURS}
+    return None
+
+
+def _filter_cron_listing(**kwargs: Any) -> str | None:
+    """transform_tool_result: a listing only ever shows this chat's own jobs."""
+    if str(kwargs.get("tool_name") or "") != "cronjob":
+        return None
+    session_id = str(kwargs.get("session_id") or "")
+    caller = _whatsapp_chat_for_session(session_id)
+    if not caller:
+        return None
+    args = kwargs.get("args")
+    args = args if isinstance(args, dict) else {}
+    if str(args.get("action") or "").strip().lower() != "list":
+        return None
+    result = kwargs.get("result")
+    if not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    listed = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(listed, list):
+        return None
+
+    mine = {
+        job["id"] for job in _load_cron_jobs() if _cron_job_chat_id(job) == caller
+    }
+    # The listing calls the field job_id; jobs.json calls it id.
+    kept = [
+        job
+        for job in listed
+        if isinstance(job, dict) and job.get("job_id") in mine
+    ]
+    if len(kept) == len(listed):
+        return None
+    LOGGER.info(
+        "ted_cron_listing_filtered session=%s removed=%d kept=%d",
+        session_id,
+        len(listed) - len(kept),
+        len(kept),
+    )
+    payload["jobs"] = kept
+    payload["count"] = len(kept)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # Milestone 11 — the user reporting a reply as wrong or unsafe.
@@ -2326,7 +2529,9 @@ def register(ctx: Any) -> None:
             check_fn=_convex_available,
         )
     ctx.register_hook("pre_llm_call", _capture_turn)
+    ctx.register_hook("pre_tool_call", _cron_scope_guard)
     ctx.register_hook("post_tool_call", _record_tool_success)
+    ctx.register_hook("transform_tool_result", _filter_cron_listing)
     ctx.register_hook("transform_llm_output", _transform_live_response)
     ctx.register_hook("post_llm_call", _log_disclosure)
 
