@@ -1927,6 +1927,7 @@ def transform_response(
     report_saved: bool | None = None,
     logged_meal: dict[str, Any] | None = None,
     day_summary: dict[str, Any] | None = None,
+    reminder_set: dict[str, Any] | None = None,
 ) -> str | None:
     history = list(history)
     if _is_prepared_start(history, user_message):
@@ -1991,6 +1992,14 @@ def transform_response(
     )
     if nag_free is not None:
         cleaned = nag_free
+    # After the target gate so it reads the same final text, and before the
+    # meal block for the same reason that one gives: whatever this returns is
+    # what the user sees, so the numbers still go underneath it.
+    spoken_back = reminder_receipt_gate(
+        cleaned if cleaned is not None else response_text, reminder_set, user_key
+    )
+    if spoken_back is not None:
+        cleaned = spoken_back
     # A meal landed this turn, so the numbers go out with it whatever the model
     # chose to say. Appended after the claim gate so a stripped reply still
     # carries them, and skipped when storage failed: there is no day to report
@@ -2168,6 +2177,175 @@ def repeat_target_ask_gate(
         return None
     LOGGER.info("ted_repeat_target_ask_stripped user_key=%s", user_key)
     return stripped
+
+
+# A confirmation is not a receipt.
+#
+# On 3 Sep Ted was asked for a green tea reminder in ten minutes. It created
+# the job and said "done, pinging you in 10 🍵". Every word of that is
+# true, so `action_claim_gate` had nothing to strip: the cron job was real.
+# What is wrong with it is that it is a status line about Ted's own filing.
+# It never says back the thing the user actually asked for, which is the one
+# sentence SOUL.md has always wanted here.
+#
+# That is a voice failure, and voice failures lost to context twice today —
+# the repeat target ask above is the other one. So this is not a third
+# example. The two facts a real confirmation needs, what the reminder is
+# about and when it fires, are both written down by the cronjob tool at the
+# moment it succeeds. The gate reads them instead of hoping the model repeats
+# them, which is the rule the rest of this file already runs on: read what the
+# system recorded, never what the model chose to say.
+#
+# Narrow in both directions on purpose.
+#
+# It runs only on a turn where a cron job was actually created, so nothing
+# else Ted says about reminders is in range. And it leaves the model's
+# sentence alone the moment that sentence already names the subject: "green
+# tea, ten minutes on the clock" is exactly the reply we want, and a gate that
+# overwrote it would be swapping Ted for a template. It fires only when the
+# subject is missing, which is precisely the receipt.
+#
+# Every unreadable input is a no-op rather than a guess. A job name that is
+# not a human label, a timestamp that will not parse, a reply too long to be
+# just a confirmation: all of them return None and the model's own text goes
+# out untouched. A wrong sentence written confidently by a gate would be worse
+# than the receipt it replaced.
+_REMINDER_NOUN = re.compile(
+    r"\b(?:reminders?|nudges?|pings?|alarms?|alerts?|check-?\s?ins?)\b",
+    re.IGNORECASE,
+)
+
+# An auto-named job takes the first fifty characters of the prompt, and Ted's
+# prompts open with an instruction to itself: "Send Vandy a short, warm,
+# casual Ted-style WhatsApp reminder to take CoQ10". Saying that back out loud
+# would be worse than the receipt.
+_PROMPT_FRAGMENT = re.compile(
+    r"^(?:send|tell|remind|message|write|ping|nudge|ask|check)\b", re.IGNORECASE
+)
+
+# Ted writes "ten minutes on the clock", not "10 minutes". Only the round
+# numbers a reminder is actually asked for; anything else falls back to
+# digits, which is how Ted writes every other number.
+_MINUTE_WORDS = {
+    1: "a minute",
+    2: "two minutes",
+    3: "three minutes",
+    5: "five minutes",
+    10: "ten minutes",
+    15: "fifteen minutes",
+    20: "twenty minutes",
+    30: "half an hour",
+    45: "forty-five minutes",
+    60: "an hour",
+    90: "an hour and a half",
+}
+
+
+def _reminder_subject(name: str) -> str | None:
+    """The thing the reminder is about, taken from the job name the tool wrote.
+
+    None whenever the name is not something a person would say out loud. Ted's
+    own scheduled jobs are keyed ("ted:sha256:owner:daily_review") and an
+    unnamed job is a slice of its own prompt; neither is a subject, and both
+    have to leave the model's sentence alone rather than be recited.
+    """
+    label = (name or "").strip()
+    if not label or ":" in label or "/" in label:
+        return None
+    if _PROMPT_FRAGMENT.match(label):
+        return None
+    label = _REMINDER_NOUN.sub("", label).strip(" -\u2013\u2014,.")
+    if not label or len(label) > 32 or len(label.split()) > 4:
+        return None
+    # "Green tea" -> "green tea", because Ted writes lowercase. "CoQ10" and
+    # "B12" keep the shape they were given: those are names, not sentences.
+    first = label.split()[0]
+    if first.isalpha() and first[:1].isupper() and not first[1:2].isupper():
+        label = label[0].lower() + label[1:]
+    return label
+
+
+def _clock(moment: datetime) -> str:
+    hour = moment.hour % 12 or 12
+    suffix = "am" if moment.hour < 12 else "pm"
+    return f"{hour}:{moment.minute:02d}{suffix}" if moment.minute else f"{hour}{suffix}"
+
+
+def _reminder_when(user_key: str, next_run_at: str) -> str | None:
+    """When the job fires, in the user's own timezone and Ted's own words.
+
+    Relative while the wait is short enough to feel like a wait, because "ten
+    minutes on the clock" is what they asked for and "8:47pm" is arithmetic
+    they would have to do themselves. A clock time after that.
+    """
+    try:
+        moment = datetime.fromisoformat((next_run_at or "").strip())
+    except (TypeError, ValueError):
+        return None
+    zone = _user_time_zone(user_key)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=zone)
+    local = moment.astimezone(zone)
+    now = _local_now(user_key)
+    minutes = round((local - now).total_seconds() / 60)
+    if 0 < minutes <= 90:
+        return f"{_MINUTE_WORDS.get(minutes, f'{minutes} minutes')} on the clock"
+    days = (local.date() - now.date()).days
+    if days == 0:
+        return _clock(local)
+    if days == 1:
+        return f"{_clock(local)} tomorrow"
+    if 1 < days < 7:
+        return f"{_clock(local)} {local.strftime('%A').lower()}"
+    return None
+
+
+def _says_the_thing_back(response_text: str, subject: str) -> bool:
+    """Whether Ted's own sentence already named what the reminder is about."""
+    spoken = set(re.findall(r"[a-z0-9]+", (response_text or "").lower()))
+    wanted = {
+        word for word in re.findall(r"[a-z0-9]+", subject.lower()) if len(word) > 2
+    }
+    return bool(spoken & wanted) if wanted else True
+
+
+def reminder_receipt_gate(
+    response_text: str, reminder: dict[str, Any] | None, user_key: str
+) -> str | None:
+    """Ted's reply with a bare scheduling receipt replaced by the thing itself.
+
+    Returns None on every turn where no cron job was created, where the reply
+    already says the thing back, or where the job cannot be read cleanly
+    enough to write one honest line from.
+    """
+    if not reminder or not (response_text or "").strip():
+        return None
+    subject = _reminder_subject(str(reminder.get("name") or ""))
+    if not subject:
+        LOGGER.info("ted_reminder_receipt_no_subject name=%r", reminder.get("name"))
+        return None
+    if _says_the_thing_back(response_text, subject):
+        return None
+    when = _reminder_when(user_key, str(reminder.get("next_run_at") or ""))
+    if not when:
+        LOGGER.info(
+            "ted_reminder_receipt_no_time next_run_at=%r", reminder.get("next_run_at")
+        )
+        return None
+    # A receipt is one short line. Anything longer is carrying something else
+    # as well — a logged meal, an answer to a question asked in the same
+    # message — and replacing it wholesale would throw that away. The subject
+    # is missing from it either way, but losing real content is the worse of
+    # the two failures, so this leaves it and says so in the log.
+    sentences = list(_sentences(response_text))
+    if len(sentences) > 2 or len(response_text.strip()) > 140:
+        LOGGER.info("ted_reminder_receipt_left_long_reply user_key=%s", user_key)
+        return None
+    line = f"{subject}, {when} \u23f3"
+    if line == response_text.strip():
+        return None
+    LOGGER.info("ted_reminder_receipt_rewritten user_key=%s", user_key)
+    return line
 
 
 # Onboarding may not close over a missing check-in time.
@@ -2534,6 +2712,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         report_saved=report_saved,
         logged_meal=context.get("logged_meal"),
         day_summary=context.get("day_summary"),
+        reminder_set=context.get("reminder_set"),
     )
     # The transcript is about to record model_text while the user receives
     # `replacement`. Keep the difference so the next turn can be told.
@@ -2556,6 +2735,10 @@ def _record_tool_success(**kwargs: Any) -> None:
         return None
 
     proven: set[str] = set()
+    # What the job is about and when it fires, kept for the receipt gate. Read
+    # off the tool's own result, so a reminder Ted describes but never created
+    # leaves nothing behind here.
+    reminder_set: dict[str, Any] | None = None
     if tool_name == "memory" and not payload.get("staged"):
         proven.add("memory")
         if isinstance(args, dict) and args.get("action") == "remove":
@@ -2566,6 +2749,11 @@ def _record_tool_success(**kwargs: Any) -> None:
             proven.add("cron")
         elif action == "remove":
             proven.update({"cron", "delete"})
+        if action == "create" and payload.get("next_run_at"):
+            reminder_set = {
+                "name": str(payload.get("name") or ""),
+                "next_run_at": str(payload.get("next_run_at") or ""),
+            }
     elif tool_name == "ted_memory_save":
         proven.add("memory")
     elif tool_name == "ted_memory_delete":
@@ -2594,6 +2782,8 @@ def _record_tool_success(**kwargs: Any) -> None:
         context = _TURN_CONTEXT.get(session_id)
         if context is not None:
             context["successful_actions"].update(proven)
+            if reminder_set is not None:
+                context["reminder_set"] = reminder_set
     return None
 
 

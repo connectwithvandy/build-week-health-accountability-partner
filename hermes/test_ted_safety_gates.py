@@ -1,6 +1,6 @@
 import json
 import re
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 import time
 import unittest
 from pathlib import Path
@@ -1143,6 +1143,7 @@ class CalorieProfileParsingTest(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(gates._find_age([text]), expected)
+
 
     def test_a_word_inside_a_word_never_counts_as_the_question(self) -> None:
         """"age" is inside "message", and the disclosure says "messages".
@@ -2301,6 +2302,141 @@ class RepeatTargetAskGateTest(unittest.TestCase):
             gates.repeat_target_ask_gate("how am i doing", self.SECOND, "")
         )
 
+
+class ReminderReceiptGateTest(unittest.TestCase):
+    """A confirmation is not a receipt.
+
+    "done, pinging you in 10" was true — the job existed, so the claim gate
+    had nothing to strip. It just never said back the thing that was asked
+    for. The subject and the time both come off the cronjob tool's own
+    result, so this gate never has to read the model's prose to know them.
+    """
+
+    RECEIPT = "done, pinging you in 10 \U0001f375"
+    user_key = "reminder-receipt-test"
+
+    def job(self, name: str = "Green tea reminder", minutes: int = 10) -> dict:
+        when = gates._local_now(self.user_key) + timedelta(minutes=minutes)
+        return {"name": name, "next_run_at": when.isoformat()}
+
+    def gate(self, response: str, job: dict | None = None):
+        return gates.reminder_receipt_gate(
+            response, self.job() if job is None else job, self.user_key
+        )
+
+    def test_the_receipt_becomes_the_thing_itself(self) -> None:
+        self.assertEqual(
+            self.gate(self.RECEIPT), "green tea, ten minutes on the clock \u23f3"
+        )
+
+    def test_a_reply_that_already_says_it_back_is_left_alone(self) -> None:
+        for good in (
+            "green tea, ten minutes on the clock \u23f3",
+            "green tea in ten, i'll shout \u23f3",
+            "ok green tea at 8:40",
+        ):
+            with self.subTest(reply=good):
+                self.assertIsNone(self.gate(good))
+
+    def test_no_cron_job_this_turn_means_no_gate(self) -> None:
+        self.assertIsNone(gates.reminder_receipt_gate(self.RECEIPT, None, self.user_key))
+
+    def test_a_clock_time_once_the_wait_stops_being_a_wait(self) -> None:
+        line = self.gate("all set!", self.job("Iron reminder", minutes=200))
+        self.assertIsNotNone(line)
+        self.assertTrue(line.startswith("iron, "))
+        self.assertNotIn("on the clock", line)
+
+    def test_tomorrow_is_named_rather_than_implied(self) -> None:
+        # Far enough out that it is always the next day whatever time the
+        # suite runs, and never further than that.
+        job = self.job("Iron reminder", minutes=60 * 25)
+        self.assertIn(
+            gates._reminder_when(self.user_key, job["next_run_at"]).split()[-1],
+            ("tomorrow", "monday", "tuesday", "wednesday", "thursday",
+             "friday", "saturday", "sunday"),
+        )
+
+    def test_a_name_that_is_not_a_label_leaves_the_reply_alone(self) -> None:
+        """A wrong sentence written confidently is worse than the receipt."""
+        for name in (
+            # Ted's own scheduled jobs are keyed, not named.
+            "ted:sha256:owner:daily_review",
+            # An unnamed job takes the first fifty characters of its prompt.
+            "Send Vandy a short, warm, casual Ted-style WhatsApp remin",
+            "",
+            # Too long to be a subject; this is a sentence.
+            "the thing we talked about earlier this evening, the tea one",
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(self.gate("sorted \U0001f44d", self.job(name)))
+
+    def test_an_unreadable_time_leaves_the_reply_alone(self) -> None:
+        self.assertIsNone(
+            self.gate(self.RECEIPT, {"name": "Green tea reminder", "next_run_at": "soon"})
+        )
+
+    def test_a_reply_carrying_anything_else_is_never_overwritten(self) -> None:
+        """Losing a logged meal is the worse of the two failures."""
+        self.assertIsNone(
+            self.gate(
+                "logged the dal, 340 cal in. and done, pinging you in 10. "
+                "want me to line up anything else for tonight?"
+            )
+        )
+
+    def test_names_keep_the_shape_they_were_given(self) -> None:
+        self.assertTrue(self.gate("all set!", self.job("CoQ10 reminder")).startswith("CoQ10,"))
+        self.assertTrue(self.gate("all set!", self.job("Vitamin D reminder")).startswith("vitamin D,"))
+
+    def test_the_live_path_carries_the_job_from_the_tool(self) -> None:
+        session = "reminder-receipt-live"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session,
+            conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="remind me about green tea in 10 minutes",
+        )
+        when = datetime.now(dt_timezone.utc) + timedelta(minutes=10)
+        _record_tool_success(
+            session_id=session,
+            status="ok",
+            tool_name="cronjob",
+            args={"action": "create"},
+            result=json.dumps(
+                {
+                    "success": True,
+                    "name": "Green tea reminder",
+                    "next_run_at": when.isoformat(),
+                }
+            ),
+        )
+        self.assertEqual(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=session,
+                response_text=self.RECEIPT,
+            ),
+            "green tea, ten minutes on the clock \u23f3",
+        )
+
+    def test_a_cron_list_leaves_nothing_behind_for_the_gate(self) -> None:
+        session = "reminder-receipt-list"
+        _capture_turn(
+            platform="whatsapp",
+            session_id=session,
+            conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="what reminders do i have",
+        )
+        _record_tool_success(
+            session_id=session,
+            status="ok",
+            tool_name="cronjob",
+            args={"action": "list"},
+            result='{"success": true, "count": 0}',
+        )
+        with gates._TURN_LOCK:
+            self.assertIsNone(gates._TURN_CONTEXT[session].get("reminder_set"))
 
 class CronReminderGateTest(unittest.TestCase):
     """Milestone 12: cron reminders are Ted talking, so Ted's rules apply.
