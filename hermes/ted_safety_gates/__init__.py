@@ -1114,6 +1114,40 @@ _HEIGHT_RANGE_CM = (120.0, 220.0)
 _WEIGHT_RANGE_KG = (30.0, 250.0)
 
 
+# The cue terms are matched as words, never as substrings.
+#
+# "age" is inside "message", and DISCLOSURE_MESSAGE — the first thing every
+# single user reads — is "Ted stores your profile, messages, plans, logs and
+# uploads." So on a substring match, Ted had just asked for your age before
+# you had said anything at all, and `_age_from_answer_context` takes the
+# first number between 10 and 99 out of whatever you replied. "remind me
+# about green tea in 10 minutes" made you ten years old.
+#
+# That is the worst possible thing to get wrong here. `_remember_age` writes
+# the minor flag, `_is_known_minor` is sticky by design, and the only
+# documented way out is "delete my data" — so one ordinary first message
+# bought a permanent, silent refusal of every calorie number, and the user
+# would never learn why. `_AGE_SELF_REPORT` already carried a careful unit
+# list so that "2 rotis" could not do this; the answer-context path went
+# around the whole guard.
+#
+# "average", "manage", "usage", "storage" and "package" are all the same bug
+# waiting for a health coach to say them, which is why this is fixed at the
+# matcher rather than by editing the disclosure text.
+_ASKED_PATTERNS: dict[tuple[str, ...], re.Pattern[str]] = {}
+
+
+def _asks_for_field(text: str, asked: tuple[str, ...]) -> bool:
+    pattern = _ASKED_PATTERNS.get(asked)
+    if pattern is None:
+        pattern = re.compile(
+            r"\b(?:" + "|".join(re.escape(term) for term in asked) + r")\b",
+            re.IGNORECASE,
+        )
+        _ASKED_PATTERNS[asked] = pattern
+    return bool(pattern.search(text))
+
+
 def _answer_after_question(
     history: Iterable[dict[str, Any]],
     asked: tuple[str, ...],
@@ -1128,14 +1162,13 @@ def _answer_after_question(
     turns = _messages(history)
     current = current_user_message.strip()
     if current and turns and turns[-1][0] == "assistant":
-        lowered = turns[-1][1].lower()
-        if any(term in lowered for term in asked):
+        if _asks_for_field(turns[-1][1], asked):
             return current
     for index in range(len(turns) - 2, -1, -1):
         role, text = turns[index]
         if role != "assistant":
             continue
-        if not any(term in text.lower() for term in asked):
+        if not _asks_for_field(text, asked):
             continue
         next_role, answer = turns[index + 1]
         if next_role == "user" and answer.strip():

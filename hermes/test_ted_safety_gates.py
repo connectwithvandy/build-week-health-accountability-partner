@@ -1144,6 +1144,44 @@ class CalorieProfileParsingTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(gates._find_age([text]), expected)
 
+    def test_a_word_inside_a_word_never_counts_as_the_question(self) -> None:
+        """"age" is inside "message", and the disclosure says "messages".
+
+        Every conversation opens with DISCLOSURE_MESSAGE, so on a substring
+        match Ted had asked for the user's age before they had said anything.
+        Any number between 10 and 99 in their first reply then became their
+        age, and `_remember_age` writes the minor flag, which is sticky and
+        clears only on "delete my data". One ordinary sentence bought a
+        permanent silent refusal of every calorie number.
+        """
+        history = [message("assistant", DISCLOSURE_MESSAGE)]
+        for text in (
+            "remind me about green tea in 10 minutes",
+            "i walked 20 floors today",
+            "log 30 min of yoga",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(gates.extract_calorie_profile(history, text).age)
+
+    def test_the_same_trap_in_the_words_a_coach_actually_uses(self) -> None:
+        for asked in ("what's your average step count?", "want me to manage that?"):
+            with self.subTest(asked=asked):
+                self.assertIsNone(
+                    gates.extract_calorie_profile(
+                        [message("assistant", asked)], "about 40 on a good day"
+                    ).age
+                )
+
+    def test_the_real_age_question_still_gets_its_answer(self) -> None:
+        for asked in (gates.AGE_QUESTION, "quick one, what's your age?", "how old are you?"):
+            with self.subTest(asked=asked):
+                self.assertEqual(
+                    gates.extract_calorie_profile(
+                        [message("assistant", asked)], "33"
+                    ).age,
+                    33,
+                )
+
     def test_a_bare_number_answers_the_height_question(self) -> None:
         history = [
             message("user", "i am 33 and want a calorie target"),
