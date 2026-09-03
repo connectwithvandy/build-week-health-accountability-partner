@@ -1531,6 +1531,63 @@ def unreadable_document_gate(user_message: str) -> str | None:
     return None
 
 
+def _number(value: Any) -> str:
+    """A count a person would write. 620, not 620.0; 1,060, not 1060."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    return f"{round(number):,}"
+
+
+def meal_breakdown(meal: dict[str, Any], day: dict[str, Any]) -> str:
+    """The numbers for this meal, then the day so far.
+
+    Written by the gate, from what was actually saved, because the model
+    forgets it, reorders it, or quietly rounds it away. On 3 Sep a logged plate
+    came back as "logged 👍 sprouts bowl in — you're at roughly 1060 kcal": no
+    per-meal numbers at all, and "roughly" in front of a figure read straight
+    out of the database. Guardrail 5: the model gets interpretation and voice,
+    deterministic code gets the facts.
+
+    SOUL.md tells Ted not to write these figures itself, so this is the only
+    place they come from and they cannot appear twice.
+    """
+    rows = [
+        ("calories", _number(meal.get("calories")), ""),
+        ("protein", _number(meal.get("proteinGrams")), "g"),
+        ("carbs", _number(meal.get("carbohydrateGrams")), "g"),
+        ("fat", _number(meal.get("fatGrams")), "g"),
+    ]
+    # A zero is dropped rather than printed. "carbs 0g" is not a fact about a
+    # plate of food, it is a gap in the estimate wearing a number's clothes,
+    # and guardrail 1 is explicit that a silent zero corrupts the day.
+    lines = [
+        f"{label} {value}{unit}"
+        for label, value, unit in rows
+        if value and value != "0"
+    ]
+    if not lines:
+        return ""
+
+    # The day is a separate beat, and only worth saying when it is more than
+    # the meal we just printed. Repeating identical numbers reads as a bug.
+    day_calories = _number(day.get("calories"))
+    day_protein = _number(day.get("proteinGrams"))
+    if day_calories and day_calories != _number(meal.get("calories")):
+        lines.append("")
+        lines.append(f"day so far {day_calories} cal, {day_protein}g protein")
+    return "\n".join(lines)
+
+
+def _with_meal_breakdown(reply: str, meal: dict[str, Any], day: dict[str, Any]) -> str:
+    block = meal_breakdown(meal, day)
+    if not block:
+        return reply
+    words = (reply or "").strip()
+    return f"{words}\n\n{block}" if words else block
+
+
 def transform_response(
     *,
     history: Iterable[dict[str, Any]],
@@ -1541,6 +1598,8 @@ def transform_response(
     user_key: str = "",
     storage_failed: bool = False,
     report_saved: bool | None = None,
+    logged_meal: dict[str, Any] | None = None,
+    day_summary: dict[str, Any] | None = None,
 ) -> str | None:
     history = list(history)
     if _is_prepared_start(history, user_message):
@@ -1577,12 +1636,23 @@ def transform_response(
     unfinished = onboarding_close_gate(response_text, user_key)
     if unfinished:
         return unfinished
-    return action_claim_gate(
+    cleaned = action_claim_gate(
         response_text,
         action_succeeded=action_succeeded,
         successful_actions=successful_actions,
         storage_failed=storage_failed,
     )
+    # A meal landed this turn, so the numbers go out with it whatever the model
+    # chose to say. Appended after the claim gate so a stripped reply still
+    # carries them, and skipped when storage failed: there is no day to report
+    # if nothing was written.
+    if logged_meal and not storage_failed:
+        return _with_meal_breakdown(
+            cleaned if cleaned is not None else response_text,
+            logged_meal,
+            day_summary or {},
+        )
+    return cleaned
 
 
 # Onboarding may not close over a missing check-in time.
@@ -1828,6 +1898,8 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         user_key=user_key,
         storage_failed=bool(context.get("storage_failed")),
         report_saved=report_saved,
+        logged_meal=context.get("logged_meal"),
+        day_summary=context.get("day_summary"),
     )
     # The transcript is about to record model_text while the user receives
     # `replacement`. Keep the difference so the next turn can be told.
@@ -2888,6 +2960,15 @@ def _log_daily_entry(
             entry_type,
             result.get("duplicate"),
         )
+        # A meal that actually landed, with the day it landed in. Held for the
+        # reply gate, which prints both. Not for a re-delivery: the user has
+        # already been shown those numbers once.
+        if entry_type == "meal" and not result.get("duplicate") and body.get("meal"):
+            with _TURN_LOCK:
+                turn = _TURN_CONTEXT.get(session_id or task_id)
+                if turn is not None:
+                    turn["logged_meal"] = body["meal"]
+                    turn["day_summary"] = result.get("daySummary") or {}
     return json.dumps(result, ensure_ascii=False)
 
 

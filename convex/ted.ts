@@ -416,7 +416,25 @@ export const logDailyEntry = internalMutation({
     });
 
     await ctx.db.patch(user._id, { updatedAt: now });
-    return { success: true, duplicate: false, entryId, dedupeKey };
+
+    // The day's running totals, computed here rather than asked for in a
+    // second round trip, and never reconstructed by the model. This is what
+    // lets the gate print "this meal" and "the day so far" from real numbers
+    // in the same breath: guardrail 5, "use deterministic code for facts".
+    const dayEntries = await ctx.db
+      .query("dailyEntries")
+      .withIndex("by_user_and_date", (query) =>
+        query.eq("userId", user._id).eq("localDate", args.localDate),
+      )
+      .collect();
+
+    return {
+      success: true,
+      duplicate: false,
+      entryId,
+      dedupeKey,
+      daySummary: summariseDay(args.localDate, dayEntries),
+    };
   },
 });
 

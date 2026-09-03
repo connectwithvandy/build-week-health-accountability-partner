@@ -3352,3 +3352,106 @@ class GatedReplyParityTest(unittest.TestCase):
         # The user now answers the question they actually saw.
         body = self.capture()["context"]
         self.assertIn("how old are you", body)
+
+
+class MealBreakdownTest(unittest.TestCase):
+    """This meal's numbers, then the day. Written by the gate, not the model.
+
+    On 3 Sep a logged plate came back as "logged 👍 sprouts bowl in — you're at
+    roughly 1060 kcal, 46g protein for the day now": no per-meal numbers at
+    all, "roughly" in front of a figure read straight out of the database, and
+    a receipt word in front of the whole thing. Asking the model more nicely
+    was not going to fix that. Guardrail 5: deterministic code owns facts.
+    """
+
+    KEY = "whatsapp:sha256:breakdown"
+
+    MEAL = {
+        "calories": 220,
+        "proteinGrams": 14,
+        "carbohydrateGrams": 30,
+        "fatGrams": 3,
+        "fiberGrams": 9,
+    }
+    DAY = {"calories": 1060, "proteinGrams": 46}
+
+    def setUp(self) -> None:
+        self.addCleanup(gates._forget_user, self.KEY)
+        self.history = [message("assistant", DISCLOSURE_MESSAGE)]
+
+    def transform(self, reply: str, meal=None, day=None, **kw):
+        return gates.transform_response(
+            history=self.history,
+            user_message="[image received]",
+            response_text=reply,
+            user_key=self.KEY,
+            action_succeeded=True,
+            logged_meal=self.MEAL if meal is None else meal,
+            day_summary=self.DAY if day is None else day,
+            **kw,
+        )
+
+    def test_the_meal_numbers_are_broken_out_one_per_line(self) -> None:
+        out = self.transform("ooh sprouts bowl 😍 proper protein for a veg plate")
+        self.assertIn("calories 220", out)
+        self.assertIn("protein 14g", out)
+        self.assertIn("carbs 30g", out)
+        self.assertIn("fat 3g", out)
+
+    def test_the_day_total_comes_after_the_meal_not_instead_of_it(self) -> None:
+        out = self.transform("ooh sprouts bowl")
+        self.assertIn("day so far 1,060 cal, 46g protein", out)
+        # Order matters: this meal first, the day underneath.
+        self.assertLess(out.index("calories 220"), out.index("day so far"))
+
+    def test_ted_s_own_words_are_kept_and_come_first(self) -> None:
+        out = self.transform("ooh sprouts bowl 😍 proper protein for a veg plate")
+        self.assertTrue(out.startswith("ooh sprouts bowl"))
+
+    def test_the_day_line_is_dropped_when_it_would_repeat_the_meal(self) -> None:
+        """First meal of the day: "220" then "day so far 220" reads as a bug."""
+        out = self.transform("ooh sprouts bowl", day={"calories": 220, "proteinGrams": 14})
+        self.assertIn("calories 220", out)
+        self.assertNotIn("day so far", out)
+
+    def test_nothing_is_appended_when_no_meal_was_logged(self) -> None:
+        out = self.transform("how's the day going?", meal={})
+        self.assertNotIn("calories", out or "")
+
+    def test_a_failed_save_never_reports_a_day(self) -> None:
+        """No write, no numbers. The user is told it did not save instead."""
+        out = self.transform("ooh sprouts bowl", storage_failed=True)
+        self.assertNotIn("day so far", out)
+        self.assertIn(gates.STORAGE_NOT_SAVED, out)
+
+    def test_numbers_are_rounded_and_grouped_like_a_person_writes_them(self) -> None:
+        out = self.transform(
+            "big one",
+            meal={"calories": 1234.6, "proteinGrams": 45.2, "carbohydrateGrams": 0, "fatGrams": 0},
+            day={"calories": 2500.0, "proteinGrams": 90.0},
+        )
+        self.assertIn("calories 1,235", out)
+        self.assertIn("protein 45g", out)
+        self.assertIn("day so far 2,500 cal", out)
+        # A zero macro is omitted rather than printed as a hollow "carbs 0g".
+        self.assertNotIn("carbs 0g", out)
+
+    def test_a_stripped_claim_still_carries_the_numbers(self) -> None:
+        """The claim gate may cut the sentence. The facts still go out."""
+        out = gates.transform_response(
+            history=self.history,
+            user_message="[image received]",
+            response_text="I've saved that to your log.",
+            user_key=self.KEY,
+            action_succeeded=False,
+            logged_meal=self.MEAL,
+            day_summary=self.DAY,
+        )
+        self.assertIn("calories 220", out)
+
+    def test_no_emoji_ever_sits_beside_a_metric(self) -> None:
+        """SOUL.md: emoji belong in what Ted says, never in what Ted counts."""
+        block = gates.meal_breakdown(self.MEAL, self.DAY)
+        for line in block.splitlines():
+            if any(ch.isdigit() for ch in line):
+                self.assertTrue(line.isascii(), f"non-ascii beside a metric: {line!r}")

@@ -192,7 +192,23 @@ all three counts, and all three had a cause.
   definitions rather than trusting "parses OK", which is the lesson: a Python
   file that parses is not a Python file that runs.
 
-Tests: 213 Python, 69 vitest.
+- **The numbers now come from the gate, not the model.** Even with SOUL.md
+  loaded in full and untruncated, the first live meal after the fix came back
+  as "logged 👍 sprouts bowl in — you're at roughly 1060 kcal, 46g protein":
+  no per-meal breakdown, a receipt word in front, and "roughly" attached to a
+  figure read out of the database. The session had 84 messages and
+  `compression.protect_last_n: 20`, so twenty verbatim examples of the old
+  voice sat next to the new rule and won. Writing a stricter rule would have
+  lost the same way. So `logDailyEntry` now returns the day's totals with the
+  write, the gate holds the saved meal for the turn, and `meal_breakdown`
+  appends the figures itself: this meal one metric per line, then the day so
+  far, dropping the day line when it would merely repeat the meal and dropping
+  any zero macro rather than printing a gap as a fact. SOUL.md tells Ted the
+  numbers are appended for it and to never type them itself, so they cannot
+  appear twice, and the model keeps the only part it is actually needed for:
+  what the food is and what it means.
+
+Tests: 222 Python, 69 vitest.
 
 ### Still open after order 16
 
