@@ -470,7 +470,11 @@ h1 .script{color:var(--ink)}
   .chat-wrap .sticker{display:none}
   .hero-grid,.split{grid-template-columns:1fr;gap:48px}
   .split.flip>*:first-child{order:0}
-  .split .chat,.split.wide .chat,.recap{max-width:none}
+  /* A phone is phone shaped at every width. Dropping the cap entirely let
+     the mockups reach 670px on a tablet, which is the same landscape phone
+     wearing an iPhone status bar that the desktop layout used to have. */
+  .chat-wrap .chat,.split .chat,.split.wide .chat{max-width:420px;margin-inline:auto}
+  .recap{max-width:none}
   .list,.steps{grid-template-columns:1fr;gap:0}
   .bound{padding:38px 26px 34px;max-width:none}
   .foot{grid-template-columns:1fr 1fr}
