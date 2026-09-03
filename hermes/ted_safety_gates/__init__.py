@@ -15,7 +15,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -1950,6 +1950,14 @@ def transform_response(
         successful_actions=successful_actions,
         storage_failed=storage_failed,
     )
+    # After the claim gate so it reads the text the user is actually going to
+    # get, and before the meal block so a stripped reply still carries its
+    # numbers underneath.
+    nag_free = repeat_target_ask_gate(
+        user_message, cleaned if cleaned is not None else response_text, user_key
+    )
+    if nag_free is not None:
+        cleaned = nag_free
     # A meal landed this turn, so the numbers go out with it whatever the model
     # chose to say. Appended after the claim gate so a stripped reply still
     # carries them, and skipped when storage failed: there is no day to report
@@ -1970,6 +1978,163 @@ def transform_response(
     if cleaned is not None:
         return spoken
     return spoken if spoken != (response_text or "").strip() else None
+
+
+# Asking twice is nagging.
+#
+# On 3 Sep Ted asked for a calorie/protein target at 16:18 and again at 18:13,
+# both times in answer to "how am i doing". Four user messages sat in between
+# and none of them was a target: they simply moved on, which is an answer. The
+# second ask was the first one with new adjectives on it.
+#
+# SOUL.md forbids this in prose twice over ("I do not use the same reaction
+# shape twice in a row", "shrink the ask instead of repeating it"), and the
+# voice card was already carrying the *correct* version of that exact line at
+# the moment the second one went out. Both lost. Hermes keeps the last twenty
+# messages verbatim, so at 18:13 the model could see its own 16:18 answer and
+# copied its shape; a model imitates its recent self over an instruction it
+# read once. That is not a wording problem and no further example fixes it.
+#
+# So it is a counter, deliberately the same shape as `_name_asks`: record that
+# the ask went out, and strip a second one for the rest of the user's local
+# day. One ask, then silence until they raise targets themselves.
+#
+# Narrow on purpose. It fires only on a *question asking them to supply* a
+# target, so none of Ted's legitimate target talk is in range: confirming one
+# ("your step target is set at 9000"), measuring against one ("800 short of
+# your 9,000 today"), or answering a question they asked. `have` is kept out
+# of the verb list for that last reason, because "do you have plans to hit
+# that goal today?" is coaching about a target that exists, not a re-ask.
+# Measured against every target/goal reply in the live transcript rather than
+# written from imagination, which caught two mistakes in the first version.
+#
+# The trigger is scoped to a single sentence. A `[^?]*` span reached across
+# sentence boundaries and matched "your calorie target is set at 1400. could
+# you share your age?" as an ask, which would have burned the day's one ask on
+# a reply that never asked for a target and then stripped nothing.
+#
+# "target" only, never "goal". The onboarding goal question ("what's the
+# actual goal here, drop weight or build muscle?") is a state machine that
+# must keep asking until it gets an answer, so it has to stay out of range,
+# and SOUL.md already files a numeric target separately from the goal: the
+# goal is asked during onboarding, targets only "when the current
+# conversation needs them". Dropping the word separates them exactly.
+_TARGET_WORD = re.compile(r"\btargets?\b", re.IGNORECASE)
+
+# A question with one of these in it is asking them to supply the number.
+# `have` is left out on purpose: "do you have plans to hit that goal today?"
+# is coaching about a target that already exists. The interrogatives are in
+# because "what's your daily step target, roughly?" is the commonest ask Ted
+# actually writes, and the first version missed all six of them.
+_TARGET_ASK_CUE = re.compile(
+    r"\b(?:set|setting|give|share|tell|pick|choose|decide|want|wanna|fix"
+    r"|what|whats|which|how\s+many|how\s+much|aiming"
+    # "could you let me know your target step count for today?"
+    r"|let\s+me\s+know"
+    # Hinglish is Ted's native tongue and the ask arrives in it: "kitne steps
+    # ka target hai aaj?" is the same question and was invisible to a purely
+    # English cue list.
+    r"|kitn[aeiou])\b",
+    re.IGNORECASE,
+)
+
+# An erasure confirmation lists "targets" among the things it is about to
+# wipe, and asks. It is a fixed string returned by a gate above this one, so
+# it should never arrive here, but a model-authored variant would, and
+# stripping the question out of "you sure? no undo" would be the worst
+# possible edit to make.
+_NOT_A_TARGET_ASK = re.compile(
+    r"\b(?:wipe|delete|erase|forget|permanent(?:ly)?|no\s+undo)\b",
+    re.IGNORECASE,
+)
+
+
+def _sentences(text: str) -> Iterator[str]:
+    for line in (text or "").splitlines():
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            if sentence.strip():
+                yield sentence
+
+
+def _is_target_ask(sentence: str) -> bool:
+    return bool(
+        "?" in sentence
+        and _TARGET_WORD.search(sentence)
+        and _TARGET_ASK_CUE.search(sentence)
+        and not _NOT_A_TARGET_ASK.search(sentence)
+    )
+
+
+# Their own message mentioning a target means they raised it, and an answer is
+# owed however many times Ted has asked today.
+_USER_RAISED_TARGET = re.compile(
+    r"\b(?:targets?|goals?|kcal|calorie|calories|protein|macros)\b",
+    re.IGNORECASE,
+)
+
+
+def _target_asked_today(user_key: str) -> bool:
+    record = _onboarding(user_key)
+    return bool(record.get("target_ask_date") == _today(user_key))
+
+
+def _record_target_ask(user_key: str) -> None:
+    """Record the ask at the moment it actually goes out to the user."""
+    if not user_key or _target_asked_today(user_key):
+        return
+    _update_onboarding(user_key, target_ask_date=_today(user_key))
+    LOGGER.info("ted_target_ask_recorded user_key=%s", user_key)
+
+
+def _contains_target_ask(text: str) -> bool:
+    return any(_is_target_ask(sentence) for sentence in _sentences(text))
+
+
+def repeat_target_ask_gate(
+    user_message: str, response_text: str, user_key: str
+) -> str | None:
+    """Ted's reply with a same-day second ask for a target taken out.
+
+    Returns None when there is nothing to do, which is the overwhelming
+    majority of turns. Records the ask when it is the first one of the day, so
+    the counter is written from what the user actually receives rather than
+    from what the model intended.
+    """
+    if not user_key or not (response_text or "").strip():
+        return None
+    if not _contains_target_ask(response_text):
+        return None
+    # They brought it up, so this is an answer, not a nag.
+    if _USER_RAISED_TARGET.search(user_message or ""):
+        return None
+    if not _target_asked_today(user_key):
+        _record_target_ask(user_key)
+        return None
+
+    kept: list[str] = []
+    for line in response_text.splitlines():
+        sentences = [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if sentence.strip() and not _is_target_ask(sentence)
+        ]
+        joined = " ".join(sentences).strip()
+        if joined:
+            kept.append(joined)
+    stripped = "\n".join(kept).strip()
+    # The trigger and the stripper must agree, or the gate reports a change it
+    # did not make: `_record_gated_reply` would log a rewrite that never
+    # happened and the next turn would be told about it.
+    if stripped == response_text.strip():
+        return None
+    # The ask was the whole message. Sending nothing is worse than sending the
+    # nag, and the same call is made in `strip_assistant_speak` for the same
+    # reason, so this one is left alone and stays visible in the log.
+    if not stripped:
+        LOGGER.info("ted_repeat_target_ask_was_whole_reply user_key=%s", user_key)
+        return None
+    LOGGER.info("ted_repeat_target_ask_stripped user_key=%s", user_key)
+    return stripped
 
 
 # Onboarding may not close over a missing check-in time.
@@ -2149,6 +2314,8 @@ Real examples of you:
   "core and cardio, arre nice 💪 logged it for yesterday"
   "arre it happens, yesterday's gone. one meal today and we're square"
   "can't read PDFs yet 😅 screenshot it?"
+  "green tea, ten minutes on the clock ⏳"
+  "that's your ten. green tea 🍵"
   "sprouts and cutlets so far, light-ish day. want to give me a protein
    target so this actually means something?"
 
@@ -2157,6 +2324,9 @@ Never you:
   "Let me know if there's anything else you need!"
   "Perfect! I'll start sending you daily check-ins at 5:30 PM."
   "Today · 3 meals" — the day line is written for you, never type it
+  "done, pinging you in 10 🍵" (a receipt. say the thing back instead)
+  "green tea time 🍵" (a calendar alert wearing an emoji)
+  The same answer you gave two hours ago with new adjectives on it
   Any sentence you would not say out loud at a chai stall.
 
 The numbers are appended under your reply by code, from the database. Do not
@@ -2164,7 +2334,59 @@ type calories or macros yourself — they will be stripped and your sentence
 may go with them. Your job is the one human line above them."""
 
 
+def _voice_card(user_key: str) -> str:
+    """The voice card, with the person's name in it when we know it.
+
+    SOUL.md says "I use names occasionally" twice, in prose. Not one of its
+    nine worked examples contains a name, and neither did the card. So the
+    only *demonstrated* frequency was zero, and that is the one that won:
+    across the whole 3 Sep thread Ted never once said Vandana.
+
+    Frequency is the wrong thing to specify anyway. "Use their name more"
+    produces "Hi Vandana!" on every message, which is a sales email, not a
+    friend. What a friend actually varies is *placement*: the name arrives
+    when something lands, and is absent the rest of the time. So this shows
+    two placements and says where it does not belong, rather than asking for
+    a rate.
+
+    Returns the plain card when there is no name yet, which is most of
+    onboarding.
+    """
+    name = _known_name(user_key)
+    if not name:
+        return VOICE_CARD
+    return (
+        VOICE_CARD
+        + f"\n\nYou are talking to {name}. Their name is for the beat where "
+        "something lands: a nudge they have already skipped, a streak worth "
+        "marking, one soft push. Never as a greeting, never in every message, "
+        "never in the same message twice.\n"
+        f'  "{name}, water\'s at zero and it\'s 6pm \U0001f4a7"\n'
+        f'  "three days straight now {name} \U0001f44f"'
+    )
+
+
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
+    # A cron run writes into a real WhatsApp thread but arrives with platform
+    # "cron", so it fell through this guard and the voice card never reached
+    # it. Everything Ted sends unprompted is written on this path: the evening
+    # review, the weekly one, any nudge whose text is generated at fire time
+    # rather than fixed when the job was made. Those are the messages a user
+    # gets without asking, which makes them the ones most worth sounding like
+    # a person, and they were the only ones written with no voice in the room.
+    # Nothing else from the chat path applies here: there is no history, no
+    # disclosure to place, and the recipient's memory is read by the output
+    # gate instead. Just the voice.
+    if kwargs.get("platform") == "cron":
+        cron_session = str(kwargs.get("session_id") or "")
+        recipient = _cron_whatsapp_recipient(cron_session)
+        if not recipient:
+            return None
+        return {
+            "context": _voice_card(
+                _user_state_key("whatsapp", recipient, cron_session)
+            )
+        }
     if kwargs.get("platform") != "whatsapp":
         return None
     platform = str(kwargs.get("platform") or "")
@@ -2231,7 +2453,7 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
         for part in (
             _gated_reply_context(user_key),
             memory_context,
-            VOICE_CARD,
+            _voice_card(user_key),
         )
         if part
     ]

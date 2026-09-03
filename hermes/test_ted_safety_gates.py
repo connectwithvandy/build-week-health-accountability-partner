@@ -2068,6 +2068,202 @@ class BadReplyReportTest(unittest.TestCase):
         )
 
 
+class RepeatTargetAskGateTest(unittest.TestCase):
+    """One target ask per day. The second one is a nag, whatever it wears.
+
+    Both strings in the first test are real. Ted sent them to the same user
+    two hours apart on 3 Sep 2026, in answer to the same question, and the
+    voice card was carrying the correct version of that line the whole time.
+    """
+
+    FIRST = (
+        "light day so far, moong sprouts salad and then those cutlets, "
+        "420 cal and 20g protein logged, no target set yet so nothing to "
+        "measure against \U0001f937\u200d\u2640\ufe0f no water or steps in either.\n"
+        "wanna set a calorie/protein target so \"how am i doing\" actually "
+        "means something?"
+    )
+    SECOND = (
+        "sprouts, cutlets, and that peanut toast, three light-ish meals, no "
+        "water or steps logged yet. still no target set though, so this is "
+        "just numbers floating without a goal, wanna fix that?"
+    )
+
+    def setUp(self) -> None:
+        self.user_key = f"repeat-target-{id(self)}"
+        self.addCleanup(gates._ONBOARDING_STATE.pop, self.user_key, None)
+
+    def ask(self, response: str, user_message: str = "How am i doing today"):
+        return gates.repeat_target_ask_gate(user_message, response, self.user_key)
+
+    def test_the_first_ask_goes_out_untouched(self) -> None:
+        self.assertIsNone(self.ask(self.FIRST))
+        self.assertTrue(gates._target_asked_today(self.user_key))
+
+    def test_the_second_ask_the_same_day_loses_the_question(self) -> None:
+        self.assertIsNone(self.ask(self.FIRST))
+        stripped = self.ask(self.SECOND)
+        self.assertIsNotNone(stripped)
+        self.assertNotIn("?", stripped)
+        for word in ("target", "goal", "wanna fix"):
+            self.assertNotIn(word, stripped.lower())
+        # What is left is the actual answer to "how am i doing".
+        self.assertIn("peanut toast", stripped)
+        self.assertIn("three light-ish meals", stripped)
+
+    def test_a_new_day_earns_one_more_ask(self) -> None:
+        self.assertIsNone(self.ask(self.FIRST))
+        gates._update_onboarding(self.user_key, target_ask_date="2026-09-02")
+        self.assertIsNone(self.ask(self.SECOND))
+
+    def test_they_raised_it_so_they_get_an_answer(self) -> None:
+        """Asking twice is nagging. Answering twice is the job."""
+        self.assertIsNone(self.ask(self.FIRST))
+        for message in (
+            "what should my protein target be?",
+            "no target yet, what do you suggest",
+            "set my calorie target",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(self.ask(self.SECOND, user_message=message))
+
+    def test_ordinary_target_talk_is_never_in_range(self) -> None:
+        """Confirming, measuring and coaching all survive."""
+        self.assertIsNone(self.ask(self.FIRST))
+        for reply in (
+            "your daily step target is set at 9000 steps.",
+            "8,200 is close, just 800 short of your 9,000 target today.",
+            "you're at 5,600 steps, so 2,400 short. do you have plans to hit "
+            "that goal today?",
+            "logged it \U0001f44d",
+            "",
+        ):
+            with self.subTest(reply=reply):
+                self.assertIsNone(self.ask(reply))
+
+    def test_an_ask_that_is_the_whole_message_is_left_alone(self) -> None:
+        """Sending nothing is worse than sending the nag."""
+        self.assertIsNone(self.ask(self.FIRST))
+        self.assertIsNone(self.ask("wanna give me a protein target?"))
+
+    def test_a_bare_reask_is_still_caught_when_it_has_company(self) -> None:
+        self.assertIsNone(self.ask(self.FIRST))
+        stripped = self.ask(
+            "three meals in, decent protein. want to give me a protein "
+            "target so this actually means something?"
+        )
+        self.assertEqual(stripped, "three meals in, decent protein.")
+
+    def test_the_whole_real_path_strips_the_second_nag(self) -> None:
+        """Through transform_response, not just the gate in isolation.
+
+        This is the 3 Sep failure end to end: two "how am i doing" turns two
+        hours apart, and the second reply arrives without the re-ask.
+        """
+        user_key = f"repeat-target-e2e-{id(self)}"
+        self.addCleanup(reset_user, user_key)
+        history = [
+            message("user", "hi"),
+            message("assistant", VANDY_DISCLOSURE),
+            message("user", "Meal and steps"),
+        ]
+        asked = "How am i doing today"
+        first = transform_response(
+            history=history,
+            user_message=asked,
+            response_text=self.FIRST,
+            user_key=user_key,
+        )
+        self.assertIsNone(first)
+
+        history.extend(
+            [message("assistant", self.FIRST), message("user", "New meal")]
+        )
+        second = transform_response(
+            history=history,
+            user_message=asked,
+            response_text=self.SECOND,
+            user_key=user_key,
+        )
+        self.assertIsNotNone(second)
+        self.assertNotIn("?", second)
+        self.assertNotIn("target", second.lower())
+        self.assertIn("peanut toast", second)
+
+    # Every string below is one Ted actually sent, taken from the live
+    # transcript rather than invented, and classified by hand. The detector
+    # was measured against all 60 target/goal replies in that transcript;
+    # these are the ones that decide the shape of it. Two rounds of real
+    # mistakes came out of this table: a `[^?]*` trigger that reached across
+    # sentence boundaries, and an English-only cue list that was blind to the
+    # Hinglish form of the same question.
+    REAL_ASKS = (
+        "wanna set a calorie/protein target so \"how am i doing\" actually "
+        "means something?",
+        "got it, 33 \u2014 noted for reference.  what's your daily step "
+        "target, roughly?",
+        "yep, you're Vandy. now the actual question: what's your daily step "
+        "target? throw me a number like 6k, 8k, 10k.",
+        "Yes! Just a quick one: What are your daily targets for steps, water "
+        "intake, and workouts?",
+        "Could you let me know your target step count for today?",
+        "Kitne steps ka target hai aaj?",
+    )
+    REAL_NOT_ASKS = (
+        # Confirming a target, then asking for something else entirely. The
+        # first trigger read this as an ask and would have spent the day's
+        # one ask on it.
+        "Great, your daily calorie target is set at 1400. Before we move "
+        "forward, could you share your age, height, weight, and activity "
+        "level?",
+        # Coaching about a target that already exists is not a re-ask.
+        "You're at 5,600 steps now, so you're just 2,400 steps away from "
+        "your 8,000-step target. Do you have any plans to help you reach "
+        "that goal today?",
+        "Great job reaching 5,600 steps! Is that close to your daily "
+        "target, or do you have more steps planned for today?",
+        # The erasure question lists "targets" among what it will wipe.
+        # Stripping the question out of this would be the worst edit here.
+        "just to make sure, you want me to permanently wipe everything I "
+        "have on you, profile, targets, logs, all of it? no undo once it's "
+        "done.",
+        # The onboarding goal question is a state machine that has to keep
+        # asking until it is answered, so "goal" is out of range by design.
+        "Pradosh, got it \U0001f64c so what's the actual goal here, drop "
+        "weight, build muscle, just get more consistent with eating and "
+        "moving?",
+        "your daily step target is set at 9000 steps.",
+    )
+
+    def test_classifies_real_transcript_lines(self) -> None:
+        for line in self.REAL_ASKS:
+            with self.subTest(ask=line[:60]):
+                self.assertTrue(gates._contains_target_ask(line))
+        for line in self.REAL_NOT_ASKS:
+            with self.subTest(not_ask=line[:60]):
+                self.assertFalse(gates._contains_target_ask(line))
+
+    def test_a_known_miss_stays_documented(self) -> None:
+        """One real ask the detector does not catch, recorded rather than hidden.
+
+        A bare noun-phrase question with the verb in the *next* sentence. The
+        cue list is sentence-scoped, which is what keeps the false positives
+        above out, and this is the price of that. If a future change catches
+        it, this test fails and should simply be deleted.
+        """
+        self.assertFalse(
+            gates._contains_target_ask(
+                "hey, so, step count and the meal target? give me numbers "
+                "and we're set to go"
+            )
+        )
+
+    def test_no_user_key_means_no_state_to_count_with(self) -> None:
+        self.assertIsNone(
+            gates.repeat_target_ask_gate("how am i doing", self.SECOND, "")
+        )
+
+
 class CronReminderGateTest(unittest.TestCase):
     """Milestone 12: cron reminders are Ted talking, so Ted's rules apply.
 
@@ -2097,6 +2293,58 @@ class CronReminderGateTest(unittest.TestCase):
             self.assertEqual(
                 gates._cron_whatsapp_recipient(self.SESSION), self.CHAT
             )
+
+    def test_a_cron_run_is_written_with_the_voice_card_in_the_room(self) -> None:
+        """The evening review is a cron run, and it used to write blind.
+
+        `_capture_turn` guarded on platform == "whatsapp", so every message
+        Ted sends unprompted was generated with no voice guidance at all —
+        the one class of message a user gets without asking for it.
+        """
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            captured = gates._capture_turn(
+                platform="cron",
+                session_id=self.SESSION,
+                sender_id="",
+                user_message="write the evening review",
+                conversation_history=[],
+            )
+        self.assertIsNotNone(captured)
+        self.assertIn("close friend in Bangalore", captured["context"])
+        self.assertIn("that's your ten. green tea", captured["context"])
+
+    def test_a_cron_run_for_someone_elses_job_gets_no_context(self) -> None:
+        with self.jobs_file({"platform": "telegram", "chat_id": "123"}):
+            self.assertIsNone(
+                gates._capture_turn(
+                    platform="cron",
+                    session_id=self.SESSION,
+                    sender_id="",
+                    user_message="ping",
+                    conversation_history=[],
+                )
+            )
+
+    def test_a_cron_review_knows_whose_name_to_use(self) -> None:
+        """The evening review is the message most worth having a name in it."""
+        with self.jobs_file({"platform": "whatsapp", "chat_id": self.CHAT}):
+            user_key = gates._user_state_key("whatsapp", self.CHAT, self.SESSION)
+            gates._remember_name(user_key, "Vandana")
+            self.addCleanup(gates._update_onboarding, user_key, name=None)
+            captured = gates._capture_turn(
+                platform="cron",
+                session_id=self.SESSION,
+                sender_id="",
+                user_message="write the evening review",
+                conversation_history=[],
+            )
+        self.assertIn("You are talking to Vandana", captured["context"])
+
+    def test_the_voice_card_names_the_flat_reminder_shapes(self) -> None:
+        """3 Sep: "done, pinging you in 10" and then "green tea time"."""
+        self.assertIn("ten minutes on the clock", gates.VOICE_CARD)
+        self.assertIn("pinging you in 10", gates.VOICE_CARD)
+        self.assertIn("green tea time", gates.VOICE_CARD)
 
     def test_a_cron_job_for_another_platform_is_left_alone(self) -> None:
         with self.jobs_file({"platform": "telegram", "chat_id": "123"}):
