@@ -3969,6 +3969,46 @@ def _persist_onboarding_reminders(
     )
 
 
+# ---------------------------------------------------------------------------
+# Are Ted's gateway patches still there?
+#
+# Six of them live in ~/.hermes/hermes-agent, outside this repo, because Hermes
+# emits those strings below the plugin and VALID_HOOKS has no hook for outbound
+# gateway status messages. `hermes update` stashes local changes, pulls, and
+# re-applies; when that conflicts it resets hard and leaves the work in a stash.
+# Nothing is destroyed and nothing says so either — the gateway just quietly
+# goes back to leaking model names into WhatsApp and announcing every deploy to
+# whoever is mid-conversation.
+#
+# npm run gates:guard has always reported this. That relies on somebody
+# remembering to run it after an upgrade, which is exactly the kind of thing
+# that gets remembered until the once it matters. This runs on every boot.
+_PATCH_DATA = Path(__file__).resolve().parent.parent.parent / "scripts" / "hermes-patches" / "patches.json"
+_HERMES_AGENT = Path.home() / ".hermes" / "hermes-agent"
+
+
+def _missing_hermes_patches() -> list[str]:
+    """Patches whose load-bearing strings are no longer in the live checkout."""
+    try:
+        payload = json.loads(_PATCH_DATA.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Not a reason to fail a boot. gates:guard still reports properly.
+        return []
+    missing: list[str] = []
+    for patch in payload.get("patches") or []:
+        for check in patch.get("checks") or []:
+            try:
+                source = (_HERMES_AGENT / check["path"]).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            gone = any(text not in source for text in check.get("present") or ())
+            back = any(text in source for text in check.get("absent") or ())
+            if gone or back:
+                missing.append(str(patch.get("what") or patch.get("file")))
+                break
+    return missing
+
+
 def register(ctx: Any) -> None:
     ctx.register_tool(
         name="ted_memory_save",
@@ -4023,6 +4063,19 @@ def register(ctx: Any) -> None:
         __file__,
         "on" if _convex_available() else "OFF",
     )
+    unpatched = _missing_hermes_patches()
+    if unpatched:
+        LOGGER.warning(
+            "ted_hermes_patches_missing count=%d what=%s — a Hermes upgrade has "
+            "dropped them. Ted still refuses under-18s and still keeps users "
+            "apart, but is leaking gateway text into WhatsApp again. Fix: "
+            "npm run hermes:patch && hermes gateway restart",
+            len(unpatched),
+            "; ".join(unpatched),
+        )
+    else:
+        LOGGER.info("ted_hermes_patches_ok")
+
     missing = _missing_convex_env()
     if missing:
         LOGGER.warning(

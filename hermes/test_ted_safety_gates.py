@@ -5037,3 +5037,72 @@ class TheVoiceRidesOnEveryTurnTest(unittest.TestCase):
                 continue
             with self.subTest(said=said):
                 self.assertEqual(gates.strip_assistant_speak(said), said)
+
+
+class HermesPatchesAreCheckedOnEveryBootTest(unittest.TestCase):
+    """Six of Ted's fixes live outside this repo and can vanish silently.
+
+    `hermes update` stashes local changes, pulls, and re-applies; when that
+    conflicts it resets hard and leaves the work in a stash. Nothing is
+    destroyed and nothing says so — the gateway just goes back to leaking
+    model names into WhatsApp and announcing every deploy to whoever is
+    mid-conversation. `npm run gates:guard` has always caught it, and relied
+    on somebody remembering to run it after an upgrade.
+    """
+
+    def test_the_shared_definition_is_readable_and_populated(self) -> None:
+        payload = json.loads(gates._PATCH_DATA.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(payload["patches"]), 6)
+        for patch in payload["patches"]:
+            with self.subTest(patch=patch["file"]):
+                self.assertTrue(patch["what"])
+                self.assertTrue(patch["checks"])
+
+    def test_the_guard_script_and_the_gate_read_the_same_file(self) -> None:
+        """Two definitions would eventually disagree about whether Ted is
+        patched, and the quiet one would be the one that mattered."""
+        guard = Path("scripts/hermes-patch-guard.py").read_text(encoding="utf-8")
+        self.assertIn("patches.json", guard)
+        self.assertTrue(gates._PATCH_DATA.name == "patches.json")
+
+    def test_a_dropped_patch_is_reported(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "gateway").mkdir()
+            (root / "gateway" / "run.py").write_text("nothing ted asked for")
+            with patch.object(gates, "_HERMES_AGENT", root):
+                missing = gates._missing_hermes_patches()
+        self.assertTrue(missing)
+
+    def test_a_reverted_patch_is_reported_even_with_the_new_string_present(
+        self,
+    ) -> None:
+        """An `absent` string coming back is a revert, however much else
+        survived — a half-restored file must not read as applied."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "gateway").mkdir()
+            (root / "gateway" / "run.py").write_text(
+                "one sec, finishing the last one first\n"
+                "suppressing gateway shutdown notice\n"
+                "⚡ Interrupting current task\n"
+            )
+            with patch.object(gates, "_HERMES_AGENT", root):
+                missing = gates._missing_hermes_patches()
+        self.assertIn("the busy/interrupt acknowledgements in Ted's voice", missing)
+
+    def test_a_missing_hermes_checkout_is_not_an_error(self) -> None:
+        """Absent files are skipped. A boot must not fail over this."""
+        with TemporaryDirectory() as tmp:
+            with patch.object(gates, "_HERMES_AGENT", Path(tmp)):
+                self.assertEqual(gates._missing_hermes_patches(), [])
+
+    def test_unreadable_patch_data_is_not_an_error_either(self) -> None:
+        with patch.object(gates, "_PATCH_DATA", Path("/nope/patches.json")):
+            self.assertEqual(gates._missing_hermes_patches(), [])
+
+    def test_the_live_machine_is_currently_patched(self) -> None:
+        """Not a unit test — a check on this machine, which is the point."""
+        if not gates._HERMES_AGENT.exists():
+            self.skipTest("no Hermes checkout on this machine")
+        self.assertEqual(gates._missing_hermes_patches(), [])

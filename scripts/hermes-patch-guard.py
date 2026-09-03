@@ -23,6 +23,7 @@ still keeps users' memories apart. That is a different severity from ungated.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -33,85 +34,19 @@ PATCH_DIR = Path(__file__).resolve().parent / "hermes-patches"
 # A patch counts as applied when every `present` string is in the live file and
 # no `absent` string survives. Strings are chosen to be the load-bearing part of
 # the change, so a partially-restored file still reads as missing.
-PATCHES = (
-    {
-        "file": "01-sleep-aware-stall-detection.patch",
-        "what": "sleep-aware stall detection",
-        "checks": (
-            {
-                "path": "agent/chat_completion_helpers.py",
-                "present": ("last_chunk_mono",),
-                "absent": ('_stale_elapsed = time.time() - last_chunk_time["t"]',),
-            },
-            {
-                "path": "agent/codex_runtime.py",
-                "present": ("_codex_stream_last_event_ts = time.monotonic()",),
-                "absent": ("_codex_stream_last_event_ts = time.time()",),
-            },
-        ),
-    },
-    {
-        "file": "03-voice-listening-ack.patch",
-        "what": "the voice-note 'Listening…' acknowledgement",
-        "checks": (
-            {
-                "path": "gateway/run.py",
-                "present": ("_gateway_voice_listening_sent",),
-                "absent": (),
-            },
-        ),
-    },
-    {
-        "file": "04-photo-taking-a-look-ack.patch",
-        "what": "the photo 'taking a look' acknowledgement",
-        "checks": (
-            {
-                "path": "gateway/run.py",
-                "present": (
-                    "_gateway_photo_ack_sent",
-                    "_GATEWAY_PHOTO_ACK_WINDOW_SECONDS",
-                ),
-                "absent": (),
-            },
-        ),
-    },
-    {
-        "file": "05-busy-acks-in-teds-voice.patch",
-        "what": "the busy/interrupt acknowledgements in Ted's voice",
-        "checks": (
-            {
-                "path": "gateway/run.py",
-                "present": ("one sec, finishing the last one first",),
-                "absent": ("\u26a1 Interrupting current task",),
-            },
-        ),
-    },
-    {
-        "file": "06-no-gateway-notices-to-users.patch",
-        "what": "silence for gateway shutdown and restart notices",
-        "checks": (
-            {
-                "path": "gateway/run.py",
-                "present": ("suppressing gateway shutdown notice",),
-                "absent": (),
-            },
-        ),
-    },
-    {
-        "file": "02-plain-language-provider-errors.patch",
-        "what": "plain-language provider errors",
-        "checks": (
-            {
-                "path": "gateway/run.py",
-                "present": ("_GATEWAY_PROVIDER_STALL_RE", "_gateway_provider_message"),
-                "absent": (
-                    '    return "⏱️ The model provider is rate-limiting requests.'
-                    ' Please wait a moment and try again."',
-                ),
-            },
-        ),
-    },
-)
+# The checks live in patches.json, next to the patches themselves, because the
+# gateway plugin reads them too — it runs this same check at every boot, so a
+# Hermes upgrade that drops a patch is noticed without anyone remembering to
+# run this script. One definition, so the two can never disagree.
+PATCH_DATA = PATCH_DIR / "patches.json"
+
+
+def _load_patches() -> tuple[dict, ...]:
+    payload = json.loads(PATCH_DATA.read_text(encoding="utf-8"))
+    return tuple(payload["patches"])
+
+
+PATCHES = _load_patches()
 
 
 def _ok(message: str) -> str:
