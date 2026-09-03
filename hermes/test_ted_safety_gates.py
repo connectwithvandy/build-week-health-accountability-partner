@@ -4226,3 +4226,117 @@ class MacrosMustAgreeWithCaloriesTest(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertNotIn("called", sent)
         self.assertIn("Do not tell them it is logged", result["error"])
+
+
+class FoodTableTest(unittest.TestCase):
+    """Composition is a lookup, not a recollection.
+
+    On 3 Sep a user told Ted a scoop of whey was "definitely not 120 kcal".
+    Ted's number was reasonable and it folded anyway, because a recollection
+    is all it had to stand on. The table is what it stands on now.
+    """
+
+    def look(self, items) -> dict:
+        return json.loads(gates._food_lookup({"items": items}))
+
+    def test_every_entry_is_physically_possible(self) -> None:
+        """The same check the gate applies to a logged meal, applied to the
+        reference data itself. A table that fails it would feed the gate
+        numbers the gate would then refuse."""
+        self.assertTrue(gates._FOOD_TABLE, "food table failed to load")
+        for food in gates._FOOD_TABLE:
+            with self.subTest(food=food["name"]):
+                per = food["per_100g"]
+                self.assertEqual(
+                    gates._macros_contradict_calories(
+                        {
+                            "calories": per["calories"],
+                            "proteinGrams": per["protein"],
+                            "carbohydrateGrams": per["carbs"],
+                            "fatGrams": per["fat"],
+                        }
+                    ),
+                    "",
+                )
+
+    def test_the_meal_that_started_this(self) -> None:
+        """100g oats, a 30g scoop, 20g nuts and seeds. Ted said 610 from
+        memory; the table is what decides now."""
+        result = self.look(
+            [
+                {"name": "oats", "grams": 100},
+                {"name": "protein powder", "grams": 30},
+                {"name": "nuts and seeds", "grams": 20},
+            ]
+        )
+        self.assertEqual(result["unmatched"], [])
+        total = result["total"]
+        self.assertGreater(total["calories"], 550)
+        self.assertLess(total["calories"], 680)
+        self.assertGreater(total["protein_grams"], 35)
+
+    def test_a_missing_weight_is_assumed_and_says_so(self) -> None:
+        row = self.look([{"name": "banana"}])["items"][0]
+        self.assertTrue(row["portionAssumed"])
+        self.assertEqual(row["grams"], 120)
+
+    def test_a_given_weight_is_used_and_not_flagged(self) -> None:
+        row = self.look([{"name": "banana", "grams": 200}])["items"][0]
+        self.assertFalse(row["portionAssumed"])
+        self.assertEqual(row["calories"], 178)
+
+    def test_the_words_people_actually_use(self) -> None:
+        for said, expected in (
+            ("chapati", "roti"),
+            ("dahi", "curd"),
+            ("chana", "chana, cooked"),
+            ("black coffee", "coffee, black"),
+            ("boiled egg", "egg, whole"),
+            ("whey", "whey protein powder"),
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(self.look([{"name": said}])["items"][0]["food"], expected)
+
+    def test_an_unknown_food_is_reported_not_guessed(self) -> None:
+        result = self.look([{"name": "ras malai"}])
+        self.assertEqual(result["unmatched"], ["ras malai"])
+        self.assertFalse(result["items"][0]["found"])
+        self.assertEqual(result["total"]["calories"], 0)
+
+    def test_the_total_only_counts_what_was_found(self) -> None:
+        result = self.look(
+            [{"name": "banana", "grams": 100}, {"name": "ras malai", "grams": 100}]
+        )
+        self.assertEqual(result["total"]["calories"], 89)
+        self.assertEqual(result["unmatched"], ["ras malai"])
+
+    def test_a_lookup_writes_nothing_and_needs_no_user(self) -> None:
+        """It reads a file. No turn context, no Convex, no user key."""
+        with patch.object(gates, "_convex_request") as convex:
+            self.assertTrue(self.look([{"name": "rice"}])["success"])
+        convex.assert_not_called()
+
+    def test_an_empty_request_is_refused(self) -> None:
+        self.assertFalse(json.loads(gates._food_lookup({"items": []}))["success"])
+
+    def test_the_total_it_returns_would_pass_the_macro_guard(self) -> None:
+        """The two halves have to agree, or Ted looks food up and is then
+        refused for logging what it was told."""
+        total = self.look(
+            [
+                {"name": "rice", "grams": 150},
+                {"name": "dal", "grams": 150},
+                {"name": "roti", "grams": 80},
+            ]
+        )["total"]
+        self.assertEqual(
+            gates._macros_contradict_calories(
+                {
+                    "calories": total["calories"],
+                    "proteinGrams": total["protein_grams"],
+                    "carbohydrateGrams": total["carbohydrate_grams"],
+                    "fatGrams": total["fat_grams"],
+                }
+            ),
+            "",
+        )

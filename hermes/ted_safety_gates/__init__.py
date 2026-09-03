@@ -3157,6 +3157,177 @@ def _macros_contradict_calories(meal: dict[str, Any]) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# The food table.
+#
+# Every calorie figure Ted has ever produced came out of the model's memory of
+# its training data. It shows its working convincingly — "100g oats is roughly
+# 380, a scoop is about 120" — and it is soft on any particular item, which is
+# how a user ends up arguing with it about a scoop of whey. Composition is a
+# lookup, not a recall, so it is one here: the model brings the portion and
+# the judgement, the table brings the numbers.
+_FOOD_TABLE_PATH = Path(__file__).resolve().parent.parent / "ted_food_table.json"
+
+
+def _load_food_table() -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(_FOOD_TABLE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        # Ted still works without it, on its own estimates, exactly as before.
+        LOGGER.warning("ted_food_table_unavailable path=%s %s", _FOOD_TABLE_PATH, error)
+        return []
+    foods = payload.get("foods")
+    return foods if isinstance(foods, list) else []
+
+
+_FOOD_TABLE = _load_food_table()
+
+
+def _food_index() -> dict[str, dict[str, Any]]:
+    """Every name and alias, normalised, pointing at its entry."""
+    index: dict[str, dict[str, Any]] = {}
+    for food in _FOOD_TABLE:
+        keys = [str(food.get("name") or "")] + [
+            str(alias) for alias in food.get("aliases") or []
+        ]
+        for key in keys:
+            normalised = _normalise_reply(key)
+            if normalised:
+                index.setdefault(normalised, food)
+    return index
+
+
+_FOOD_INDEX = _food_index()
+
+
+def _match_food(query: str) -> dict[str, Any] | None:
+    """The table entry a user's words most likely mean, or None.
+
+    Exact first, then containment, then a shared significant word. Nothing
+    fuzzier: a wrong match is worse than no match, because no match leaves Ted
+    estimating as it always has, while a wrong one hands it a confident number
+    for the wrong food.
+    """
+    wanted = _normalise_reply(query)
+    if not wanted:
+        return None
+    if wanted in _FOOD_INDEX:
+        return _FOOD_INDEX[wanted]
+    for key, food in _FOOD_INDEX.items():
+        if len(key) >= 4 and (key in wanted or wanted in key):
+            return food
+    words = {word for word in wanted.split() if len(word) >= 4}
+    for key, food in _FOOD_INDEX.items():
+        if words & {word for word in key.split() if len(word) >= 4}:
+            return food
+    return None
+
+
+def _portion_facts(query: str, grams: float | None) -> dict[str, Any]:
+    """One item, resolved against the table and scaled to the portion."""
+    food = _match_food(query)
+    if not food:
+        return {"asked": query, "found": False}
+    per_100 = food.get("per_100g") or {}
+    assumed = grams is None or grams <= 0
+    weight = float(food.get("portion_g") or 100) if assumed else float(grams or 0)
+    scale = weight / 100.0
+    return {
+        "asked": query,
+        "found": True,
+        "food": food.get("name"),
+        "grams": round(weight, 1),
+        "portionAssumed": assumed,
+        "calories": round(float(per_100.get("calories") or 0) * scale),
+        "protein_grams": round(float(per_100.get("protein") or 0) * scale, 1),
+        "carbohydrate_grams": round(float(per_100.get("carbs") or 0) * scale, 1),
+        "fat_grams": round(float(per_100.get("fat") or 0) * scale, 1),
+        "fiber_grams": round(float(per_100.get("fiber") or 0) * scale, 1),
+    }
+
+
+TED_FOOD_LOOKUP_SCHEMA = {
+    "name": "ted_food_lookup",
+    "description": (
+        "Look up what food is actually made of, before estimating a meal. "
+        "Send each item with its weight in grams if the user gave one; leave "
+        "grams out and one ordinary serving is assumed and flagged as "
+        "assumed. Returns per-item calories and macros plus a total, from a "
+        "composition table rather than memory. Use the total as the meal's "
+        "numbers. Anything not in the table comes back found:false and is "
+        "yours to estimate as before — say which ones those were if the user "
+        "asks how you got there. This reads a table; it logs nothing."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "description": "The foods in this meal, one entry each.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "grams": {
+                            "type": "number",
+                            "description": (
+                                "Weight of this item. Omit when the user did "
+                                "not say — do not invent one."
+                            ),
+                        },
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _food_lookup(args: dict[str, Any], **_: Any) -> str:
+    """Composition for a list of foods. No user, no writes, no side effects."""
+    items = args.get("items") if isinstance(args, dict) else None
+    if not isinstance(items, list) or not items:
+        return _refused("Send at least one item to look up")
+
+    resolved: list[dict[str, Any]] = []
+    for item in items[:25]:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "")
+            grams = item.get("grams")
+        else:
+            name, grams = str(item), None
+        try:
+            weight = float(grams) if grams is not None else None
+        except (TypeError, ValueError):
+            weight = None
+        if name.strip():
+            resolved.append(_portion_facts(name, weight))
+
+    found = [row for row in resolved if row.get("found")]
+    total = {
+        "calories": round(sum(row["calories"] for row in found)),
+        "protein_grams": round(sum(row["protein_grams"] for row in found), 1),
+        "carbohydrate_grams": round(
+            sum(row["carbohydrate_grams"] for row in found), 1
+        ),
+        "fat_grams": round(sum(row["fat_grams"] for row in found), 1),
+        "fiber_grams": round(sum(row["fiber_grams"] for row in found), 1),
+    }
+    return json.dumps(
+        {
+            "success": True,
+            "items": resolved,
+            "total": total,
+            "unmatched": [row["asked"] for row in resolved if not row.get("found")],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _log_daily_entry(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -3424,6 +3595,16 @@ def register(ctx: Any) -> None:
         schema=TED_MEMORY_SAVE_SCHEMA,
         handler=_save_user_facts,
         check_fn=_convex_available,
+    )
+    # No check_fn: this reads a file that ships with the repo. Gating it on
+    # Convex would take the food table down with storage, and an estimate from
+    # a composition table is exactly what is still worth having when the
+    # database is unreachable.
+    ctx.register_tool(
+        name="ted_food_lookup",
+        toolset="ted",
+        schema=TED_FOOD_LOOKUP_SCHEMA,
+        handler=_food_lookup,
     )
     ctx.register_tool(
         name="ted_memory_delete",
