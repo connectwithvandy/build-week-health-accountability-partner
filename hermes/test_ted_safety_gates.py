@@ -2786,6 +2786,74 @@ class CronReminderGateTest(unittest.TestCase):
         )
 
 
+class CronRecipientFromDeliverTest(unittest.TestCase):
+    """The evening review names its recipient in `deliver`, not `origin`.
+
+    A job created from a WhatsApp message carries `origin`, and every
+    supplement reminder has one. The daily and weekly reviews do not — Ted
+    makes them for a user key, `origin` is None, and the chat lives in
+    `deliver` as "whatsapp:<chat id>". Reading only `origin` meant the review
+    resolved to no recipient and went out with no voice card, which is the
+    exact hole the cron branch of _capture_turn exists to close. Live on
+    3 Sep: job c6d5c7b2cbf0, deliver whatsapp:144504426369026@lid, origin
+    None.
+    """
+
+    CHAT = "144504426369026@lid"
+
+    def test_origin_still_wins_when_it_is_there(self) -> None:
+        self.assertEqual(
+            gates._cron_job_chat_id(
+                {
+                    "origin": {"platform": "whatsapp", "chat_id": self.CHAT},
+                    "deliver": "origin",
+                }
+            ),
+            self.CHAT,
+        )
+
+    def test_the_review_resolves_through_deliver(self) -> None:
+        self.assertEqual(
+            gates._cron_job_chat_id(
+                {"origin": None, "deliver": f"whatsapp:{self.CHAT}"}
+            ),
+            self.CHAT,
+        )
+
+    def test_the_first_whatsapp_entry_wins_in_a_list(self) -> None:
+        self.assertEqual(
+            gates._cron_job_chat_id(
+                {"origin": None, "deliver": f"local,whatsapp:{self.CHAT}"}
+            ),
+            self.CHAT,
+        )
+
+    def test_what_is_not_a_recipient_stays_none(self) -> None:
+        for job in (
+            {"origin": None, "deliver": "local"},
+            {"origin": None, "deliver": "origin"},
+            {"origin": None, "deliver": ""},
+            {"origin": None},
+            {},
+            # Another platform is not ours, by either route.
+            {"origin": {"platform": "telegram", "chat_id": "123"}},
+            {"origin": None, "deliver": "telegram:123"},
+        ):
+            with self.subTest(job=job):
+                self.assertIsNone(gates._cron_job_chat_id(job))
+
+    def test_an_unresolvable_recipient_still_gets_the_plain_card(self) -> None:
+        """The broken owner job is a placeholder, not a user key.
+
+        It must not raise and must not borrow somebody else's name — it
+        hashes to a key with no record, so the nameless card is correct.
+        """
+        card = gates._voice_card(
+            gates._user_state_key("whatsapp", "owner@s.whatsapp.net", "sess")
+        )
+        self.assertEqual(card, gates.VOICE_CARD)
+        self.assertNotIn("You are talking to", card)
+
 class ConvexCompatibilityCheckTest(unittest.TestCase):
     """The checker that stops a restart onto a Convex that cannot answer.
 

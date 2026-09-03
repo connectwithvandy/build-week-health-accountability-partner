@@ -3354,13 +3354,36 @@ def _load_cron_jobs() -> list[dict[str, Any]]:
 
 
 def _cron_job_chat_id(job: dict[str, Any]) -> str | None:
-    """The WhatsApp chat a job was created from, or None if it is not ours."""
+    """The WhatsApp chat a job talks to, or None if it is not ours.
+
+    Two ways a job can name its recipient, and the evening review uses the
+    one this did not read.
+
+    A job created from a WhatsApp message carries `origin`, and the
+    supplement reminders all have it. The daily and weekly reviews do not:
+    they are made by Ted for a user key, `origin` is None, and the recipient
+    lives in `deliver` as "whatsapp:<chat id>". So the review — the product,
+    the message the user gets without asking — resolved to no recipient and
+    went out with no voice card, which is the exact hole the cron branch of
+    `_capture_turn` was written to close.
+
+    `deliver` is a comma-separated list in the general case, so the first
+    WhatsApp entry wins; "local" and "origin" are not recipients and fall
+    through to None.
+    """
     origin = job.get("origin")
-    if not isinstance(origin, dict):
-        return None
-    if str(origin.get("platform") or "").lower() != "whatsapp":
-        return None
-    return str(origin.get("chat_id") or "") or None
+    if isinstance(origin, dict):
+        if str(origin.get("platform") or "").lower() == "whatsapp":
+            chat = str(origin.get("chat_id") or "")
+            if chat:
+                return chat
+    for target in str(job.get("deliver") or "").split(","):
+        target = target.strip()
+        if target.lower().startswith("whatsapp:"):
+            chat = target.split(":", 1)[1].strip()
+            if chat:
+                return chat
+    return None
 
 
 def _cron_whatsapp_recipient(session_id: str) -> str | None:
