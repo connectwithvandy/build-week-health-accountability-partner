@@ -235,7 +235,111 @@ all three counts, and all three had a cause.
   a missing row actually cost was the daily cap, the pause, any user-chosen
   quiet hours, and the break offer.
 
-Tests: 240 Python, 69 vitest.
+Tests: 340 Python, 75 vitest.
+
+## Order 18 — 3 Sep 2026, afternoon and evening, watching two real users
+
+Everything below was found by watching a live session or by reading what
+actually arrived on a phone, not by reasoning about the code. Two testers were
+on Ted at once for the first time: Vandy and a second person onboarding fresh.
+
+**Erasure did not survive an open thread.** A wipe at 15:32 cleared Convex and
+the durable consent record. The next message was answered inside the same
+101-message thread, `_disclosure_was_sent` fell back to scanning the
+transcript, found Ted's disclosure from 1 Sep, and reported consent for a user
+whose data had just been erased. `_forget_user` now leaves one mark — a hashed
+key and a time, strictly less than it removed — and that mark beats the
+transcript. The second half was worse: a WhatsApp thread keeps its session id
+through a wipe *and* through having every message deleted, and that id had its
+own entry in the consent list from 2 Sep. `_capture_turn` read it, wrote
+consent back onto the user key, and the reply gate then faked a disclosure into
+the empty history on the strength of it — which also swallowed the scripted
+opener, because a prepared start needs a history that is genuinely empty.
+
+**"delete my data" failed twice on wording.** First the check wanted the
+literal word "delete" and Ted asked "you want me to permanently *wipe*
+everything ... all of it?". Then it wanted a question mark and Ted wrote
+`reply with the single word "delete" if you mean it.` Both times the user had
+asked to be erased, answered clearly, and been told nothing was deleted. A
+third vocabulary patch was the same bet again, so the gate asks the question
+itself now and remembers asking, with a 30-minute life. "delete" was also
+missing from the accepted confirmations while being the exact word Ted was
+telling people to reply with.
+
+**Reminders were never scheduled.** `ted_set_reminder` was called for the first
+time in Ted's history at 16:35, saved a 10:30 supplement nudge perfectly as its
+own item, and nothing scheduled anything — the nudge could not have arrived.
+Both save paths now sync the real crontab through `hermes cron create`. The
+clock is the user's, not the laptop's: the scheduler runs in Asia/Kolkata and
+the second tester is in London. Re-saving edits one job rather than stacking
+another; a dropped reminder is unscheduled, but only when the payload actually
+carried `items`, because Convex leaves that array alone when it is not sent and
+reading its silence as "none" would cancel every nudge a user has. `scheduled`
+comes back from the CLI's exit status, so the claim gate now lets "your 10:30
+nudge is set" through when it is true and still strips it when it is not.
+
+**Nutrition came out of the model's memory.** It shows its working convincingly
+and is soft on any single item, which is how a tester ended up telling Ted a
+scoop of whey is "definitely not 120 kcal" and Ted simply agreed. Ted was
+right. `ted_food_lookup` reads a 59-food composition table weighted to what
+these users eat; the model brings the portion, the table brings the numbers.
+Every entry passes the same macro-versus-calorie check the gate applies to a
+logged meal, and so does the total a lookup returns, so the two halves cannot
+refuse each other. That check is new too: nothing had ever verified a meal was
+physically possible.
+
+**The clash guard asked about food that had nothing in common.** First it
+compared only time, so a second photo of different food was held back to ask
+whether it was the same meal. Then it compared shared words, and a sprouts
+salad and a peanut toast both contain onion and tomato — as does half of Indian
+food. It is a proportion now, half the shorter list, ignoring words that
+describe rather than name a food. The question itself was also wrong: it
+offered three options, one of them "replacing" an entry, which is a database
+operation and not something anyone eats.
+
+**Ted's words were being deleted.** The block owns the figures and
+`words_without_figures` split on `. ! ?` only — but Ted writes short lines,
+emoji and usually no full stop. A reply whose middle line held the numbers was
+one "sentence" containing figures and went whole. Every logged meal since the
+block shipped had arrived as a bare column of numbers with not one human word
+attached. This is what "it feels a little off" was.
+
+**Tone, properly.** SOUL.md held 45 "never" rules and six lines of Ted actually
+talking, six hundred lines from where the reply gets written, while compression
+protects the last twenty messages verbatim — so twenty examples of flat output
+sat beside generation and the adjectives sat far away. SOUL.md lost that twice.
+Three things: real wrong-beside-right examples in SOUL.md drawn from messages
+actually sent on 2 and 3 Sep; `strip_assistant_speak` taking off markdown
+furniture and the closing offer nobody asked for; and `VOICE_CARD`, injected
+through `pre_llm_call` on every single turn, last, so a few examples sit nearer
+than the twenty. Stripping alone was subtraction, and nobody subtracts their
+way to a personality.
+
+**Hermes was talking to users directly.** "⚡ Interrupting current task" for
+sending two messages in a row, which is how people talk. And "⚠️ Gateway
+shutting down — Your current task will be interrupted." eight times in ninety
+minutes, one per deploy, all of them ours. Patches 05 and 06. The load-bearing
+strings moved to `patches.json`, read by both the guard script and the plugin,
+and the gate now checks all six at every boot — `gates:guard` always caught a
+dropped patch and always depended on someone remembering to run it.
+
+**Two things this order got wrong and the tests caught.** The macro check
+refused "380 kcal, 19g protein", an ordinary partial estimate, until it learned
+that too few calories for the macros named is always wrong while too many is
+only wrong when all three are present. And blocking the transcript in
+`_given_name` also blocked the name given *after* a wipe, which is only ever
+read back out of that same transcript — a permanent loop on "what should I call
+you?" and a disclosure that never went out. Reverted, with a test naming why.
+
+**A mistake worth recording.** The suite was run once with `python3 -m
+unittest`, which does not load `conftest.py` — the file whose whole job is
+keeping test state out of `~/.hermes`. It put all eight fixture keys back into
+the live state files, including the three cleaned out on 2 Sep. Removed, with
+backups, and the pytest requirement is now written into conftest itself.
+`TED_GATES_DISABLE_CRON` was added there for the same reason: a test run must
+not schedule a real WhatsApp message.
+
+Tests: 340 Python, 75 vitest.
 
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
@@ -273,6 +377,33 @@ the reasons were found only by checking rather than by remembering.
 5. **Ted runs on Vandy's laptop.** Closing the lid takes Ted down for every
    tester at once. Workable for a handful of people who can be messaged
    directly; not for open distribution.
+
+### Readiness re-checked — 3 Sep 2026, 18:00
+
+Of the five reasons Ted could not be handed out at 15:10, three are closed.
+
+1. **`ted_set_reminder` had never been called** — closed twice over. The
+   settings ride on `ted_save_onboarding` now and a row is created with
+   defaults regardless, and reminders actually reach the crontab. Confirmed
+   live: `ted_onboarding_reminders_saved created=True` at 16:05, and
+   `ted_set_reminder` itself finally fired at 16:35.
+2. **Two-user isolation has never been tested** — still true, and now the only
+   reason left that is a privacy incident rather than a bad experience. It is
+   also no longer a pre-invite gate in practice: the WhatsApp account shows at
+   least six people have already used Ted. That makes it overdue rather than
+   less important.
+3. **Nothing from 3 Sep had run in a fresh session** — closed. A second tester
+   onboarded from scratch on the new code: scripted opener, disclosure at
+   16:03:12, name, goal, check-in time, quiet hours, city, then a logged
+   workout and meals.
+4. **`session_reset.mode` was `none`** — closed at 15:09, `idle` at 720
+   minutes.
+5. **Ted runs on Vandy's laptop** — unchanged, and unchangeable this week.
+   Workable for people who can be messaged directly when the lid closes.
+
+The honest summary is that the product is much better than it was at 15:10 and
+the one thing standing between it and an invite is the same thing that was
+standing there then, now with more users already behind it.
 
 ### Still open after order 16
 

@@ -1,6 +1,6 @@
 # Hermes patches
 
-Order 09 needed two fixes that live *below* Ted's plugin, in the Hermes gateway
+Six fixes now live *below* Ted's plugin, in the Hermes gateway
 itself (`~/.hermes/hermes-agent`). A plugin cannot reach them: the strings are
 emitted by Hermes' own retry machinery, and `VALID_HOOKS` has no hook for
 outbound gateway status messages.
@@ -13,7 +13,7 @@ destroyed, but the gateway silently goes back to leaking model names into
 WhatsApp and charging laptop sleep to the provider — which is why this is
 checked rather than remembered.
 
-`npm run gates:guard` reports whether both patches are still applied, alongside
+`npm run gates:guard` reports whether all six patches are still applied, alongside
 its existing gate checks. It treats a missing patch as a warning, not a stop:
 an unpatched Ted is noisy, but he still refuses under-18s, still never returns a
 deficit, and still keeps users' memories apart.
@@ -96,3 +96,33 @@ skipped entirely when `display.media_ack.image` is set to an empty string.
 Copy lives in `~/.hermes/config.yaml` under `display.media_ack`, for the same
 reason `display.provider_messages` does: it is Ted's voice, and Ted's voice
 should not require patching Hermes to change.
+
+## 05 — busy acknowledgements in Ted's voice
+
+Sending two messages in a row is how people talk, and Hermes answered it with
+"⚡ Interrupting current task (…). I'll respond to your message shortly." A
+tester on 3 Sep read that as the product breaking. The three busy replies are
+now one line each in Ted's voice, with the status detail, `/stop` and the
+subagent-versus-compression distinction dropped — none of which is the user's
+to care about.
+
+## 06 — no gateway notices to users
+
+"⚠️ Gateway shutting down — Your current task will be interrupted." reached one
+person eight times in ninety minutes on 3 Sep, one per deploy. A restart here
+is a deploy, and the people on the other end are using a health app. Nothing
+they sent was lost, so it announced an outage that never touched them. The
+notice stays in the log.
+
+## Where the checks live
+
+`patches.json`, in this directory, holds the load-bearing strings for every
+patch. Both `scripts/hermes-patch-guard.py` and the gateway plugin read it —
+two definitions would eventually disagree about whether Ted is patched, and the
+quiet one would be the one that mattered.
+
+The plugin re-runs the check at **every gateway boot** and logs
+`ted_hermes_patches_ok`, or `ted_hermes_patches_missing` naming what went and
+how to put it back. `gates:guard` always caught a dropped patch; it always
+relied on someone remembering to run it after an upgrade, which is the kind of
+thing that gets remembered until the once it matters.
