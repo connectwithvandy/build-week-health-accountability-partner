@@ -34,7 +34,7 @@
  
  
  def _gateway_provider_message(key: str) -> str:
-@@ -11764,6 +11791,44 @@
+@@ -11764,6 +11791,47 @@
                      video_paths.append(path)
  
              if image_paths:
@@ -70,6 +70,9 @@
 +                                        source,
 +                                        self._reply_anchor_for_event(event),
 +                                    ),
++                                )
++                                logger.info(
++                                    "ted_photo_ack_sent chat=%s", source.chat_id
 +                                )
 +                            except Exception as _photo_exc:
 +                                logger.debug(

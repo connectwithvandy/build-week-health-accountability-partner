@@ -154,6 +154,46 @@ guard scripts say so and name the order:
   of a test account's deletion.
 - Tests: 205 Python, 69 vitest.
 
+## Order 17 — 3 Sep 2026, the first live session after going live
+
+Vandy tested on WhatsApp within a minute of the restart and it read as broken.
+Ted answered a plate of food with "Logged this.", asked for an age, and then
+told her "that's not something I asked" when she answered it. She was right on
+all three counts, and all three had a cause.
+
+- **Ted did not know what Ted had said.** The root cause, and it was already
+  written down as open item (2) after order 15: a gate replaces the outgoing
+  reply, but Hermes records the *model's* original text in the transcript. So
+  `calorie_gate` sent the age question, Vandy answered "15", and Ted read a
+  history containing no age question and said so. Not rudeness. Amnesia. Order
+  16 made it more likely by adding three more gates without noticing the
+  interaction. `_record_gated_reply` now keeps what was actually delivered and
+  `_gated_reply_context` hands it back on the next turn, consumed once, held in
+  memory rather than on disk because it is message content and matters for
+  exactly one turn. A suppressed cron reminder is explicitly not recorded: "what
+  you actually sent was [SILENT]" is worse than silence.
+- **The gate was overriding Ted's voice.** `action_claim_gate` ran
+  `cleaned[:1].upper()` on whatever survived a claim strip. That single line is
+  how a warm lowercase sentence reached a real user as "Logged this." The gate
+  removes claims; it does not get a voice. The test that pinned the capital L
+  now pins the lowercase, and says why.
+- **SOUL.md now specifies the shape of a meal reply** rather than leaving it to
+  taste: the food named first, in Ted's words, then the numbers on their own
+  short lines, then where the day stands. Opening with a number, or with
+  "logged" / "noted" / "got it" / "saved", is named as a receipt and forbidden.
+  "Logged this." is called out by name.
+- The timezone fallback logged on every read, five identical lines per meal. Now
+  once per user per process, cleared by `_forget_user`.
+- The photo acknowledgement had no success log, so after the first live test
+  there was no way to tell whether it had fired. It logs `ted_photo_ack_sent`
+  now. Regenerating that patch went wrong halfway: a reverse-apply took the
+  helper out and left the code calling it, so `run.py` parsed but would have
+  raised `NameError` on the first photo after a restart. Caught by counting the
+  definitions rather than trusting "parses OK", which is the lesson: a Python
+  file that parses is not a Python file that runs.
+
+Tests: 213 Python, 69 vitest.
+
 ### Still open after order 16
 
 1. **`main` is 11 commits behind `ship/landing-v6`** and still holds the local

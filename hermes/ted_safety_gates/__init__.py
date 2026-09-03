@@ -239,6 +239,8 @@ def _forget_user(user_key: str) -> None:
         if _ONBOARDING_STATE.pop(user_key, None) is not None:
             _persist_onboarding_state()
     with _TURN_LOCK:
+        _LAST_GATED_REPLY.pop(user_key, None)
+        _TZ_FALLBACK_LOGGED.discard(user_key)
         if user_key in _DISCLOSURE_SENT_KEYS:
             _DISCLOSURE_SENT_KEYS.discard(user_key)
             _persist_disclosure_state()
@@ -1477,7 +1479,9 @@ def action_claim_gate(
     ]
     if kept_sentences:
         cleaned = re.sub(r"^(?:But|And)\s+", "", " ".join(kept_sentences))
-        cleaned = cleaned[:1].upper() + cleaned[1:]
+        # Deliberately NOT capitalised. Ted writes lowercase, and forcing an
+        # upper-case first letter here is what turned a warm sentence into
+        # "Logged this." The gate removes claims; it does not get a voice.
         # Keep the readings Ted gave (orders 03 and 05), but do not let them
         # stand alone implying the write landed.
         return f"{cleaned} {STORAGE_NOT_SAVED}" if storage_failed else cleaned
@@ -1676,6 +1680,61 @@ def _note_user_replied(user_key: str, memory: dict[str, Any]) -> None:
         LOGGER.info("ted_nudge_count_reset user_key=%s", user_key)
 
 
+# What the user actually saw, when it is not what the model wrote.
+#
+# This is the bug behind the rudest thing Ted has ever said. A gate replaces
+# the outgoing reply, but Hermes records the *model's* original text in the
+# transcript, so the next turn Ted reads a history it never sent. On 3 Sep the
+# calorie gate replaced a reply with the age question, the user answered "15",
+# and Ted (whose history contained no age question) answered "that's not
+# something I asked". Ted was not being rude. Ted genuinely did not know.
+#
+# Held in memory rather than on disk: it matters only for the turn immediately
+# after, and it holds message content, which does not belong in a file that
+# outlives the conversation. A restart between the two turns loses it and Ted
+# is merely back to the old behaviour.
+_LAST_GATED_REPLY: dict[str, str] = {}
+
+
+def _record_gated_reply(user_key: str, model_text: str, sent_text: str) -> None:
+    """Remember a reply the gate replaced, for exactly one following turn."""
+    if not user_key or not sent_text:
+        return
+    if sent_text.strip() == (model_text or "").strip():
+        return
+    # A suppressed reminder was never delivered, so there is nothing the user
+    # saw and nothing to hand back. Guarded here as well as at the call site:
+    # "what you actually sent was [SILENT]" is worse than saying nothing.
+    if sent_text.strip() == CRON_SILENT:
+        return
+    with _TURN_LOCK:
+        _LAST_GATED_REPLY[user_key] = sent_text
+    LOGGER.info("ted_reply_replaced user_key=%s", user_key)
+
+
+def _gated_reply_context(user_key: str) -> str:
+    """Tell Ted what it actually said, once, then forget it.
+
+    Consumed on read. If it survived into a second turn it would start
+    correcting a message two turns old, which is its own kind of confusion.
+    """
+    if not user_key:
+        return ""
+    with _TURN_LOCK:
+        sent = _LAST_GATED_REPLY.pop(user_key, None)
+    if not sent:
+        return ""
+    return (
+        "Your previous message was replaced before delivery. The user never "
+        "saw what you wrote. This is what they actually received from you, "
+        "and what they are answering now:\n\n"
+        f"{sent}\n\n"
+        "Those are your words as far as they are concerned. Answer as though "
+        "you wrote them. Never tell them you did not ask something that "
+        "appears above, and never say their reply is unrelated to it."
+    )
+
+
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     if kwargs.get("platform") != "whatsapp":
         return None
@@ -1724,7 +1783,10 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
         user_key, _strip_memory_context(str(kwargs.get("user_message") or ""))
     )
     memory_context = _format_user_memory(result)
-    return {"context": memory_context} if memory_context else None
+    # What Ted actually said last turn, when a gate replaced it. First, because
+    # it is the thing the user's current message is answering.
+    parts = [part for part in (_gated_reply_context(user_key), memory_context) if part]
+    return {"context": "\n\n".join(parts)} if parts else None
 
 
 def _transform_live_response(**kwargs: Any) -> str | None:
@@ -1757,15 +1819,21 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     ):
         report_saved = _record_bad_reply(user_key, history, user_message)
 
-    return transform_response(
+    model_text = str(kwargs.get("response_text") or "")
+    replacement = transform_response(
         history=history,
         user_message=user_message,
-        response_text=str(kwargs.get("response_text") or ""),
+        response_text=model_text,
         successful_actions=set(context.get("successful_actions", set())),
         user_key=user_key,
         storage_failed=bool(context.get("storage_failed")),
         report_saved=report_saved,
     )
+    # The transcript is about to record model_text while the user receives
+    # `replacement`. Keep the difference so the next turn can be told.
+    if replacement is not None and replacement != CRON_SILENT:
+        _record_gated_reply(user_key, model_text, replacement)
+    return replacement
 
 
 def _record_tool_success(**kwargs: Any) -> None:
@@ -1901,6 +1969,10 @@ DEFAULT_TIME_ZONE = "Asia/Kolkata"
 
 _TZ_CACHE: dict[str, ZoneInfo] = {}
 
+# Users already warned about once, so the fallback is reported rather than
+# repeated. Cleared by _forget_user so a re-onboarded user is reported again.
+_TZ_FALLBACK_LOGGED: set[str] = set()
+
 
 def _zone(name: str) -> ZoneInfo | None:
     """A validated ZoneInfo, or None. Cached: the lookup touches the disk."""
@@ -1930,12 +2002,19 @@ def _user_time_zone(user_key: str) -> ZoneInfo:
     zone = _zone(name)
     if zone is not None:
         return zone
-    LOGGER.info(
-        "ted_time_zone_fallback user_key=%s stored=%r using=%s",
-        user_key,
-        name,
-        DEFAULT_TIME_ZONE,
-    )
+    # Once per user per process. This is read several times a turn, and the
+    # first run logged it every time: five identical lines for one meal.
+    with _TURN_LOCK:
+        first_time = user_key not in _TZ_FALLBACK_LOGGED
+        if first_time:
+            _TZ_FALLBACK_LOGGED.add(user_key)
+    if first_time:
+        LOGGER.info(
+            "ted_time_zone_fallback user_key=%s stored=%r using=%s",
+            user_key,
+            name,
+            DEFAULT_TIME_ZONE,
+        )
     return _zone(DEFAULT_TIME_ZONE) or ZoneInfo("UTC")
 
 

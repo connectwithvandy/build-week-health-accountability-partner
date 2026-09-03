@@ -226,12 +226,19 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
 
     def test_removes_unproven_save_claim_but_keeps_the_real_question(self) -> None:
+        """The claim goes. The question survives, in Ted's own lowercase.
+
+        This used to assert a capital L. The gate was upper-casing whatever it
+        left behind, which is how a warm lowercase sentence reached a real user
+        on 3 Sep as "Logged this." Removing a claim is the gate's job; deciding
+        how Ted sounds is not.
+        """
         self.assertEqual(
             action_claim_gate(
                 "Good to know, 33 noted. But losing, maintaining, or building—which one?",
                 action_succeeded=False,
             ),
-            "Losing, maintaining, or building—which one?",
+            "losing, maintaining, or building—which one?",
         )
 
     def test_allows_action_claim_after_a_successful_tool(self) -> None:
@@ -3242,3 +3249,106 @@ class UserTimeZoneTest(unittest.TestCase):
             self.assertEqual(
                 gates._local_moment("u", noon_utc).strftime("%H:%M"), "13:00"
             )
+
+
+class GatedReplyParityTest(unittest.TestCase):
+    """Ted must know what Ted actually said.
+
+    The 3 Sep failure, exactly. calorie_gate replaced a reply with the age
+    question, so that is what reached the user's phone. Hermes recorded the
+    model's original sentence in the transcript instead, so Ted's history
+    contained no age question at all. The user answered "15" and Ted said
+    "that's not something I asked". Ted was not being rude; Ted had no record
+    of asking. Every gated turn had this shape.
+    """
+
+    KEY = "whatsapp:sha256:parity"
+    SENDER = "919999999999@s.whatsapp.net"
+    SESSION = "20260903_143000_parity"
+
+    def setUp(self) -> None:
+        gates._LAST_GATED_REPLY.clear()
+        self.addCleanup(gates._LAST_GATED_REPLY.clear)
+        self.addCleanup(gates._forget_user, self.KEY)
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+
+    def key(self) -> str:
+        return gates._user_state_key("whatsapp", self.SENDER, self.SESSION)
+
+    def capture(self) -> dict | None:
+        with patch.object(
+            gates, "_cached_user_memory", return_value={"facts": []}
+        ):
+            return gates._capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="15",
+            )
+
+    def test_a_replaced_reply_is_handed_back_next_turn(self) -> None:
+        gates._record_gated_reply(self.key(), "here's your 1,200 kcal target", gates.AGE_QUESTION)
+        context = self.capture()
+        self.assertIsNotNone(context)
+        self.assertIn(gates.AGE_QUESTION, context["context"])
+
+    def test_the_context_tells_ted_to_own_the_words(self) -> None:
+        gates._record_gated_reply(self.key(), "anything", gates.AGE_QUESTION)
+        body = self.capture()["context"].lower()
+        self.assertIn("never saw what you wrote", body)
+        self.assertIn("as though", body)
+        # The specific failure: denying a question it can see it asked.
+        self.assertIn("did not ask", body)
+
+    def test_it_is_handed_back_once_and_then_forgotten(self) -> None:
+        """A correction two turns old would confuse more than it fixes."""
+        gates._record_gated_reply(self.key(), "anything", gates.AGE_QUESTION)
+        self.assertIn(gates.AGE_QUESTION, self.capture()["context"])
+        self.assertIsNone(self.capture())
+
+    def test_an_ungated_turn_records_nothing(self) -> None:
+        """Most turns are not replaced. They must cost nothing."""
+        gates._record_gated_reply(self.key(), "same text", "same text")
+        self.assertIsNone(self.capture())
+
+    def test_whitespace_alone_is_not_a_replacement(self) -> None:
+        gates._record_gated_reply(self.key(), "  hello  ", "hello")
+        self.assertIsNone(self.capture())
+
+    def test_erasure_clears_it(self) -> None:
+        key = self.key()
+        gates._record_gated_reply(key, "anything", gates.AGE_QUESTION)
+        gates._forget_user(key)
+        self.assertIsNone(self.capture())
+
+    def test_a_suppressed_cron_reminder_is_not_a_replacement(self) -> None:
+        """CRON_SILENT means nothing was sent, so there is nothing to report."""
+        gates._record_gated_reply(self.key(), "vitamin time", gates.CRON_SILENT)
+        # CRON_SILENT is filtered at the call site, but the store must not
+        # treat a suppression marker as something the user read either.
+        with patch.object(gates, "_cached_user_memory", return_value={"facts": []}):
+            context = gates._capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="hi",
+            )
+        if context:
+            self.assertNotIn(gates.CRON_SILENT, context["context"])
+
+    def test_the_full_3_sep_failure_does_not_recur(self) -> None:
+        """End to end: the gate replaces, the next turn knows."""
+        key = self.key()
+        replaced = gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="what should my calorie target be?",
+            response_text="your target is 1,200 calories a day.",
+            user_key=key,
+        )
+        self.assertEqual(replaced, gates.AGE_QUESTION)
+        gates._record_gated_reply(key, "your target is 1,200 calories a day.", replaced)
+        # The user now answers the question they actually saw.
+        body = self.capture()["context"]
+        self.assertIn("how old are you", body)
