@@ -3285,6 +3285,11 @@ class GatedReplyParityTest(unittest.TestCase):
         gates._LAST_GATED_REPLY.clear()
         self.addCleanup(gates._LAST_GATED_REPLY.clear)
         self.addCleanup(reset_user, self.KEY)
+        # KEY is a literal; key() derives the real one from the sender, and
+        # that is the one the tests actually write through. Resetting only the
+        # literal left a forgotten user behind for the next test in the class.
+        self.addCleanup(reset_user, gates._user_state_key(
+            "whatsapp", self.SENDER, self.SESSION))
         self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
 
     def key(self) -> str:
@@ -3839,3 +3844,76 @@ class ErasureSurvivesTheOpenThreadTest(unittest.TestCase):
         gates._forget_user(self.USER_KEY)
         self.assertTrue(gates._disclosure_was_sent(history, self.UNTOUCHED))
         self.assertEqual(gates._given_name(history, self.UNTOUCHED), "Vandy")
+
+
+class SessionRecordCannotRegrantConsentTest(unittest.TestCase):
+    """The second half of the 3 Sep erasure failure.
+
+    Clearing the user key was never enough. A WhatsApp thread keeps its
+    session id through a wipe and through having every message deleted, and
+    that id had its own entry in the consent list from 2 Sep. `_capture_turn`
+    read it, wrote consent back onto the user key, and the reply gate then
+    inserted a disclosure into the empty history on the strength of it — so
+    no disclosure went out, and the scripted opener was skipped too, because
+    a prepared start needs a history that is genuinely empty.
+    """
+
+    SESSION = "20260902_164400_cc233467"
+    USER_KEY = "whatsapp:sha256:cbf8ffc790890dc7ffa6f11d91a70647fca0cf4c119ec238ed5827b6eabe8c71"
+
+    def setUp(self) -> None:
+        for target in (
+            patch.object(gates, "_ONBOARDING_STATE", {}),
+            patch.object(gates, "_persist_onboarding_state"),
+            patch.object(gates, "_DISCLOSURE_SENT_KEYS", {self.SESSION}),
+            patch.object(gates, "_persist_disclosure_state"),
+            patch.object(gates, "_user_state_key", lambda *a, **k: self.USER_KEY),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+        self.addCleanup(self._drop_context)
+
+    def _drop_context(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def _capture(self, user_message: str = "hi"):
+        _capture_turn(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            sender_id="144504426369026@lid",
+            conversation_history=[],
+            user_message=user_message,
+        )
+        with gates._TURN_LOCK:
+            return dict(gates._TURN_CONTEXT[self.SESSION])
+
+    def test_the_session_record_still_counts_for_someone_who_never_asked(self) -> None:
+        """Unchanged for everyone else: this is how a pre-user-key thread keeps
+        its consent instead of re-asking a user who was properly told."""
+        self.assertTrue(self._capture()["disclosure_sent"])
+        self.assertIn(self.USER_KEY, gates._DISCLOSURE_SENT_KEYS)
+
+    def test_the_session_record_does_not_survive_an_erasure(self) -> None:
+        gates._forget_user(self.USER_KEY)
+        self.assertFalse(self._capture()["disclosure_sent"])
+        self.assertNotIn(self.USER_KEY, gates._DISCLOSURE_SENT_KEYS)
+
+    def test_the_scripted_opener_still_fires_after_an_erasure(self) -> None:
+        """The injected disclosure made the history non-empty, which is what
+        swallowed the opener and let the model answer in its own words."""
+        gates._forget_user(self.USER_KEY)
+        self._capture("Okay Ted, let's do this!")
+        self.assertEqual(
+            _transform_live_response(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                response_text="hey Vandy 🙌 meal tracking i can absolutely help with",
+            ),
+            OPENING_MESSAGE,
+        )
+
+    def test_a_real_re_disclosure_after_the_wipe_ends_the_asking(self) -> None:
+        gates._forget_user(self.USER_KEY)
+        gates._mark_disclosure_sent(self.USER_KEY, self.SESSION)
+        self.assertTrue(self._capture()["disclosure_sent"])

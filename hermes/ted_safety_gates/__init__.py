@@ -1906,10 +1906,21 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     sender_id = str(kwargs.get("sender_id") or "")
     user_key = _user_state_key(platform, sender_id, session_id)
     history = list(kwargs.get("conversation_history") or [])
-    disclosure_sent = (
-        user_key in _DISCLOSURE_SENT_KEYS
-        or session_id in _DISCLOSURE_SENT_KEYS
-        or _disclosure_was_sent(history)
+    # The user key is the only record an erasure can clear. The other two are
+    # a session id and a transcript, and neither belongs to the person: a
+    # WhatsApp thread keeps its session id across a wipe and across having its
+    # messages deleted, so on 3 Sep a wipe at 15:32 was undone at 15:46 by a
+    # session record written on 2 Sep. The migration below then wrote the
+    # re-granted consent back onto the user key, and _transform_live_response
+    # injected a disclosure into the empty history on the strength of it —
+    # which also skipped the scripted opener, because a prepared start needs a
+    # history that is actually empty. So a forgotten user gets neither
+    # fallback. Their own key still counts: that is what a real re-disclosure
+    # writes, and it is what lets them stop being asked.
+    forgotten = bool(_onboarding(user_key).get("forgotten_at"))
+    disclosure_sent = user_key in _DISCLOSURE_SENT_KEYS or (
+        not forgotten
+        and (session_id in _DISCLOSURE_SENT_KEYS or _disclosure_was_sent(history))
     )
 
     # Migrate a prior session/log record to the stable user key on first sight.
