@@ -1780,6 +1780,19 @@ def strip_assistant_speak(text: str) -> str:
     return "\n".join(kept).strip() or (text or "").strip()
 
 
+# A line the block already says. "Today · 3 meals" is not a figure by the
+# pattern above — no kcal, no grams — so it survived the strip and arrived
+# wedged between Ted's sentence and the numbers, saying the same thing as
+# "day so far" directly underneath it. The result read as a person and a
+# dashboard talking over each other. The day is the gate's to state, once.
+_DAY_HEADER = re.compile(
+    r"^\s*today\s*[·:|\-–—]"          # "Today · 3 meals", "Today: ..."
+    r"|\b\d+\s+meals?\b"               # any line counting meals
+    r"|^\s*day\s+so\s+far\b",          # the block's own line, written early
+    re.IGNORECASE,
+)
+
+
 def words_without_figures(text: str) -> str:
     """Ted's sentence with any number-carrying clause removed.
 
@@ -1801,6 +1814,8 @@ def words_without_figures(text: str) -> str:
     """
     kept_lines: list[str] = []
     for line in (text or "").strip().splitlines():
+        if _DAY_HEADER.search(line):
+            continue
         kept = [
             sentence
             for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
@@ -2107,6 +2122,48 @@ def _gated_reply_context(user_key: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# The voice, next to the writing.
+#
+# SOUL.md holds Ted's personality and also forty-five rules about what Ted
+# must never claim, and it is six hundred lines from where the reply gets
+# written. Compression protects the last twenty messages verbatim, so twenty
+# examples of flat output sit right beside generation and the adjectives sit
+# far away. That is not a fair fight and SOUL.md has lost it twice on 3 Sep.
+#
+# Stripping cannot fix this. Removing furniture is subtraction, and nobody
+# ever subtracted their way to a personality. The only thing that competes
+# with twenty nearby examples is a few examples, nearer. So this rides on
+# every single turn, last, immediately before the model writes.
+#
+# Short on purpose: it is paying for context on every message. Examples, not
+# adjectives, because adjectives are what already failed.
+VOICE_CARD = """How you sound, and this matters more than being thorough:
+
+You are a close friend in Bangalore who happens to know nutrition. Not an
+assistant. Short — one or two lines, WhatsApp not email. Lower case. One
+thought per message. Hinglish when it lands: arre, yaar, bas, scene.
+
+Real examples of you:
+  "ooh cheela and ketchup 😍 proper breakfast food"
+  "core and cardio, arre nice 💪 logged it for yesterday"
+  "arre it happens, yesterday's gone. one meal today and we're square"
+  "can't read PDFs yet 😅 screenshot it?"
+  "sprouts and cutlets so far, light-ish day. want to give me a protein
+   target so this actually means something?"
+
+Never you:
+  "Got it! Let's adjust the breakdown:" then a bulleted table
+  "Let me know if there's anything else you need!"
+  "Perfect! I'll start sending you daily check-ins at 5:30 PM."
+  "Today · 3 meals" — the day line is written for you, never type it
+  Any sentence you would not say out loud at a chai stall.
+
+The numbers are appended under your reply by code, from the database. Do not
+type calories or macros yourself — they will be stripped and your sentence
+may go with them. Your job is the one human line above them."""
+
+
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     if kwargs.get("platform") != "whatsapp":
         return None
@@ -2167,8 +2224,17 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     )
     memory_context = _format_user_memory(result)
     # What Ted actually said last turn, when a gate replaced it. First, because
-    # it is the thing the user's current message is answering.
-    parts = [part for part in (_gated_reply_context(user_key), memory_context) if part]
+    # it is the thing the user's current message is answering. The voice card
+    # goes last, so it is the final thing read before the reply is written.
+    parts = [
+        part
+        for part in (
+            _gated_reply_context(user_key),
+            memory_context,
+            VOICE_CARD,
+        )
+        if part
+    ]
     return {"context": "\n\n".join(parts)} if parts else None
 
 

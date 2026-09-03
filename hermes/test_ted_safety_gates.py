@@ -3336,26 +3336,42 @@ class GatedReplyParityTest(unittest.TestCase):
         # The specific failure: denying a question it can see it asked.
         self.assertIn("did not ask", body)
 
+    def handed_back(self) -> str:
+        """The context minus the voice card, which now rides on every turn.
+
+        These tests are about the replaced-reply hand-back, and it used to be
+        the only thing that could put a context on a turn — so "nothing was
+        handed back" was asserted as "the whole return is None". The voice
+        card made that assertion mean something else.
+        """
+        captured = self.capture() or {}
+        return (captured.get("context") or "").replace(gates.VOICE_CARD, "").strip()
+
     def test_it_is_handed_back_once_and_then_forgotten(self) -> None:
         """A correction two turns old would confuse more than it fixes."""
         gates._record_gated_reply(self.key(), "anything", gates.AGE_QUESTION)
-        self.assertIn(gates.AGE_QUESTION, self.capture()["context"])
-        self.assertIsNone(self.capture())
+        self.assertIn(gates.AGE_QUESTION, self.handed_back())
+        self.assertEqual(self.handed_back(), "")
 
     def test_an_ungated_turn_records_nothing(self) -> None:
         """Most turns are not replaced. They must cost nothing."""
         gates._record_gated_reply(self.key(), "same text", "same text")
-        self.assertIsNone(self.capture())
+        self.assertEqual(self.handed_back(), "")
 
     def test_whitespace_alone_is_not_a_replacement(self) -> None:
         gates._record_gated_reply(self.key(), "  hello  ", "hello")
-        self.assertIsNone(self.capture())
+        self.assertEqual(self.handed_back(), "")
 
     def test_erasure_clears_it(self) -> None:
         key = self.key()
         gates._record_gated_reply(key, "anything", gates.AGE_QUESTION)
         gates._forget_user(key)
-        self.assertIsNone(self.capture())
+        self.assertEqual(self.handed_back(), "")
+
+    def test_the_voice_card_rides_on_every_turn(self) -> None:
+        """Including the turns nothing else has anything to say about, which
+        is most of them, and exactly where the tone used to drift."""
+        self.assertIn(gates.VOICE_CARD, (self.capture() or {})["context"])
 
     def test_a_suppressed_cron_reminder_is_not_a_replacement(self) -> None:
         """CRON_SILENT means nothing was sent, so there is nothing to report."""
@@ -4928,3 +4944,96 @@ class NoAssistantSpeakTest(unittest.TestCase):
                 user_key="whatsapp:sha256:voice",
             )
         )
+
+
+class TheDayLineIsWrittenOnceTest(unittest.TestCase):
+    """"Today · 3 meals" arrived between Ted's sentence and the block.
+
+    3 Sep, 17:36. The block already said "day so far 670 cal, 28g protein"
+    two lines below it. It was not caught by the figure strip because it
+    carries no kcal and no grams, so what reached the phone read like a
+    person and a dashboard talking over each other.
+    """
+
+    MEAL = {
+        "calories": 250,
+        "proteinGrams": 8,
+        "carbohydrateGrams": 30,
+        "fatGrams": 10,
+        "fiberGrams": 4,
+    }
+    DAY = {"calories": 670, "proteinGrams": 28}
+
+    def test_the_real_17_36_reply(self) -> None:
+        out = gates._with_meal_breakdown(
+            "that veggie peanut toast is a nice light one, decent crunch and "
+            "fiber from the peanuts 👍\nToday · 3 meals",
+            self.MEAL,
+            self.DAY,
+        )
+        self.assertIn("veggie peanut toast", out)
+        self.assertNotIn("Today · 3 meals", out)
+        self.assertEqual(out.count("day so far"), 1)
+
+    def test_the_shapes_a_model_reaches_for(self) -> None:
+        for said in (
+            "Today · 3 meals",
+            "Today: 2 meals logged",
+            "today — 4 meals",
+            "you're at 3 meals now",
+            "day so far 670 cal",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.words_without_figures(said), "")
+
+    def test_an_ordinary_sentence_starting_with_today_survives(self) -> None:
+        for said in (
+            "today's been a solid one",
+            "today you actually hit it",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.words_without_figures(said), said)
+
+
+class TheVoiceRidesOnEveryTurnTest(unittest.TestCase):
+    """SOUL.md is six hundred lines from where the reply is written.
+
+    Compression protects the last twenty messages verbatim, so twenty
+    examples of flat output sit beside generation while the adjectives sit
+    far away. SOUL.md lost that fight twice on 3 Sep. Stripping furniture
+    cannot win it either — that is subtraction, and nobody subtracts their
+    way to a personality. A few examples, nearer, is the only thing that
+    competes with twenty examples.
+    """
+
+    def test_it_is_examples_not_adjectives(self) -> None:
+        """Adjectives are what already failed."""
+        self.assertGreaterEqual(gates.VOICE_CARD.count('"'), 12)
+
+    def test_it_carries_the_real_failures_as_the_never_list(self) -> None:
+        for tell in (
+            "Let me know if there's anything else",
+            "Today · 3 meals",
+            "Perfect!",
+        ):
+            with self.subTest(tell=tell):
+                self.assertIn(tell, gates.VOICE_CARD)
+
+    def test_it_tells_the_model_the_numbers_are_not_its_job(self) -> None:
+        """The one instruction that stops a sentence being deleted with the
+        figures it was wrapped around."""
+        self.assertIn("appended under your reply by code", gates.VOICE_CARD)
+
+    def test_it_stays_short_enough_to_pay_for_every_turn(self) -> None:
+        """It rides on every message, so it is charged for on every message."""
+        self.assertLess(len(gates.VOICE_CARD), 1800)
+
+    def test_its_own_examples_would_survive_the_gates(self) -> None:
+        """A card whose examples the gate would strip is teaching the model
+        to write things that get deleted."""
+        for line in gates.VOICE_CARD.splitlines():
+            said = line.strip().strip('"')
+            if not said.startswith(("ooh", "core and", "arre", "can't", "sprouts")):
+                continue
+            with self.subTest(said=said):
+                self.assertEqual(gates.strip_assistant_speak(said), said)
