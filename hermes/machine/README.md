@@ -29,10 +29,27 @@ This file is a symlink to the repo copy, so there is one file, not two.
 A **snapshot** of `~/.hermes/config.yaml`, not a symlink — Hermes owns that
 file and may rewrite it. It will drift; re-copy it when it matters.
 
-Two settings here are Ted-specific:
+Re-copied 3 Sep 2026, and the drift was not harmless: the live file had gained
+`display.provider_messages` and this snapshot had not, so reading the snapshot
+said Ted still answered a provider outage with "check gateway logs for
+diagnostics". It does not. **A stale snapshot does not read as stale — it reads
+as the truth.** Re-copy it before trusting it:
+
+```bash
+cp ~/.hermes/config.yaml hermes/machine/hermes-config.yaml && git diff --stat
+```
+
+Three settings here are Ted-specific:
 
 - `plugins.enabled: [ted-safety-gates]` — without this the gates never load.
 - `cron.wrap_response: false` — Hermes otherwise wraps every scheduled
   reminder in a "Cronjob Response" header, the raw job_id, and footer
   instructions. SOUL.md forbids exposing internal status to the user, and a
   job_id in a health chat breaks the product.
+- `display.provider_messages` — what a real user sees when the model provider
+  fails. Without it they get the shipped defaults, which say "check gateway
+  logs for diagnostics" to someone who came here to log their dinner. `stall`
+  is deliberately empty: mid-call stall notices name the model and the context
+  size and repeat once per reconnect (five copies reached one tester's thread),
+  and a turn that ultimately fails still delivers the `generic` line, so
+  suppressing them is not the same as going silent.

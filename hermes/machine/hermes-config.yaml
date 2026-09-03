@@ -92,6 +92,18 @@ display:
   long_running_notifications: false
   busy_ack_detail: false
   background_process_notifications: none
+  # Ted speaks to people about their food and their day; a provider name, a
+  # model id or a retry count in that thread breaks the persona and tells the
+  # user nothing they can act on (SOUL.md: "I never expose internal status such
+  # as model names, provider names, gateway events"). Plain lines in Ted's
+  # voice, per SCOPING.md #27. Full diagnostics still go to
+  # ~/.hermes/logs/agent.log. An empty string means "say nothing in chat".
+  provider_messages:
+    auth: "something's broken on my end, not yours. try me again in a bit."
+    policy: "that one didn't land. mind saying it a different way?"
+    rate_limit: "too many at once. give me a minute and send it again."
+    generic: "my brain's gone quiet for a second \U0001F605 send that again in a minute?"
+    stall: ""
 tts:
   provider: openai
 stt:
