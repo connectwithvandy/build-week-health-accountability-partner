@@ -485,11 +485,18 @@ export type ClashCandidate = {
  * identify a food. "oats", "protein powder", "nuts and seeds" gives oats,
  * protein, powder, nuts, seeds — "and" is dropped for being three letters.
  */
+const NOT_A_FOOD = new Set([
+  "with", "and", "some", "plus", "extra", "side", "chopped", "topping",
+  "fresh", "small", "large", "plain", "whole", "half", "little", "bit",
+  "homemade", "leftover", "mixed", "cooked", "boiled", "fried", "grilled",
+  "sliced", "diced", "raw", "hot", "cold", "cup", "bowl", "plate", "glass",
+]);
+
 function foodWords(meal: MealDetail | null | undefined): Set<string> {
   const words = new Set<string>();
   for (const item of meal?.items ?? []) {
     for (const word of String(item).toLowerCase().split(/[^a-z0-9]+/)) {
-      if (word.length >= 4) words.add(word);
+      if (word.length >= 4 && !NOT_A_FOOD.has(word)) words.add(word);
     }
   }
   return words;
@@ -511,10 +518,22 @@ function sharesFood(
   const theirs = foodWords(entry.meal);
   const ours = foodWords(candidate.meal);
   if (theirs.size === 0 || ours.size === 0) return true;
+
+  let shared = 0;
   for (const word of ours) {
-    if (theirs.has(word)) return true;
+    if (theirs.has(word)) shared += 1;
   }
-  return false;
+  // A proportion, not a single word. One shared word was the first rule and
+  // it was too eager by a mile: on 3 Sep a sprouts salad (moong, sprouts,
+  // onion, tomato, cilantro, chili) and a peanut toast (wheat, toast, bell,
+  // pepper, tomato, onion, peanuts) were held apart to ask whether they were
+  // the same meal, because both contained onion and tomato. Half of Indian
+  // food contains onion and tomato. Sharing a garnish is not sharing a meal.
+  //
+  // Measured against the shorter list so that a long description cannot dilute
+  // a real repeat: "rice, dal" against "the rice and dal I just had" is still
+  // every word of the shorter one.
+  return shared / Math.min(theirs.size, ours.size) >= 0.5;
 }
 
 export function findClashingEntry(

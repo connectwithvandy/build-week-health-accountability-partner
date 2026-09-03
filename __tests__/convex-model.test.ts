@@ -280,6 +280,53 @@ describe("Near-duplicate logs (milestone 10)", () => {
     ).toBe(`k${noon}`);
   });
 
+  it("lets a salad and a toast through for sharing onion and tomato", () => {
+    // 3 Sep, 17:32. A sprouts salad and a peanut toast were held apart to ask
+    // whether they were the same meal, because both contained onion and
+    // tomato. Half of Indian food contains onion and tomato.
+    const salad = {
+      entryType: "meal" as const,
+      state: "confirmed" as const,
+      occurredAt: noon,
+      dedupeKey: `k${noon}`,
+      meal: plate(["moong sprouts", "onion", "tomato", "cilantro", "green chili"]),
+    };
+    expect(
+      findClashingEntry([salad], {
+        entryType: "meal",
+        occurredAt: noon + minutes(118),
+        commitmentId: undefined,
+        meal: plate([
+          "whole wheat toast",
+          "chopped bell pepper/tomato/onion topping with peanuts",
+        ]),
+      }),
+    ).toBeNull();
+  });
+
+  it("still catches the same plate described at length", () => {
+    expect(
+      findClashingEntry([meal(noon)], {
+        entryType: "meal",
+        occurredAt: noon + minutes(15),
+        commitmentId: undefined,
+        meal: plate(["the rice and dal I just had"]),
+      })?.dedupeKey,
+    ).toBe(`k${noon}`);
+  });
+
+  it("ignores words that describe rather than name a food", () => {
+    // "whole", "chopped" and "with" would otherwise count as shared foods.
+    expect(
+      findClashingEntry([meal(noon)], {
+        entryType: "meal",
+        occurredAt: noon + minutes(20),
+        commitmentId: undefined,
+        meal: plate(["whole chopped apple with cinnamon"]),
+      }),
+    ).toBeNull();
+  });
+
   it("falls back to the window when a meal has no readable items", () => {
     // An empty set must not silently switch the duplicate guard off.
     expect(

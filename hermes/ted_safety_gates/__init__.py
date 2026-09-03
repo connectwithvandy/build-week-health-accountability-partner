@@ -3287,10 +3287,13 @@ def _confirmation_needed(
         "ask": (
             f"Nothing was saved. They already logged {described}"
             + (f" at {when}" if when else "")
-            + ". Ask in one short question whether this is a second one or the "
-            "same thing again. If they say it is a second one, call this again "
-            "with second_one_confirmed true. If it is a correction to that "
-            "entry, call this again with corrects_dedupe_key set to "
+            + ". Ask them one short, ordinary question: is this another one, or "
+            "the same thing again? Two options, never three — nobody knows "
+            "what it means to be offered a chance to \"replace\" a meal. If "
+            "they say it is another one, call this again with "
+            "second_one_confirmed true. If instead they correct the earlier "
+            "entry in their own words, call this again with "
+            "corrects_dedupe_key set to "
             f"{clash.get('dedupeKey')!r}."
         ),
     }
