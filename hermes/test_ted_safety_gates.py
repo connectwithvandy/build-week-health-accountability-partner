@@ -4824,3 +4824,107 @@ class EveryLineTedSaysSoundsLikeTedTest(unittest.TestCase):
         _DISCLOSURE_MARKER matches its opening words."""
         self.assertTrue(gates.DISCLOSURE_MESSAGE.startswith(gates._DISCLOSURE_MARKER))
         self.assertIn(gates.PRIVACY_URL, gates.DISCLOSURE_MESSAGE)
+
+
+class NoAssistantSpeakTest(unittest.TestCase):
+    """The furniture that makes a message read as a chatbot.
+
+    On 2 Sep a real user got a markdown nutrient table — bold heading, bullet
+    rows, "Let me know if there's anything else you need!" on the end. SOUL.md
+    describes Ted's voice in adjectives and then spends forty-five rules on
+    what Ted must never claim; adjectives lose that argument, and they lose to
+    twenty protected examples of the model's own last twenty replies. Code
+    cannot write warmth. It can take the furniture off.
+    """
+
+    def strip(self, text: str) -> str:
+        return gates.strip_assistant_speak(text)
+
+    def test_the_real_2_sep_message(self) -> None:
+        out = self.strip(
+            "Got it! Let's adjust the breakdown for just 1 Ragi Roti:\n\n"
+            "**Nutrient Breakdown**\n"
+            "- Ragi Roti (1) - Calories: ~105\n"
+            "- Dal (1 cup) - Calories: ~120\n\n"
+            "Let me know if there's anything else you need!"
+        )
+        self.assertNotIn("**", out)
+        self.assertNotIn("- Ragi", out)
+        self.assertNotIn("Let me know", out)
+        # The content survives; only the packaging goes.
+        self.assertIn("Ragi Roti", out)
+        self.assertIn("~105", out)
+
+    def test_the_closers_that_are_never_ted(self) -> None:
+        for closer in (
+            "Let me know if there's anything else!",
+            "let me know if you need anything.",
+            "I'd be happy to help with that.",
+            "Feel free to reach out.",
+            "Hope this helps!",
+            "Is there anything else I can help with?",
+        ):
+            with self.subTest(closer=closer):
+                self.assertEqual(self.strip(f"logged that 👍\n{closer}"), "logged that 👍")
+
+    def test_markdown_furniture_goes_and_words_stay(self) -> None:
+        for raw, expected in (
+            ("## Your day", "Your day"),
+            ("- sprouts bowl", "sprouts bowl"),
+            ("* sprouts bowl", "sprouts bowl"),
+            ("1. sprouts bowl", "sprouts bowl"),
+            ("**protein** is fine", "protein is fine"),
+            ("__protein__ is fine", "protein is fine"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.strip(raw), expected)
+
+    def test_ordinary_ted_is_left_completely_alone(self) -> None:
+        for said in (
+            "ooh cheela and ketchup 😍 proper breakfast food",
+            "arre it happens, yesterday's gone. one meal today and we're square",
+            "core and cardio, nice 💪 logged it for yesterday",
+            "can't read PDFs yet 😅 screenshot it?",
+            "want me to remind you at 8?",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(self.strip(said), said)
+
+    def test_a_hyphen_mid_sentence_is_not_a_bullet(self) -> None:
+        self.assertEqual(
+            self.strip("logged - that's 2 meals today"),
+            "logged - that's 2 meals today",
+        )
+
+    def test_a_real_sentence_containing_a_closer_word_survives(self) -> None:
+        """Whole-sentence match, so this is not swept up."""
+        said = "let me know your weight when you get a chance and i'll set a target"
+        self.assertEqual(self.strip(said), said)
+
+    def test_a_reply_that_is_only_furniture_is_not_emptied(self) -> None:
+        """Sending nothing is worse than sending something over-polished."""
+        self.assertNotEqual(self.strip("Let me know if there's anything else!"), "")
+
+    def test_it_runs_on_every_reply_not_just_gated_ones(self) -> None:
+        out = transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="what did i have today?",
+            response_text="here you go:\n\n- sprouts bowl\n\nLet me know if there's anything else!",
+            user_key="whatsapp:sha256:voice",
+        )
+        self.assertIsNotNone(out)
+        self.assertNotIn("Let me know", out)
+        self.assertNotIn("- sprouts", out)
+        self.assertIn("sprouts bowl", out)
+
+    def test_a_clean_reply_still_returns_none(self) -> None:
+        """None means "leave it alone", and a reply needing nothing must not
+        start reporting itself as replaced on every single turn."""
+        self.assertIsNone(
+            transform_response(
+                history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="hey",
+                response_text="hey! how's the day going?",
+                user_key="whatsapp:sha256:voice",
+            )
+        )

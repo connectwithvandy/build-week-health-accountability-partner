@@ -1715,6 +1715,71 @@ _MEAL_FIGURE = re.compile(
 )
 
 
+# ---------------------------------------------------------------------------
+# Assistant-speak.
+#
+# SOUL.md describes Ted's voice in adjectives and then spends forty-five rules
+# on everything Ted must never claim. Adjectives lose to that, and to twenty
+# protected examples of the model's last twenty replies. On 2 Sep a real user
+# received a markdown nutrient table with bolded headers, bullet rows and
+# "Let me know if there's anything else you need!" on the end. That is not a
+# tone slip, it is a different product wearing Ted's name.
+#
+# Deterministic code cannot write warmth. It can take away the four tells that
+# make a message read as a chatbot, which is a different and achievable job:
+# markdown furniture, and the closing offer nobody asked for.
+_LIST_MARKER = re.compile(r"^\s{0,6}(?:[-*•]\s+|\d{1,2}[.)]\s+)")
+_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
+_BOLD = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
+
+#: Sentences that exist only to sound helpful. Whole-sentence match, so a real
+#: sentence containing one of these words is untouched.
+_ASSISTANT_CLOSERS = re.compile(
+    r"^\s*(?:"
+    r"let me know if (?:there(?:'s| is) anything else|you need anything|"
+    r"you(?:'d| would) like)"
+    r"|(?:i(?:'d| would) be happy to|happy to help)"
+    r"|feel free to (?:ask|reach out|let me know)"
+    r"|(?:is there )?anything else (?:i can help|you(?:'d| would) like)"
+    r"|hope (?:this|that) helps"
+    r"|(?:i'm |i am )?here to help"
+    r")[^.!?]*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_assistant_speak(text: str) -> str:
+    """Ted's reply with the chatbot furniture taken off.
+
+    Four things go: heading markers, list bullets, bold markers, and a closing
+    offer that is the whole sentence. Nothing is rewritten and no sentence with
+    content is removed — a bulleted line keeps its words and loses its dash, so
+    the worst case is a message that reads as lines instead of a list.
+    """
+    lines: list[str] = []
+    for line in (text or "").splitlines():
+        cleaned = _HEADING.sub("", line)
+        cleaned = _LIST_MARKER.sub("", cleaned)
+        cleaned = _BOLD.sub(lambda m: m.group(1) or m.group(2) or "", cleaned)
+        if _ASSISTANT_CLOSERS.match(cleaned):
+            continue
+        lines.append(cleaned.rstrip())
+
+    kept: list[str] = []
+    for line in lines:
+        sentences = [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if sentence.strip() and not _ASSISTANT_CLOSERS.match(sentence)
+        ]
+        joined = " ".join(sentences).strip()
+        if joined:
+            kept.append(joined)
+    # A reply that was nothing but furniture is left alone rather than emptied:
+    # sending nothing is worse than sending something over-polished.
+    return "\n".join(kept).strip() or (text or "").strip()
+
+
 def words_without_figures(text: str) -> str:
     """Ted's sentence with any number-carrying clause removed.
 
@@ -1880,7 +1945,16 @@ def transform_response(
             logged_meal,
             day_summary or {},
         )
-    return cleaned
+    # Last, over everything above and over the model's own reply when nothing
+    # above touched it. The gates before this decide *what* Ted is allowed to
+    # say; this only decides that it does not arrive dressed as a chatbot.
+    # Returning the stripped text rather than None is deliberate: it is what
+    # the user receives, so it is what the transcript-repair machinery has to
+    # be told about.
+    spoken = strip_assistant_speak(cleaned if cleaned is not None else response_text)
+    if cleaned is not None:
+        return spoken
+    return spoken if spoken != (response_text or "").strip() else None
 
 
 # Onboarding may not close over a missing check-in time.
