@@ -12,8 +12,10 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 LOGGER = logging.getLogger("ted.safety_gates")
@@ -22,9 +24,9 @@ OPENING_MESSAGE = (
     "hey! good energy, let's set this up right.\n\n"
     "here's the deal: you tell me what you ate or what you got done, i keep "
     "score, nudge you when it's useful, and close out the day with a quick "
-    "recap — like \"protein: on track, steps: short by 2k, one thing for "
+    "recap, like \"protein: on track, steps: short by 2k, one thing for "
     "tomorrow.\"\n\n"
-    "first things first — what should i call you?"
+    "first things first. what should i call you?"
 )
 DISCLOSURE_MESSAGE = (
     "Ted stores your profile, messages, plans, logs and uploads. "
@@ -33,9 +35,9 @@ DISCLOSURE_MESSAGE = (
 )
 GOAL_QUESTION = "what’s one thing you want to change?"
 ALREADY_STARTED_MESSAGE = (
-    "already started — we’re on the name question. what should i call you?"
+    "already started. we’re on the name question, what should i call you?"
 )
-NAME_NOT_USABLE_MESSAGE = "i didn’t catch a name in that — what should i call you?"
+NAME_NOT_USABLE_MESSAGE = "i didn’t catch a name in that. what should i call you?"
 
 # Hermes appends the Convex memory context to the user's own message content,
 # so every parser below would otherwise read saved facts as if the user had
@@ -414,12 +416,14 @@ REQUIRED_CONVEX_ACTIONS = frozenset(
         "delete",
         "log",
         "day",
+        "week",
         "target",
         "reminder",
         "onboarding",
         "report",
         "reports",
         "reminderGate",
+        "replied",
     }
 )
 
@@ -1235,7 +1239,7 @@ def _maintenance_or_target_flow(user_message: str, response_text: str) -> bool:
 
 # Every gate reply is Ted talking, not a form validator. SOUL.md: casual,
 # lowercase, and it says why it is asking.
-AGE_QUESTION = "quick one before i do calorie maths — how old are you? beta's 18+"
+AGE_QUESTION = "quick one before i do calorie maths. how old are you? beta's 18+"
 UNDER_18_REFUSAL = (
     "I can’t provide calorie numbers because this beta is only for adults."
 )
@@ -1243,12 +1247,12 @@ UNDER_18_REFUSAL = (
 
 def _missing_profile_reply(profile: CalorieProfile) -> str | None:
     missing = (
-        (profile.height_cm, "before i can do that maths — how tall are you?"),
+        (profile.height_cm, "before i can do that maths, how tall are you?"),
         (profile.weight_kg, "and your weight? i only work from numbers you give me."),
-        (profile.sex, "one more for the formula — male or female?"),
+        (profile.sex, "one more for the formula: male or female?"),
         (
             profile.activity,
-            "last one — how active is a normal day? desk most of it, on your feet, "
+            "last one. how active is a normal day? desk most of it, on your feet, "
             "or training regularly?",
         ),
     )
@@ -1330,7 +1334,7 @@ def calorie_gate(
 
     estimate = _estimated_maintenance(profile)
     return (
-        f"rough maintenance is about {estimate:,} calories a day — "
+        f"rough maintenance is about {estimate:,} calories a day, "
         "worked out only from the numbers you gave me."
     )
 
@@ -1445,7 +1449,7 @@ def _claim_types(text: str) -> set[str]:
 # tool ran and the storage was down — SCOPING.md #27: say the update was not
 # saved and ask them to send it again.
 CLAIM_NOT_DONE = "I haven’t completed that action."
-STORAGE_NOT_SAVED = "that didn’t save — send it again in a minute."
+STORAGE_NOT_SAVED = "that didn’t save, send it again in a minute."
 
 
 def action_claim_gate(
@@ -1478,6 +1482,49 @@ def action_claim_gate(
         # stand alone implying the write landed.
         return f"{cleaned} {STORAGE_NOT_SAVED}" if storage_failed else cleaned
     return STORAGE_NOT_SAVED if storage_failed else CLAIM_NOT_DONE
+
+
+# A PDF or a Word file arrives as a pointer, not as text.
+#
+# Hermes inlines the content of a *text* document (.txt, .md, .csv, .json, …)
+# straight into the user turn. A binary one it cannot inline, so it prepends
+# `_build_document_context_note`: "It is saved at: <path>. Its text is not
+# inlined here (it's a binary format such as PDF or DOCX). To read it, extract
+# the document's text yourself — for example with the terminal tool or the
+# ocr-and-documents skill."
+#
+# Ted's WhatsApp toolset is cronjob / file / ted / vision. It has neither the
+# terminal tool nor skills, so it is being told to do something it cannot do.
+# What it *can* reach is `file`, and `.pdf` is deliberately absent from Hermes'
+# BINARY_EXTENSIONS list, so a read returns the raw stream decoded as text —
+# compressed rubbish with a few legible strings in it. That is the single most
+# dangerous input this product can receive: an unreadable health plan that
+# looks just readable enough to invent targets from.
+#
+# So the gate answers it, not the model. Matched on Hermes' own wording rather
+# than on model prose, which is the same rule orders 1, 2, 10 and 14 settled
+# on: read what the system recorded, never what the model chose to say.
+#
+# SCOPING.md #8 and #10 do promise PDFs for health plans. Nothing a user sees
+# promises it — the landing page offers text, voice note and photo only — so
+# this closes the gap honestly instead of shipping a feature that guesses.
+_BINARY_DOCUMENT_NOTE = re.compile(
+    r"\[The user sent a document:.{0,400}?binary format such as PDF or DOCX",
+    re.IGNORECASE | re.DOTALL,
+)
+
+UNREADABLE_DOCUMENT_REPLY = (
+    "i can’t read PDFs or docs yet 😅 send me a screenshot of the page "
+    "instead, or just type the numbers that matter. calories, protein, "
+    "whatever your plan sets, and i’ll set them up from that."
+)
+
+
+def unreadable_document_gate(user_message: str) -> str | None:
+    """Say a PDF could not be read, rather than let the model pretend."""
+    if _BINARY_DOCUMENT_NOTE.search(user_message or ""):
+        return UNREADABLE_DOCUMENT_REPLY
+    return None
 
 
 def transform_response(
@@ -1514,6 +1561,12 @@ def transform_response(
         return disclosure
     if not _disclosure_was_sent(history, user_key):
         return None
+    # Before the calorie gate on purpose: a health-plan PDF is exactly the
+    # input that ends in a calorie target, and an unread one must never get
+    # that far.
+    unreadable = unreadable_document_gate(user_message)
+    if unreadable:
+        return unreadable
     calorie = calorie_gate(history, user_message, response_text, user_key)
     if calorie:
         return calorie
@@ -1536,7 +1589,7 @@ def transform_response(
 # have found out. The question is cheap to repeat and impossible to recover
 # once the conversation has moved on.
 REVIEW_TIME_QUESTION = (
-    "one last thing before we start — what time works for your evening "
+    "one last thing before we start. what time works for your evening "
     "check-in? something like 9pm or 10:30pm."
 )
 
@@ -1561,8 +1614,66 @@ def onboarding_close_gate(response_text: str, user_key: str) -> str | None:
     if not done:
         return None
     if "dailyReview" in done or "complete" in done:
-        return None
+        return _weekly_review_offer(user_key, response_text)
     return REVIEW_TIME_QUESTION
+
+
+WEEKLY_REVIEW_OFFER = (
+    "want a sunday one too? a short read on how the whole week went. "
+    "easy to skip if daily is enough."
+)
+
+
+def _weekly_review_offer(user_key: str, response_text: str) -> str | None:
+    """Offer the weekly recap once, riding along with the sign-off.
+
+    Deliberately not a gate of its own. The daily review is load-bearing and
+    blocks onboarding from closing without it. The weekly one is a
+    nice-to-have, and turning it into a second blocking question would buy a
+    small feature at the cost of the thing SCOPING.md §4 parks by name: "a long
+    setup questionnaire before the user receives coaching".
+
+    So it is appended to whatever Ted was already saying, which keeps the sign
+    off in Ted's own words rather than replacing it with a fixed line.
+
+    Asked once, ever. `weekly_offered` records that the question went out, so a
+    user who said no is not asked again the next time Ted signs off. The answer
+    itself is stored by ted_set_reminder as weeklyReviewEnabled, and cleared
+    with everything else by _forget_user.
+    """
+    record = _onboarding(user_key)
+    if "weeklyReview" in set(record.get("done") or ()) or record.get("weekly_offered"):
+        return None
+    _update_onboarding(user_key, weekly_offered=True)
+    LOGGER.info("ted_weekly_review_offered user_key=%s", user_key)
+    closing = (response_text or "").strip()
+    return f"{closing}\n\n{WEEKLY_REVIEW_OFFER}" if closing else WEEKLY_REVIEW_OFFER
+
+
+def _note_user_replied(user_key: str, memory: dict[str, Any]) -> None:
+    """They spoke, so they are not gone: clear the unanswered-nudge count.
+
+    Guarded by the counts that came back with the memory read this turn already
+    made, so the write happens only when there is something to clear. That is
+    close to never: an engaged user sits at zero, and this costs them nothing.
+    Doing it unconditionally would put a Convex round trip in front of every
+    single reply, on the pre-LLM path, to change nothing.
+
+    Any message counts. Someone who ignores "want a break?" and sends a photo
+    of their lunch has answered it more clearly than "no" would have.
+
+    Failure is silent on purpose. The worst case is that the count is cleared
+    on the next message instead of this one, which is not worth telling a user
+    about, and certainly not worth failing their turn over.
+    """
+    if not user_key:
+        return
+    if not (memory.get("unansweredNudges") or memory.get("awaitingBreakReply")):
+        return
+    result = _convex_request("replied", user_key)
+    if result.get("success"):
+        _invalidate_user_memory(user_key)
+        LOGGER.info("ted_nudge_count_reset user_key=%s", user_key)
 
 
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
@@ -1607,6 +1718,7 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
             ),
         }
     result = _cached_user_memory(user_key)
+    _note_user_replied(user_key, result)
     _remember_name_from_facts(user_key, result)
     _capture_name_answer(
         user_key, _strip_memory_context(str(kwargs.get("user_message") or ""))
@@ -1739,10 +1851,15 @@ _INPUT_SOURCES = ("text", "voice", "photo", "pdf", "system")
 _ONBOARDING_FIELDS = (
     "consent", "name", "age", "height", "weight", "timeZone", "goal",
     "nutrition", "steps", "water", "workouts", "customCommitments",
-    "reminders", "dailyReview", "quietHours", "morningCommitment",
+    "reminders", "dailyReview", "weeklyReview", "quietHours", "morningCommitment",
     "confirmation", "complete",
 )
 _GOALS = ("maintainWeight", "loseWeight", "gainWeight", "improveConsistency")
+# Monday first, because the week does. Mirrors `weekdays` in convex/model.ts.
+_WEEKDAYS = (
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+)
 
 
 def _first_present(source: dict[str, Any], keys: tuple[str, ...]) -> str:
@@ -1765,8 +1882,80 @@ def _active_user_key(session_id: str, task_id: str) -> str:
     return str(context.get("user_key") or "")
 
 
-def _today() -> str:
-    return time.strftime("%Y-%m-%d")
+# Where a user is, when nobody has said.
+#
+# Everything Ted stores is dated in the user's own local calendar: which day a
+# meal belongs to, when quiet hours start, when the day rolls over. Until now
+# all of it came from `time.strftime` on the machine running the gateway, so
+# `users.timeZone` was collected at onboarding, written to Convex, and then
+# read by nothing at all. For a Bangalore beta that was invisible. For anyone
+# else a late dinner filed to the wrong day and quiet hours were wrong by their
+# whole offset, which is the exact failure PRODUCT_BUILD_GUARDRAILS §4 names:
+# "scheduled jobs must compute the correct local time from each user's stored
+# timezone".
+#
+# The fallback is the beta's home rather than the host clock, so it is a stated
+# assumption instead of an accident of which laptop is running. It is logged
+# every time it is used.
+DEFAULT_TIME_ZONE = "Asia/Kolkata"
+
+_TZ_CACHE: dict[str, ZoneInfo] = {}
+
+
+def _zone(name: str) -> ZoneInfo | None:
+    """A validated ZoneInfo, or None. Cached: the lookup touches the disk."""
+    if not name:
+        return None
+    cached = _TZ_CACHE.get(name)
+    if cached is not None:
+        return cached
+    try:
+        zone = ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+    _TZ_CACHE[name] = zone
+    return zone
+
+
+def _user_time_zone(user_key: str) -> ZoneInfo:
+    """This user's timezone, from the memory read every turn already makes.
+
+    A name the model invented ("IST", "Bangalore") fails validation and falls
+    back rather than raising: a meal filed to a defensible day beats a turn
+    that dies on a malformed profile field.
+    """
+    name = ""
+    if user_key:
+        name = str(_cached_user_memory(user_key).get("timeZone") or "")
+    zone = _zone(name)
+    if zone is not None:
+        return zone
+    LOGGER.info(
+        "ted_time_zone_fallback user_key=%s stored=%r using=%s",
+        user_key,
+        name,
+        DEFAULT_TIME_ZONE,
+    )
+    return _zone(DEFAULT_TIME_ZONE) or ZoneInfo("UTC")
+
+
+def _local_now(user_key: str = "") -> datetime:
+    return datetime.now(_user_time_zone(user_key))
+
+
+def _today(user_key: str = "") -> str:
+    """The user's today, not the machine's."""
+    return _local_now(user_key).strftime("%Y-%m-%d")
+
+
+def _now_local_time(user_key: str = "") -> str:
+    """The user's wall clock as HH:MM."""
+    return _local_now(user_key).strftime("%H:%M")
+
+
+def _local_moment(user_key: str, epoch_ms: float) -> datetime:
+    """An instant rendered in the user's own timezone."""
+    return datetime.fromtimestamp(epoch_ms / 1000, _user_time_zone(user_key))
 
 
 def _refused(message: str) -> str:
@@ -1942,6 +2131,20 @@ TED_SET_REMINDER_SCHEMA = {
             "max_per_day": {"type": "number"},
             "morning_commitment_id": {"type": "string"},
             "daily_review_time": {"type": "string", "description": "24-hour HH:MM"},
+            "weekly_review_enabled": {
+                "type": "boolean",
+                "description": (
+                    "True if they said yes to a weekly recap, False if they "
+                    "said no. Send False rather than omitting it: a recorded "
+                    "no is what stops the offer being repeated."
+                ),
+            },
+            "weekly_review_day": {
+                "type": "string",
+                "enum": list(_WEEKDAYS),
+                "description": "Which day the weekly recap goes out. Default sunday.",
+            },
+            "weekly_review_time": {"type": "string", "description": "24-hour HH:MM"},
             "quiet_hours_start": {"type": "string", "description": "24-hour HH:MM"},
             "quiet_hours_end": {"type": "string", "description": "24-hour HH:MM"},
             "paused_until": {
@@ -1987,7 +2190,17 @@ TED_SAVE_ONBOARDING_SCHEMA = {
                     "age": {"type": "number"},
                     "height_cm": {"type": "number"},
                     "weight_kg": {"type": "number"},
-                    "time_zone": {"type": "string"},
+                    "time_zone": {
+                        "type": "string",
+                        "description": (
+                            "An IANA timezone name such as Asia/Kolkata or "
+                            "Europe/London, worked out from the city they "
+                            "gave. Never an abbreviation like IST and never a "
+                            "city name on its own: those do not resolve, and "
+                            "the fallback that catches them will date their "
+                            "meals in the wrong place."
+                        ),
+                    },
                     "goal": {"type": "string", "enum": list(_GOALS)},
                 },
                 "additionalProperties": False,
@@ -2012,6 +2225,33 @@ TED_SAVE_ONBOARDING_SCHEMA = {
 # job's own record names where it delivers. That is enough to recover the real
 # WhatsApp recipient and put the message back under the same rules as anything
 # else Ted says.
+TED_WEEK_SUMMARY_SCHEMA = {
+    "name": "ted_week_summary",
+    "description": (
+        "Read back the current WhatsApp user's week, Monday to Sunday, from "
+        "what they actually logged. Call this before writing the weekly "
+        "review or answering \"how was my week?\" and never answer either "
+        "from memory of the conversation. Every average comes back with the "
+        "number of days it was computed from, and is null when there is "
+        "nothing to average: report that as no data, never as zero."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "local_date": {
+                "type": "string",
+                "description": (
+                    "Any YYYY-MM-DD inside the week, in the user's own "
+                    "timezone. Omit for the week containing today."
+                ),
+            }
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+
 _CRON_JOBS_PATH = Path.home() / ".hermes" / "cron" / "jobs.json"
 _CRON_SESSION = re.compile(r"^cron_([0-9a-zA-Z]+)_\d{8}_\d{6}$")
 
@@ -2084,12 +2324,15 @@ def _cron_whatsapp_recipient(session_id: str) -> str | None:
     return None
 
 
-def _reminder_allowed(user_key: str) -> tuple[bool, str]:
-    """Ask the stored policy whether a reminder may go out right now."""
+def _reminder_allowed(user_key: str) -> tuple[bool, str, bool]:
+    """May a reminder go out right now, and should it be the break offer?"""
     result = _convex_request(
         "reminderGate",
         user_key,
-        body={"nowLocalTime": time.strftime("%H:%M"), "today": _today()},
+        body={
+            "nowLocalTime": _now_local_time(user_key),
+            "today": _today(user_key),
+        },
     )
     if not result.get("success"):
         # The stored policy is unreadable. Blanket suppression here would mean
@@ -2103,11 +2346,17 @@ def _reminder_allowed(user_key: str) -> tuple[bool, str]:
             user_key,
             result.get("error"),
         )
-        now = time.strftime("%H:%M")
+        now = _now_local_time(user_key)
         quiet = now >= DEFAULT_QUIET_HOURS_START or now < DEFAULT_QUIET_HOURS_END
-        return (not quiet), ("quietHours" if quiet else "defaultsOnly")
+        # No break offer on this path: the count lives in the row we could not
+        # read, and guessing at someone's engagement is worse than nudging.
+        return (not quiet), ("quietHours" if quiet else "defaultsOnly"), False
     reason = str(result.get("reason") or "unknown")
-    return bool(result.get("allowed")), reason
+    return (
+        bool(result.get("allowed")),
+        reason,
+        result.get("offerBreak") is True,
+    )
 
 
 def _cron_reminder_gate(**kwargs: Any) -> str | None:
@@ -2118,7 +2367,7 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
         return None
     user_key = _user_state_key("whatsapp", recipient, session_id)
 
-    allowed, reason = _reminder_allowed(user_key)
+    allowed, reason, offer_break = _reminder_allowed(user_key)
     if not allowed:
         LOGGER.info(
             "ted_reminder_suppressed user_key=%s reason=%s session=%s",
@@ -2127,6 +2376,18 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             session_id,
         )
         return CRON_SILENT
+
+    # A reminder is about to go out, so the cached engagement count is now one
+    # behind. Dropped here rather than on a timer because the chat path reads
+    # it to decide whether a reply owes a reset, and a stale zero there would
+    # march a user who is present towards a break offer they never earned.
+    _invalidate_user_memory(user_key)
+
+    # Four nudges, nothing back. Asking costs one message; continuing to nudge
+    # costs the user, and a muted thread is not something Ted can see or undo.
+    if offer_break:
+        LOGGER.info("ted_break_offered user_key=%s session=%s", user_key, session_id)
+        return BREAK_OFFER
 
     # Cleared to send — but a cron reminder is still Ted talking to a real
     # person, so it goes through the same output gates as a reply. History is
@@ -2161,6 +2422,17 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
 # Scoped by the WhatsApp chat a job was created from, because that is the only
 # identity Hermes records on a job. A session with no WhatsApp turn context is
 # the builder at a terminal — it is deliberately left alone.
+# What Ted says instead of a fifth unanswered nudge.
+#
+# Deliberately not a reminder. It names the silence, offers the exit, and asks
+# one question. SOUL.md's rule that a nudge is one line and nothing after it
+# does not apply, because this is the opposite of a nudge: it is Ted noticing
+# that nudging has stopped working and saying so.
+BREAK_OFFER = (
+    "you’ve gone quiet on me, and i’d rather ask than keep pinging. "
+    "want me to pause the nudges for a few days? say pause and i’ll stop."
+)
+
 CRON_NOT_YOURS = "that reminder isn't one of yours, so i can't touch it."
 CRON_DELIVER_ELSEWHERE = "i can only set reminders that come back to this chat."
 
@@ -2294,7 +2566,7 @@ _REPORT_REQUEST = re.compile(
 )
 
 REPORT_CONFIRMATION = (
-    "logged that as a bad reply — the exact message is saved for review. "
+    "logged that as a bad reply. the exact message is saved for review. "
     "thanks for flagging it. what did you expect instead?"
 )
 
@@ -2337,7 +2609,7 @@ def _record_bad_reply(user_key: str, history: Iterable[dict[str, Any]], user_mes
         "report",
         user_key,
         body={
-            "localDate": _today(),
+            "localDate": _today(user_key),
             "userMessage": _strip_memory_context(user_message)[:4000],
             "assistantMessage": reported[:4000],
         },
@@ -2401,7 +2673,9 @@ def _meal_slot(hour: int) -> str:
     return "a meal"
 
 
-def _confirmation_needed(kind: str, result: dict[str, Any]) -> dict[str, Any]:
+def _confirmation_needed(
+    kind: str, result: dict[str, Any], user_key: str = ""
+) -> dict[str, Any]:
     """Turn a refused write into a question Ted can ask, with the facts in it.
 
     Returned with success false on purpose. The claim gate keys off that, so a
@@ -2427,9 +2701,9 @@ def _confirmation_needed(kind: str, result: dict[str, Any]) -> dict[str, Any]:
     when = ""
     slot = "one"
     if isinstance(occurred_at, (int, float)):
-        stamp = time.localtime(occurred_at / 1000)
-        when = time.strftime("%-I:%M %p", stamp).lower()
-        slot = _meal_slot(stamp.tm_hour)
+        stamp = _local_moment(user_key, occurred_at)
+        when = stamp.strftime("%-I:%M %p").lower()
+        slot = _meal_slot(stamp.hour)
     entry_type = str(clash.get("entryType") or "entry")
     described = slot if entry_type == "meal" else entry_type
     return {
@@ -2475,7 +2749,6 @@ def _log_daily_entry(
         return _refused(wrong_attachment)
 
     body: dict[str, Any] = {
-        "localDate": str(args.get("local_date") or _today()),
         "entryType": entry_type,
         "source": source,
         "occurredAt": int(time.time() * 1000),
@@ -2507,7 +2780,13 @@ def _log_daily_entry(
     # two flags are how the model says the question has been asked and
     # answered. Both are read strictly — anything other than a real True is a
     # no, so a hallucinated flag cannot wave a write through.
-    body["today"] = _today()
+    # Resolved here rather than with the rest of the body, and deliberately so:
+    # reading the user's timezone costs a Convex round trip, and every refusal
+    # above this line must still cost nothing. A malformed meal is rejected
+    # without touching the network at all.
+    today = _today(user_key)
+    body["localDate"] = str(args.get("local_date") or today)
+    body["today"] = today
     body["dateConfirmed"] = args.get("date_confirmed") is True
     body["secondOneConfirmed"] = args.get("second_one_confirmed") is True
 
@@ -2520,7 +2799,9 @@ def _log_daily_entry(
     )
     pending = result.get("needsConfirmation")
     if pending:
-        return json.dumps(_confirmation_needed(pending, result), ensure_ascii=False)
+        return json.dumps(
+            _confirmation_needed(pending, result, user_key), ensure_ascii=False
+        )
     if result.get("success"):
         LOGGER.info(
             "ted_entry_logged user_key=%s type=%s duplicate=%s",
@@ -2540,8 +2821,24 @@ def _day_summary(
     local_date = ""
     if isinstance(args, dict):
         local_date = str(args.get("local_date") or "")
-    body = {"localDate": local_date or _today()}
+    body = {"localDate": local_date or _today(user_key)}
     result = _convex_request("day", user_key, body=body)
+    if result.get("storage_error"):
+        _note_storage_failure(session_id or task_id)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _week_summary(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    user_key = _active_user_key(session_id, task_id)
+    if not user_key:
+        return _refused("No WhatsApp user is active")
+    local_date = ""
+    if isinstance(args, dict):
+        local_date = str(args.get("local_date") or "")
+    body = {"localDate": local_date or _today(user_key)}
+    result = _convex_request("week", user_key, body=body)
     if result.get("storage_error"):
         _note_storage_failure(session_id or task_id)
     return json.dumps(result, ensure_ascii=False)
@@ -2630,6 +2927,7 @@ def register(ctx: Any) -> None:
     for name, schema, handler in (
         ("ted_log_entry", TED_LOG_ENTRY_SCHEMA, _log_daily_entry),
         ("ted_day_summary", TED_DAY_SUMMARY_SCHEMA, _day_summary),
+        ("ted_week_summary", TED_WEEK_SUMMARY_SCHEMA, _week_summary),
         ("ted_set_target", TED_SET_TARGET_SCHEMA, _set_target),
         ("ted_set_reminder", TED_SET_REMINDER_SCHEMA, _set_reminder),
         ("ted_save_onboarding", TED_SAVE_ONBOARDING_SCHEMA, _save_onboarding),

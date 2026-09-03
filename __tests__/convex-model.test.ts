@@ -16,6 +16,11 @@ import {
   normaliseMealItems,
   onboardingFields,
   summariseDay,
+  summariseWeek,
+  weekStartFor,
+  weekDates,
+  addLocalDays,
+  NUDGES_BEFORE_BREAK_OFFER,
   SAME_MEAL_WINDOW_MINUTES,
 } from "../convex/model";
 
@@ -36,6 +41,7 @@ describe("Convex data model", () => {
       "customCommitments",
       "reminders",
       "dailyReview",
+      "weeklyReview",
       "quietHours",
       "morningCommitment",
       "confirmation",
@@ -460,5 +466,252 @@ describe("Reminder delivery decision (milestone 12)", () => {
     expect(isPaused(now, now + 1)).toBe(true);
     expect(isPaused(now, now)).toBe(false);
     expect(isPaused(now, undefined)).toBe(false);
+  });
+});
+
+
+describe("Week boundaries", () => {
+  it("resolves any day of the week to that week's Monday", () => {
+    // Mon 31 Aug 2026 → Sun 6 Sep 2026.
+    for (const date of [
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-03",
+      "2026-09-06",
+    ]) {
+      expect(weekStartFor(date)).toBe("2026-08-31");
+    }
+    // Monday the 7th starts the next week, not the same one.
+    expect(weekStartFor("2026-09-07")).toBe("2026-09-07");
+  });
+
+  it("returns seven consecutive dates, Monday first", () => {
+    expect(weekDates("2026-08-31")).toEqual([
+      "2026-08-31",
+      "2026-09-01",
+      "2026-09-02",
+      "2026-09-03",
+      "2026-09-04",
+      "2026-09-05",
+      "2026-09-06",
+    ]);
+  });
+
+  it("crosses month and year ends without drifting", () => {
+    expect(addLocalDays("2026-08-31", 1)).toBe("2026-09-01");
+    expect(addLocalDays("2026-01-01", -1)).toBe("2025-12-31");
+    expect(addLocalDays("2028-02-28", 1)).toBe("2028-02-29");
+  });
+
+  it("leaves a malformed date alone rather than inventing one", () => {
+    expect(weekStartFor("not-a-date")).toBe("not-a-date");
+    expect(addLocalDays("2026-13-01", 1)).toBe("2026-13-01");
+  });
+});
+
+describe("Week summary", () => {
+  const meal = (calories: number, proteinGrams: number) => ({
+    items: ["something"],
+    calories,
+    proteinGrams,
+    carbohydrateGrams: 0,
+    fatGrams: 0,
+    fiberGrams: 0,
+  });
+
+  const mealOn = (localDate: string, calories: number, proteinGrams: number) => ({
+    localDate,
+    entryType: "meal" as const,
+    state: "confirmed" as const,
+    meal: meal(calories, proteinGrams),
+  });
+
+  const stepsOn = (localDate: string, steps: number) => ({
+    localDate,
+    entryType: "steps" as const,
+    state: "confirmed" as const,
+    steps,
+  });
+
+  it("reads the week back Monday to Sunday", () => {
+    const summary = summariseWeek("2026-08-31", [mealOn("2026-09-02", 600, 40)]);
+    expect(summary.weekStart).toBe("2026-08-31");
+    expect(summary.weekEnd).toBe("2026-09-06");
+    expect(summary.days).toHaveLength(7);
+  });
+
+  it("averages calories over the days with meals, not over seven", () => {
+    // Three days of meals. Dividing by seven would report 600 kcal/day for
+    // someone eating 1,400 — arithmetically right, factually a lie.
+    const summary = summariseWeek("2026-08-31", [
+      mealOn("2026-08-31", 700, 40),
+      mealOn("2026-08-31", 700, 40),
+      mealOn("2026-09-01", 1400, 90),
+      mealOn("2026-09-02", 1400, 80),
+    ]);
+    expect(summary.averageCalories).toEqual({ value: 1400, days: 3 });
+    expect(summary.averageProteinGrams).toEqual({ value: 83, days: 3 });
+    expect(summary.meals).toBe(4);
+  });
+
+  it("does not let a water-only day drag the calorie average down", () => {
+    const summary = summariseWeek("2026-08-31", [
+      mealOn("2026-08-31", 2000, 100),
+      {
+        localDate: "2026-09-01",
+        entryType: "water" as const,
+        state: "confirmed" as const,
+        waterMl: 500,
+      },
+    ]);
+    expect(summary.averageCalories).toEqual({ value: 2000, days: 1 });
+    expect(summary.daysLogged).toBe(2);
+  });
+
+  it("reports nothing logged as null, never as zero", () => {
+    const summary = summariseWeek("2026-08-31", []);
+    expect(summary.averageCalories).toBeNull();
+    expect(summary.averageProteinGrams).toBeNull();
+    expect(summary.averageSteps).toBeNull();
+    expect(summary.averageWaterMl).toBeNull();
+    expect(summary.daysLogged).toBe(0);
+    expect(summary.meals).toBe(0);
+  });
+
+  it("treats steps as a daily total, then averages those", () => {
+    const summary = summariseWeek("2026-08-31", [
+      stepsOn("2026-08-31", 8000),
+      stepsOn("2026-08-31", 12000),
+      stepsOn("2026-09-01", 6000),
+    ]);
+    expect(summary.averageSteps).toEqual({ value: 9000, days: 2 });
+  });
+
+  it("counts a corrected meal once, exactly as the day does", () => {
+    const summary = summariseWeek("2026-08-31", [
+      { ...mealOn("2026-09-01", 700, 30), state: "corrected" as const },
+      mealOn("2026-09-01", 800, 45),
+    ]);
+    expect(summary.averageCalories).toEqual({ value: 800, days: 1 });
+    expect(summary.meals).toBe(1);
+  });
+
+  it("leaves an unconfirmed guess out of the week", () => {
+    const summary = summariseWeek("2026-08-31", [
+      {
+        ...mealOn("2026-09-01", 900, 50),
+        state: "pendingClarification" as const,
+      },
+    ]);
+    expect(summary.averageCalories).toBeNull();
+    expect(summary.daysLogged).toBe(0);
+  });
+
+  it("ignores entries from a neighbouring week", () => {
+    const summary = summariseWeek("2026-08-31", [
+      mealOn("2026-08-30", 3000, 200),
+      mealOn("2026-09-07", 3000, 200),
+      mealOn("2026-09-02", 1000, 50),
+    ]);
+    expect(summary.averageCalories).toEqual({ value: 1000, days: 1 });
+  });
+
+  it("counts workouts as sessions and total minutes", () => {
+    const workout = (localDate: string, workoutMinutes: number) => ({
+      localDate,
+      entryType: "workout" as const,
+      state: "confirmed" as const,
+      workoutMinutes,
+    });
+    const summary = summariseWeek("2026-08-31", [
+      workout("2026-08-31", 45),
+      workout("2026-08-31", 20),
+      workout("2026-09-03", 60),
+    ]);
+    expect(summary.workouts).toBe(2);
+    expect(summary.workoutMinutes).toBe(125);
+  });
+});
+
+
+describe("Backing off when someone goes quiet", () => {
+  const now = Date.UTC(2026, 8, 2, 9, 0);
+  const base = {
+    quietHoursStart: "22:00",
+    quietHoursEnd: "07:00",
+    maxPerDay: 3,
+    pausedUntil: undefined,
+    sentLocalDate: "2026-09-02",
+    sentCount: 0,
+  };
+  const decide = (policy: Record<string, unknown>) =>
+    decideReminderDelivery(
+      { ...base, ...policy } as never,
+      "09:00",
+      "2026-09-02",
+      now,
+    );
+
+  it("keeps nudging while the count is below the threshold", () => {
+    for (let sent = 0; sent < NUDGES_BEFORE_BREAK_OFFER; sent += 1) {
+      const decision = decide({ unansweredNudges: sent });
+      expect(decision.allowed).toBe(true);
+      expect(decision.offerBreak).toBeUndefined();
+    }
+  });
+
+  it("offers the break instead of the nudge once they have all gone unanswered", () => {
+    const decision = decide({ unansweredNudges: NUDGES_BEFORE_BREAK_OFFER });
+    expect(decision).toEqual({ allowed: true, reason: "ok", offerBreak: true });
+  });
+
+  it("goes silent once the break has been offered and not answered", () => {
+    const decision = decide({
+      unansweredNudges: NUDGES_BEFORE_BREAK_OFFER,
+      awaitingBreakReply: true,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("awaitingReply");
+  });
+
+  it("never lets the break offer itself break quiet hours", () => {
+    const decision = decideReminderDelivery(
+      { ...base, unansweredNudges: 9 } as never,
+      "03:00",
+      "2026-09-02",
+      now,
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("quietHours");
+  });
+
+  it("never lets the break offer past the daily cap", () => {
+    const decision = decide({ unansweredNudges: 9, sentCount: 3 });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("dailyCap");
+  });
+
+  it("reports an explicit pause as paused, not as awaiting a reply", () => {
+    const decision = decide({
+      unansweredNudges: 9,
+      awaitingBreakReply: true,
+      pausedUntil: now + 60_000,
+    });
+    expect(decision.reason).toBe("paused");
+  });
+
+  it("treats a row with no counters as an engaged user", () => {
+    expect(decide({}).offerBreak).toBeUndefined();
+    expect(decide({ unansweredNudges: null, awaitingBreakReply: null })).toEqual({
+      allowed: true,
+      reason: "ok",
+    });
+  });
+
+  it("still sends to a user who has no stored settings at all", () => {
+    expect(decideReminderDelivery(null, "09:00", "2026-09-02", now)).toEqual({
+      allowed: true,
+      reason: "ok",
+    });
   });
 });

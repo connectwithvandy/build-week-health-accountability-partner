@@ -79,12 +79,6 @@ went cool rather than warm and stays a shade off white, because pure white
 wallpaper would swallow the incoming white bubbles. The privacy note moved onto
 a soft band for the same reason: a white bubble needs wallpaper behind it.
 
-## The age limit is stated, not tucked away
-
-18+ was only in the fine print under the buttons and one footer link. The block
-actually titled "Before you start" now leads with an orange 18+ pill and says
-the requirement in a sentence.
-
 ## Copy rules applied
 
 - **No dashes joining sentences** anywhere a visitor can read, including inside

@@ -7,6 +7,7 @@ import {
   goalValidator,
   inputSourceValidator,
   onboardingFieldValidator,
+  weekdayValidator,
 } from "./model";
 
 const timestamp = v.number();
@@ -88,6 +89,19 @@ export default defineSchema({
     // pair reads as "nothing sent yet today".
     sentLocalDate: v.optional(v.string()),
     sentCount: v.optional(v.number()),
+    // The weekly review. Optional throughout: a row written before this
+    // existed still validates, and an absent flag reads as "never offered",
+    // which is not the same as "declined" — the difference is what stops Ted
+    // asking a user who already said no.
+    // Nudges sent since the user last said anything, and whether the "want a
+    // break?" question is still outstanding. Optional so existing rows still
+    // validate; both absent reads as "they are engaged", which is the right
+    // default for every user who predates this.
+    unansweredNudges: v.optional(v.number()),
+    awaitingBreakReply: v.optional(v.boolean()),
+    weeklyReviewEnabled: v.optional(v.boolean()),
+    weeklyReviewDay: v.optional(weekdayValidator),
+    weeklyReviewTime: v.optional(v.string()),
     items: v.array(
       v.object({
         reminderId: v.string(),

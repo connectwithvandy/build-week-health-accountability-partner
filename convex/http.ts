@@ -106,6 +106,16 @@ http.route({
         return json({ success: true, ...result });
       }
 
+      // Any date inside the week; getWeekSummary resolves it to that week's
+      // Monday itself, so a caller a day out still gets the right seven days.
+      if (input.action === "week") {
+        const result = await ctx.runQuery(internal.ted.getWeekSummary, {
+          whatsappUserId: input.whatsappUserId,
+          localDate: String(payload.localDate ?? ""),
+        });
+        return json({ success: true, ...result });
+      }
+
       if (input.action === "target") {
         const result = await ctx.runMutation(internal.ted.setTarget, {
           whatsappUserId: input.whatsappUserId,
@@ -133,6 +143,15 @@ http.route({
           whatsappUserId: input.whatsappUserId,
           nowLocalTime: String(payload.nowLocalTime ?? ""),
           today: String(payload.today ?? ""),
+        });
+        return json(result);
+      }
+
+      // Any inbound message clears the unanswered-nudge count. Sent only when
+      // there is something to clear, so this is a rare call, not a per-turn one.
+      if (input.action === "replied") {
+        const result = await ctx.runMutation(internal.ted.noteUserReplied, {
+          whatsappUserId: input.whatsappUserId,
         });
         return json(result);
       }

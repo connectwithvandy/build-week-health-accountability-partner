@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone as dt_timezone
 import time
 import unittest
 from pathlib import Path
@@ -110,7 +111,7 @@ class TedSafetyGatesTest(unittest.TestCase):
             user_message="33",
             response_text="got it — what's your daily step target?",
         )
-        self.assertEqual(after_age, "before i can do that maths — how tall are you?")
+        self.assertEqual(after_age, "before i can do that maths, how tall are you?")
 
     def test_blocks_under_18(self) -> None:
         history = [message("user", "I am 17 and want to track calories")]
@@ -123,7 +124,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         history = [message("user", "I am 33, 5 ft, 58 kg and female")]
         self.assertEqual(
             calorie_gate(history, "Estimate maintenance calories", "2,300 calories"),
-            "last one — how active is a normal day? desk most of it, on your feet, "
+            "last one. how active is a normal day? desk most of it, on your feet, "
             "or training regularly?",
         )
 
@@ -138,7 +139,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         )
         self.assertEqual(
             reply,
-            "rough maintenance is about 2,080 calories a day — "
+            "rough maintenance is about 2,080 calories a day, "
             "worked out only from the numbers you gave me.",
         )
         self.assertNotIn("deficit", reply or "")
@@ -870,7 +871,27 @@ class OnboardingCloseTest(unittest.TestCase):
                 )
 
     def test_it_closes_once_the_time_is_actually_recorded(self) -> None:
+        """The blocking question is gone. The weekly offer rides along once."""
         gates._update_onboarding("u", done=["name", "goal", "dailyReview"])
+        closing = gates.onboarding_close_gate("all set!", "u")
+        self.assertIsNotNone(closing)
+        self.assertNotEqual(closing, gates.REVIEW_TIME_QUESTION)
+        self.assertTrue(closing.startswith("all set!"))
+        self.assertIn(gates.WEEKLY_REVIEW_OFFER, closing)
+
+    def test_the_weekly_offer_is_made_exactly_once(self) -> None:
+        gates._update_onboarding("u", done=["name", "goal", "dailyReview"])
+        self.assertIn(
+            gates.WEEKLY_REVIEW_OFFER, gates.onboarding_close_gate("all set!", "u")
+        )
+        # Second sign-off: they have already been asked, so it truly closes.
+        self.assertIsNone(gates.onboarding_close_gate("you're all set", "u"))
+
+    def test_a_recorded_weekly_answer_suppresses_the_offer(self) -> None:
+        """Said yes or said no, either way the question is spent."""
+        gates._update_onboarding(
+            "u", done=["name", "goal", "dailyReview", "weeklyReview"]
+        )
         self.assertIsNone(gates.onboarding_close_gate("all set!", "u"))
 
     def test_ordinary_replies_are_never_touched(self) -> None:
@@ -2917,3 +2938,307 @@ class MinorFlagDurabilityTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnreadableDocumentTest(unittest.TestCase):
+    """A PDF Ted cannot read must be said out loud, not guessed at.
+
+    Hermes inlines a text document's content into the user turn. A binary one
+    it cannot inline, so it prepends a note telling the agent to "extract the
+    document's text yourself — for example with the terminal tool or the
+    ocr-and-documents skill". Ted's WhatsApp toolset is cronjob / file / ted /
+    vision: it has neither. The one tool it does have, `file`, will happily
+    return a PDF's raw stream decoded as text, because `.pdf` is deliberately
+    absent from Hermes' BINARY_EXTENSIONS. A health plan that reads as rubbish
+    but not obviously so is exactly how invented calorie targets get born.
+    """
+
+    KEY = "whatsapp:sha256:pdf-test"
+
+    # Verbatim from gateway/run.py `_build_document_context_note`.
+    PDF_NOTE = (
+        "[The user sent a document: 'diet-plan.pdf'. It is saved at: "
+        "/Users/x/.hermes/document_cache/doc_ab12_diet-plan.pdf. Its text is "
+        "not inlined here (it's a binary format such as PDF or DOCX). To read "
+        "it, extract the document's text yourself — for example with the "
+        "terminal tool or the ocr-and-documents skill — before answering, "
+        "instead of asking the user to paste the contents.]"
+    )
+    TEXT_NOTE = (
+        "[The user sent a text document: 'notes.md'. Its content has been "
+        "included below. The file is also saved at: /tmp/doc_cd34_notes.md]"
+    )
+
+    def setUp(self) -> None:
+        self.addCleanup(gates._forget_user, self.KEY)
+        self.history = [message("assistant", DISCLOSURE_MESSAGE)]
+
+    def transform(self, user_message: str, reply: str) -> object:
+        return gates.transform_response(
+            history=self.history,
+            user_message=user_message,
+            response_text=reply,
+            user_key=self.KEY,
+        )
+
+    def test_a_pdf_gets_the_honest_answer(self) -> None:
+        self.assertEqual(
+            self.transform(self.PDF_NOTE, "Great plan! I've set your targets."),
+            gates.UNREADABLE_DOCUMENT_REPLY,
+        )
+
+    def test_it_beats_the_calorie_gate_to_the_reply(self) -> None:
+        """An unread plan must never reach the maintenance calculation."""
+        reply = "your plan says 1,800 calories a day, so that's your target now."
+        self.assertEqual(
+            self.transform(f"{self.PDF_NOTE}\n\nhere's my plan", reply),
+            gates.UNREADABLE_DOCUMENT_REPLY,
+        )
+
+    def test_a_docx_is_the_same_note_and_the_same_answer(self) -> None:
+        note = self.PDF_NOTE.replace("diet-plan.pdf", "plan.docx")
+        self.assertEqual(
+            self.transform(note, "Loaded it."), gates.UNREADABLE_DOCUMENT_REPLY
+        )
+
+    def test_a_text_document_is_left_alone(self) -> None:
+        """Hermes inlines these, so Ted really can read them."""
+        self.assertIsNone(gates.unreadable_document_gate(self.TEXT_NOTE))
+
+    def test_an_ordinary_message_is_left_alone(self) -> None:
+        for text in (
+            "had 2 rotis and dahi",
+            "can you read a pdf?",
+            "i'll send my plan as a document later",
+            "",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(gates.unreadable_document_gate(text))
+
+    def test_the_reply_names_what_to_do_instead(self) -> None:
+        reply = gates.UNREADABLE_DOCUMENT_REPLY.lower()
+        self.assertIn("screenshot", reply)
+        self.assertIn("type", reply)
+        # It must not claim to have read anything.
+        for verb in ("saved", "logged", "set your", "i've read"):
+            self.assertNotIn(verb, reply)
+
+
+class BreakOfferTest(unittest.TestCase):
+    """Four nudges into silence, Ted asks instead of sending a fifth.
+
+    The failure this exists to prevent is the one that quietly kills these
+    products. A user drifts off, the reminders keep arriving exactly on
+    schedule, and the thread becomes something to mute. Muting is invisible to
+    Ted and it is not reversible, so the only chance to keep the relationship
+    is before it happens.
+    """
+
+    SESSION = "cron_000000000000_20260903_084500"
+    CHAT = "000000000000000@lid"
+    SENDER = "919999999999@s.whatsapp.net"
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+
+    def jobs_file(self) -> object:
+        path = Path(self.tmp) / "jobs.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "000000000000",
+                        "name": "protein reminder",
+                        "origin": {"platform": "whatsapp", "chat_id": self.CHAT},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return patch.object(gates, "_CRON_JOBS_PATH", path)
+
+    def gate(self, gate_reply: dict, response_text: str = "protein shake time"):
+        def responder(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return gate_reply
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=responder
+        ):
+            return gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text=response_text
+            )
+
+    def test_an_ordinary_nudge_is_left_alone(self) -> None:
+        self.assertIsNone(self.gate({"success": True, "allowed": True, "reason": "ok"}))
+
+    def test_the_fifth_nudge_becomes_the_question(self) -> None:
+        reply = self.gate(
+            {"success": True, "allowed": True, "reason": "ok", "offerBreak": True}
+        )
+        self.assertEqual(reply, gates.BREAK_OFFER)
+
+    def test_the_offer_replaces_the_nudge_rather_than_joining_it(self) -> None:
+        """A nudge plus a question is two messages. It has to be one."""
+        reply = self.gate(
+            {"success": True, "allowed": True, "reason": "ok", "offerBreak": True},
+            response_text="time for your protein shake",
+        )
+        self.assertNotIn("protein shake", reply)
+
+    def test_silence_after_the_offer_stays_silent(self) -> None:
+        reply = self.gate(
+            {"success": True, "allowed": False, "reason": "awaitingReply"}
+        )
+        self.assertEqual(reply, gates.CRON_SILENT)
+
+    def test_the_offer_names_the_way_out(self) -> None:
+        offer = gates.BREAK_OFFER.lower()
+        self.assertIn("pause", offer)
+        self.assertIn("?", offer)
+        # It is a question, not a nudge, and not a guilt trip.
+        for word in ("should", "need to", "failing", "disappointed"):
+            self.assertNotIn(word, offer)
+
+    def test_a_storage_outage_does_not_invent_a_break_offer(self) -> None:
+        """The count lives in the row we could not read, so do not guess."""
+        with patch.object(gates.time, "strftime", return_value="09:00"):
+            allowed, reason, offer = gates._reminder_allowed("whatsapp:sha256:x")
+        self.assertFalse(offer)
+
+
+class NudgeCountResetTest(unittest.TestCase):
+    """Any message resets the count. Not a particular answer, any message."""
+
+    KEY = "whatsapp:sha256:reset-test"
+
+    def test_an_engaged_user_costs_no_write(self) -> None:
+        with patch.object(gates, "_convex_request") as req:
+            gates._note_user_replied(
+                self.KEY, {"unansweredNudges": 0, "awaitingBreakReply": False}
+            )
+        req.assert_not_called()
+
+    def test_a_missed_nudge_is_cleared(self) -> None:
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True, "changed": True}
+        ) as req:
+            gates._note_user_replied(self.KEY, {"unansweredNudges": 2})
+        self.assertEqual(req.call_args.args[0], "replied")
+
+    def test_an_unanswered_break_offer_is_cleared_by_anything_at_all(self) -> None:
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True}
+        ) as req:
+            gates._note_user_replied(self.KEY, {"awaitingBreakReply": True})
+        self.assertEqual(req.call_args.args[0], "replied")
+
+    def test_a_failed_reset_is_silent(self) -> None:
+        """Worst case the count clears on the next message. Never fail a turn."""
+        with patch.object(
+            gates, "_convex_request", return_value={"success": False, "error": "down"}
+        ):
+            gates._note_user_replied(self.KEY, {"unansweredNudges": 3})
+
+    def test_no_user_key_does_nothing(self) -> None:
+        with patch.object(gates, "_convex_request") as req:
+            gates._note_user_replied("", {"unansweredNudges": 3})
+        req.assert_not_called()
+
+
+class UserTimeZoneTest(unittest.TestCase):
+    """Every date Ted writes belongs to the user's calendar, not the laptop's.
+
+    `users.timeZone` was collected at onboarding, written to Convex, and read by
+    nothing: every date came from `time.strftime` on the machine running the
+    gateway. In a Bangalore-only beta that is invisible. For anyone else a late
+    meal files to the wrong day and quiet hours are wrong by their whole offset,
+    which is PRODUCT_BUILD_GUARDRAILS §4 word for word.
+    """
+
+    # 19:30 UTC. Already tomorrow in Kolkata, still lunchtime in Los Angeles.
+    FIXED = datetime(2026, 9, 3, 19, 30, tzinfo=dt_timezone.utc)
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            fixed = datetime(2026, 9, 3, 19, 30, tzinfo=dt_timezone.utc)
+            return fixed.astimezone(tz) if tz else fixed
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+
+    def zoned(self, name):
+        """Run with a user whose stored timezone is `name`."""
+        return patch.multiple(
+            gates,
+            datetime=self._Frozen,
+            _cached_user_memory=lambda _key: {"facts": [], "timeZone": name},
+        )
+
+    def test_the_same_instant_is_a_different_day_in_two_places(self) -> None:
+        with self.zoned("Asia/Kolkata"):
+            self.assertEqual(gates._today("u"), "2026-09-04")
+        with self.zoned("America/Los_Angeles"):
+            self.assertEqual(gates._today("u"), "2026-09-03")
+
+    def test_quiet_hours_are_asked_in_the_user_s_own_clock(self) -> None:
+        with self.zoned("Asia/Kolkata"):
+            self.assertEqual(gates._now_local_time("u"), "01:00")
+        with self.zoned("America/Los_Angeles"):
+            self.assertEqual(gates._now_local_time("u"), "12:30")
+
+    def test_a_missing_timezone_falls_back_to_the_beta_s_home(self) -> None:
+        for stored in (None, ""):
+            with self.subTest(stored=stored):
+                with self.zoned(stored):
+                    self.assertEqual(gates._today("u"), "2026-09-04")
+
+    def test_a_name_the_model_invented_falls_back_instead_of_raising(self) -> None:
+        """"IST" and "Bangalore" are not IANA names. Neither may kill a turn."""
+        for stored in ("IST", "Bangalore", "GMT+5:30", "../etc/passwd"):
+            with self.subTest(stored=stored):
+                with self.zoned(stored):
+                    self.assertEqual(gates._today("u"), "2026-09-04")
+
+    def test_two_users_in_two_places_do_not_share_an_answer(self) -> None:
+        """The multi-user rule: one user's clock is never another's."""
+        zones = {
+            "whatsapp:sha256:mumbai": "Asia/Kolkata",
+            "whatsapp:sha256:london": "Europe/London",
+        }
+        with patch.multiple(
+            gates,
+            datetime=self._Frozen,
+            _cached_user_memory=lambda key: {"facts": [], "timeZone": zones[key]},
+        ):
+            self.assertEqual(gates._today("whatsapp:sha256:mumbai"), "2026-09-04")
+            self.assertEqual(gates._today("whatsapp:sha256:london"), "2026-09-03")
+            self.assertEqual(
+                gates._now_local_time("whatsapp:sha256:london"), "20:30"
+            )
+
+    def test_no_user_key_never_reaches_for_storage(self) -> None:
+        with patch.object(gates, "_cached_user_memory") as memory:
+            gates._today("")
+        memory.assert_not_called()
+
+    def test_a_logged_moment_renders_in_the_user_s_timezone(self) -> None:
+        """The duplicate question says a time back. It must be their time."""
+        noon_utc = datetime(
+            2026, 9, 3, 12, 0, tzinfo=dt_timezone.utc
+        ).timestamp() * 1000
+        with self.zoned("Asia/Kolkata"):
+            self.assertEqual(
+                gates._local_moment("u", noon_utc).strftime("%H:%M"), "17:30"
+            )
+        with self.zoned("Europe/London"):
+            self.assertEqual(
+                gates._local_moment("u", noon_utc).strftime("%H:%M"), "13:00"
+            )

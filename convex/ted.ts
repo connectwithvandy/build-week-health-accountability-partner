@@ -5,6 +5,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import {
+  addLocalDays,
   buildDedupeKey,
   dailyEntryStateValidator,
   dailyEntryTypeValidator,
@@ -17,6 +18,10 @@ import {
   needsDateConfirmation,
   onboardingFieldValidator,
   summariseDay,
+  summariseWeek,
+  WEEK_LENGTH_DAYS,
+  weekdayValidator,
+  weekStartFor,
 } from "./model";
 
 const factValidator = v.object({
@@ -36,7 +41,12 @@ export const getUserMemory = internalQuery({
       .unique();
 
     if (!user) {
-      return { facts: [] };
+      return {
+        facts: [],
+        unansweredNudges: 0,
+        awaitingBreakReply: false,
+        timeZone: null,
+      };
     }
 
     const facts = await ctx.db
@@ -44,8 +54,22 @@ export const getUserMemory = internalQuery({
       .withIndex("by_user", (query) => query.eq("userId", user._id))
       .collect();
 
+    const policy = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
     return {
       facts: facts.map(({ key, value, updatedAt }) => ({ key, value, updatedAt })),
+      // Read on every turn anyway, so the gate can tell whether a reply reset
+      // is owed without paying for a second round trip on messages where it
+      // is not — which is almost all of them.
+      unansweredNudges: policy?.unansweredNudges ?? 0,
+      awaitingBreakReply: policy?.awaitingBreakReply === true,
+      // The gate does the conversion, in Python's zoneinfo. This is only the
+      // store. Every date and time Ted writes or reads depends on it, so it
+      // rides along on the read that every turn already makes.
+      timeZone: user.timeZone ?? null,
     };
   },
 });
@@ -135,7 +159,16 @@ export const deleteUserMemory = internalMutation({
     // never a partial promise — it is a broken one.
     const removed: Record<string, number> = {};
     const clear = async (
-      rows: { _id: Id<"userFacts" | "onboarding" | "targets" | "reminders" | "dailyEntries"> }[],
+      rows: {
+        _id: Id<
+          | "userFacts"
+          | "onboarding"
+          | "targets"
+          | "reminders"
+          | "dailyEntries"
+          | "reportedReplies"
+        >;
+      }[],
       table: string,
     ) => {
       for (const row of rows) {
@@ -178,6 +211,20 @@ export const deleteUserMemory = internalMutation({
         .withIndex("by_user_and_date", (query) => query.eq("userId", user._id))
         .collect(),
       "dailyEntries",
+    );
+
+    // A reported reply holds the user's own message, verbatim, and Ted's
+    // answer to it. It is the user's data by any reading, and /privacy says
+    // deletion removes everything Ted has stored about them. Leaving these
+    // behind also orphaned them to a user id that no longer resolves, so the
+    // builder read-back showed an empty sender for rows nobody could act on.
+    // The bug report is worth less than the promise.
+    await clear(
+      await ctx.db
+        .query("reportedReplies")
+        .withIndex("by_user", (query) => query.eq("userId", user._id))
+        .collect(),
+      "reportedReplies",
     );
 
     await ctx.db.delete(user._id);
@@ -429,6 +476,63 @@ export const getDaySummary = internalQuery({
   },
 });
 
+/**
+ * The user's week, Monday to Sunday, read from what they actually logged.
+ *
+ * Takes any date inside the week and resolves it to that week's Monday, so the
+ * caller cannot land on the wrong seven days by being a day out. Ted reads the
+ * review from this and never from the conversation — the same rule the daily
+ * review already follows, and the reason a weekly recap can be trusted at all.
+ */
+export const getWeekSummary = internalQuery({
+  args: { whatsappUserId: v.string(), localDate: v.string() },
+  handler: async (ctx, { whatsappUserId, localDate }) => {
+    if (!isLocalDateKey(localDate)) {
+      throw new Error("localDate must be YYYY-MM-DD in the user's own timezone");
+    }
+    const weekStart = weekStartFor(localDate);
+    const weekEnd = addLocalDays(weekStart, WEEK_LENGTH_DAYS - 1);
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    if (!user) {
+      return { summary: summariseWeek(weekStart, []), target: null };
+    }
+
+    const entries = await ctx.db
+      .query("dailyEntries")
+      .withIndex("by_user_and_date", (query) =>
+        query
+          .eq("userId", user._id)
+          .gte("localDate", weekStart)
+          .lte("localDate", weekEnd),
+      )
+      .collect();
+
+    const target = await ctx.db
+      .query("targets")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    return {
+      summary: summariseWeek(weekStart, entries),
+      target: target
+        ? {
+            calories: target.calories,
+            proteinGrams: target.proteinGrams,
+            steps: target.steps,
+            waterMl: target.waterMl,
+            workoutsPerWeek: target.workoutsPerWeek,
+          }
+        : null,
+    };
+  },
+});
+
 export const setTarget = internalMutation({
   args: {
     whatsappUserId: v.string(),
@@ -499,6 +603,11 @@ export const setReminder = internalMutation({
     dailyReviewTime: v.optional(v.string()),
     quietHoursStart: v.optional(v.string()),
     quietHoursEnd: v.optional(v.string()),
+    // The weekly review. `weeklyReviewEnabled: false` is a real answer — the
+    // user was asked and said no — and is why the offer is not repeated.
+    weeklyReviewEnabled: v.optional(v.boolean()),
+    weeklyReviewDay: v.optional(weekdayValidator),
+    weeklyReviewTime: v.optional(v.string()),
     pausedUntil: v.optional(v.union(v.number(), v.null())),
     items: v.optional(
       v.array(
@@ -705,6 +814,49 @@ export const listReportedReplies = internalQuery({
 });
 
 /**
+ * The user said something, so they are not gone.
+ *
+ * Any inbound message resets this, not a particular answer to the break
+ * question. Someone who ignores "want a break?" and sends a photo of their
+ * lunch has answered it more clearly than "no" would have, and holding their
+ * reminders hostage to the literal question would be the pedantic reading.
+ *
+ * Returns `changed` so the caller can skip the write when there is nothing to
+ * clear, which is almost every message.
+ */
+export const noteUserReplied = internalMutation({
+  args: { whatsappUserId: v.string() },
+  handler: async (ctx, { whatsappUserId }) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    if (!user) return { success: true, changed: false };
+
+    const policy = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+    if (!policy) return { success: true, changed: false };
+
+    const wasCounting = (policy.unansweredNudges ?? 0) > 0;
+    const wasWaiting = policy.awaitingBreakReply === true;
+    if (!wasCounting && !wasWaiting) {
+      return { success: true, changed: false };
+    }
+
+    await ctx.db.patch(policy._id, {
+      unansweredNudges: 0,
+      awaitingBreakReply: false,
+      updatedAt: Date.now(),
+    });
+    return { success: true, changed: true };
+  },
+});
+
+/**
  * Milestone 12 — may a reminder go out to this user right now?
  *
  * A mutation rather than a query because a "yes" consumes one of the day's
@@ -749,11 +901,32 @@ export const gateReminderDelivery = internalMutation({
 
     const sentToday =
       (policy.sentLocalDate === args.today ? (policy.sentCount ?? 0) : 0) + 1;
-    await ctx.db.patch(policy._id, {
+    const patch: Record<string, unknown> = {
       sentLocalDate: args.today,
       sentCount: sentToday,
       updatedAt: now,
-    });
-    return { success: true, ...decision, sentToday, maxPerDay: policy.maxPerDay };
+    };
+
+    if (decision.offerBreak) {
+      // The break offer is going out in place of the nudge. Nothing further
+      // goes out until they say something, so the counter stops here rather
+      // than climbing while Ted is deliberately silent.
+      patch.awaitingBreakReply = true;
+    } else {
+      // Counted at the moment a nudge is actually cleared to send, for the
+      // same reason the daily cap is: asking and not sending would burn the
+      // budget silently, and here it would also march a present user towards
+      // a break they never needed.
+      patch.unansweredNudges = (policy.unansweredNudges ?? 0) + 1;
+    }
+
+    await ctx.db.patch(policy._id, patch);
+    return {
+      success: true,
+      ...decision,
+      sentToday,
+      maxPerDay: policy.maxPerDay,
+      unansweredNudges: patch.unansweredNudges ?? policy.unansweredNudges ?? 0,
+    };
   },
 });

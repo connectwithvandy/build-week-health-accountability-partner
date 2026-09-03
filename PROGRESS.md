@@ -1,6 +1,6 @@
 # Ted — WhatsApp Health Accountability V1 Progress
 
-Last updated: Wed 2 Sep 2026, Asia/Kolkata
+Last updated: Thu 3 Sep 2026, Asia/Kolkata
 
 ## What we decided
 
@@ -72,15 +72,109 @@ Last updated: Wed 2 Sep 2026, Asia/Kolkata
 - Still open after order 15, in the order they matter. (2) The transcript stores what the model wrote, not what the gate sent: every gated turn diverges, so Ted's own history says it told a 15-year-old "800 kcal total" when the user saw a refusal. (3) Ted told the tester a delivered reminder had never fired — the one-shot job had already run and been cleaned up, `cronjob` returned "not found", and the model covered with "guess the old one just ran out of patience", which is an invented account of a system state. (4) Onboarding never completed: the check-in time was asked four times, dodged four times, and then dropped with "All set", so this user would never have received a daily recap. (5) A destructive, irreversible wipe was accepted on the typo "Ges".
 - The live site was checked in the same pass: `/` and `/privacy` both return 200, so the privacy URL the disclosure sends a real user resolves. `robots.txt` still 404s and the landing page carries no `noindex`, so the private beta is indexable — that is the undeployed half of order 12, unchanged.
 
+## Order 16 — 3 Sep 2026, pre-launch review
+
+Written and tested. **Not deployed and not live**: Convex is missing `week` and
+`replied`, and the running gateway still holds the gate it loaded at 10:54. Both
+guard scripts say so and name the order:
+
+    npx convex deploy && hermes gateway restart && npm run gates:guard
+
+- **Ted could not read a PDF, and Hermes was telling it to try.** The WhatsApp
+  adapter inlines a document's text only for `.txt .md .csv .json .xml .yaml
+  .yml .log .py .js .ts .html .css`. For a binary one it prepends
+  `_build_document_context_note`, which instructs the agent to "extract the
+  document's text yourself, for example with the terminal tool or the
+  ocr-and-documents skill". Ted's WhatsApp toolset is `cronjob file ted vision`
+  and has neither. What it does have is `file`, and `.pdf` is deliberately
+  absent from Hermes' `BINARY_EXTENSIONS`, so a read returns the raw stream
+  decoded as text: an unreadable health plan that looks just readable enough to
+  invent calorie targets from. `unreadable_document_gate` now answers it,
+  matched on Hermes' own note rather than model prose, and placed ahead of
+  `calorie_gate` so an unread plan can never reach the maintenance maths.
+  SCOPING #8/#10 promised PDFs; nothing user-facing ever did, so the landing
+  page needed no change.
+- **The weekly review is real, and conditional.** SOUL.md had described one
+  since the start while SCOPING.md §4 parked "Weekly reports" and nothing
+  scheduled it, so Ted was carrying a promise it could only keep by accident.
+  Now: `summariseWeek` Monday to Sunday, a `getWeekSummary` query, a `week`
+  HTTP action, `weeklyReviewEnabled/Day/Time` on the reminders row, and a
+  `ted_week_summary` tool. Every metric averages over the days that carry that
+  metric, so a water-only Tuesday cannot drag the calorie average down, and an
+  empty week returns `null` rather than zero. Each average carries the day count
+  it came from so Ted can say "across the four days you logged". Offered once,
+  appended to Ted's own sign-off rather than as a second blocking question,
+  because §4 also parks "a long setup questionnaire". A no is stored, so the
+  offer never repeats.
+- **Ted stops nudging someone who has gone quiet.** Four unanswered nudges and
+  the next one is replaced by a question: whether they want reminders paused.
+  Then silence until they say anything at all, including something that ignores
+  the question, because a user who has started logging again has answered it.
+  `unansweredNudges` and `awaitingBreakReply` on the reminders row; the count is
+  incremented only when a nudge is actually cleared to send, and the offer still
+  obeys quiet hours and the daily cap. The reset costs no write for an engaged
+  user: `getUserMemory` already returns the counts on the read every turn makes,
+  and the `replied` write fires only when there is something to clear.
+- **No dashes in Ted's voice.** Vandy's rule: a dash mid-sentence is the
+  clearest tell that a machine wrote the line. 13 user-facing strings rewritten,
+  the rule added to SOUL.md, and 20 lines of SOUL.md's own prose cleaned, which
+  mattered more than it looks: SOUL.md is what the model reads to learn the
+  voice, so a document full of em dashes was teaching the habit the rule
+  forbids. `~/.hermes/SOUL.md` is a symlink to the repo copy, so this is live on
+  the next restart.
+- **`display.provider_messages` was already live and the repo snapshot was not.**
+  Reading `hermes/machine/hermes-config.yaml` said Ted still answered a provider
+  outage with "check gateway logs for diagnostics". It does not. The snapshot is
+  re-copied, the copy is rewritten in Ted's voice, and `hermes/machine/README.md`
+  now says the thing this cost: a stale snapshot does not read as stale, it
+  reads as the truth.
+- Tests: 198 Python, 69 vitest. `tsc`, lint and `next build` clean.
+
+### Order 16, second pass
+
+- **Every date is now the user's, not the laptop's.** `users.timeZone` was
+  collected at onboarding, written to Convex and read by nothing: `_today()` and
+  every `time.strftime` in the gate came off the host clock. `getUserMemory`
+  now returns `timeZone` on the read each turn already makes, and the gate
+  converts with Python's `zoneinfo` through `_today(user_key)`,
+  `_now_local_time(user_key)` and `_local_moment(user_key, ms)`. The conversion
+  is in the gate rather than in Convex on purpose: Convex's V8 timezone data
+  could not be verified without deploying, and a silent fallback there would be
+  worse than the bug. `DEFAULT_TIME_ZONE = "Asia/Kolkata"` is a stated
+  assumption rather than an accident of which laptop is running, and it logs
+  every time it is used. A name the model invented ("IST", "Bangalore") fails
+  validation and falls back rather than raising. The clock read is deferred
+  until after every validation in `_log_daily_entry`, so a malformed meal is
+  still refused without touching the network.
+- **`deleteUserMemory` now clears `reportedReplies`.** Those rows hold the
+  user's own message verbatim and Ted's reply to it, survived deletion, and
+  were orphaned to a user id that no longer resolved. /privacy promises
+  everything goes. Not unit-tested: it is a mutation and there is no Convex
+  test harness here, so verify after deploy with `npm run reports` either side
+  of a test account's deletion.
+- Tests: 205 Python, 69 vitest.
+
+### Still open after order 16
+
+1. **`main` is 11 commits behind `ship/landing-v6`** and still holds the local
+   `c2d82be` marked "do not push without a decision". Vercel's production branch
+   is the GitHub default, so pushing `main` as it stands would replace the live
+   v6 site with that older tree.
+2. **Preview deployments all fail.** `CONVEX_DEPLOY_KEY` and
+   `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` are Production-only, so every git push
+   dies at `npx convex deploy` and there is no preview URL to check.
+3. **PDFs are refused, not read.** If health-plan PDFs are wanted for real, the
+   extraction has to happen somewhere Ted can reach.
+
 ## Code status
 
-- Two landing pages exist and it matters which is which. **Deployed** (`origin/main`, both public URLs) is the aubergine system: `--aubergine:#27152f`, `--cloud:#f5f2f7`, `--lavender:#ded5e6`, `--lime:#c9ff5a`, `--coral:#ff6b5f`. **Held back** is the warm cream redesign — it lives only in local commit `c2d82be` on `main`, is not pushed, and its message says so: "held back on purpose — do not push without a decision". It also carries openGraph/canonical tags, `robots.ts` with `Disallow: /`, and a 404 page. Anyone pushing `main` from this machine ships all of that; push a branch, or `git push origin <branch>:main`.
-- The deployed page shows a realistic WhatsApp conversation, supported input formats, the 7:42 PM recovery moment, an example daily review, how it works, and the privacy boundary. The WhatsApp handoff uses the scoped salute-emoji opening message. All 44 tests, lint, and the production build pass.
-- Uncommitted and therefore **not live**: `src/app` now says "Health accountability" and the title is "Ted. Your day, remembered". Both URLs still serve the old "fitness" copy until this is pushed.
-- The current design experiment is `design-experiments/ted-landing-v5-editorial/` — a separate white / near-black / orange system, scroll-scrubbed WhatsApp threads, not imported by `src/app` and not deployed. It shares no colour tokens with the live site, by design.
+- The live landing page is **v6**, and it is a static file rather than JSX: `public/landing-v6.html`, served at `/` by a `beforeFiles` rewrite in `next.config.ts` so what ships is byte-for-byte the design that was reviewed. Confirmed on 3 Sep: the bytes served at `heyted.vercel.app/` are identical to the repo copy. `src/app` no longer defines a page at `/`; everything else — `/privacy`, `/robots.txt`, `/api/*` — is still Next.js. To go back to a React landing page, delete the rewrite and add `src/app/page.tsx`.
+- The v6 page carries scroll-scrubbed WhatsApp threads that replay as real conversations, the supported input formats, the nudge, reminders the user controls, the evening review, and the privacy boundary. Both `wa.me` links use the agreed opening message, "Okay Ted, let's do this 💪", and the number the rest of the product uses. 48 vitest tests, 179 Python tests, lint, `tsc --noEmit` and the production build all pass.
+- The shipping work lives on `ship/landing-v6` (`7f64fb3`), which is pushed. **`main` is 11 commits behind it** and still holds the local, unpushed `c2d82be` — "held back on purpose — do not push without a decision". Vercel's production branch is the GitHub default, so pushing `main` as it stands would replace the live v6 site with that older tree. Merge v6 into `main`, or push a branch, before anyone touches `main`.
+- `design-experiments/` holds the lineage that led here — `ted-landing-v5-editorial`, `v6`, `v7`, `v8`, `tbh`, `conversation`, `recovery-led`, `characters`. v6 is the one that shipped; the rest are not imported and not deployed.
 - A Next.js 16 TypeScript application exists and passes lint and production builds.
 - The public GitHub repository is `connectwithvandy/build-week-health-accountability-partner`. An earlier note here named `whatsapp-accountability-partner-ted`, which is the Vercel project name, not the repo.
-- GitHub `main` is connected to Vercel and deploys automatically.
+- GitHub `main` is connected to Vercel, but **only production has the environment it needs**. `CONVEX_DEPLOY_KEY` and `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` are set for Production only, so every Preview build dies at `npx convex deploy` with "no Convex deployment configuration found" — every push shows a red X and there is no preview URL to check before shipping. Production is currently updated by running `vercel --prod` from this machine; the live deployment was made that way at 01:43 IST on 3 Sep.
 - Two public Vercel URLs serve the same deployment: `https://heyted.vercel.app` (the one to share) and `https://whatsapp-accountability-partner-ted.vercel.app`. Both returned 200 on 3 Sep 2026.
 - Convex is connected to the Next.js application.
 - Vitest and React Testing Library are configured.

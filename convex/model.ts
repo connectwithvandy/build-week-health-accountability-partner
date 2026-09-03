@@ -15,10 +15,23 @@ export const onboardingFields = [
   "customCommitments",
   "reminders",
   "dailyReview",
+  "weeklyReview",
   "quietHours",
   "morningCommitment",
   "confirmation",
   "complete",
+] as const;
+
+// Monday first, because the week does. Stored as a name rather than a number
+// so a row is readable without a lookup table and cannot be off by one.
+export const weekdays = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
 ] as const;
 
 export const goals = [
@@ -59,10 +72,21 @@ export const onboardingFieldValidator = v.union(
   v.literal("customCommitments"),
   v.literal("reminders"),
   v.literal("dailyReview"),
+  v.literal("weeklyReview"),
   v.literal("quietHours"),
   v.literal("morningCommitment"),
   v.literal("confirmation"),
   v.literal("complete"),
+);
+
+export const weekdayValidator = v.union(
+  v.literal("monday"),
+  v.literal("tuesday"),
+  v.literal("wednesday"),
+  v.literal("thursday"),
+  v.literal("friday"),
+  v.literal("saturday"),
+  v.literal("sunday"),
 );
 
 export const goalValidator = v.union(
@@ -266,6 +290,161 @@ export function summariseDay(
 }
 
 // ---------------------------------------------------------------------------
+// The weekly review.
+//
+// SOUL.md has always described one — "at the end of the user's week … the main
+// change, the week's averages, one honest judgement, and one focus for next
+// week" — and SCOPING.md §4 listed "Weekly reports" as parked. Nothing
+// scheduled one, so Ted was carrying a promise it could only keep by accident,
+// which is the worst of both: a user told they will get a Sunday recap, and
+// nothing in the product that would ever notice it never arrived.
+//
+// The week runs Monday to Sunday, matching the worked example in SOUL.md
+// ("WEEKLY, MONDAY 10:45am — Your week · 25 Aug to 31 Aug").
+
+/** Monday-to-Sunday. */
+export const WEEK_LENGTH_DAYS = 7;
+
+/**
+ * A date key shifted by whole days.
+ *
+ * Parsed and formatted through UTC on purpose. These are calendar keys, not
+ * instants: going through the host's local timezone would let a machine in
+ * one zone shift a date belonging to a user in another.
+ */
+export function addLocalDays(localDate: string, days: number): string {
+  if (!isLocalDateKey(localDate)) return localDate;
+  const [year, month, day] = localDate.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days));
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(
+    shifted.getUTCDate(),
+  )}`;
+}
+
+/** The Monday of the week this date falls in — the week's key. */
+export function weekStartFor(localDate: string): string {
+  if (!isLocalDateKey(localDate)) return localDate;
+  const [year, month, day] = localDate.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  // getUTCDay is 0=Sunday. Monday-based offset: Mon→0 … Sun→6.
+  return addLocalDays(localDate, -((weekday + 6) % 7));
+}
+
+/** The seven date keys of a week, Monday first. */
+export function weekDates(weekStart: string): string[] {
+  return Array.from({ length: WEEK_LENGTH_DAYS }, (_, index) =>
+    addLocalDays(weekStart, index),
+  );
+}
+
+/**
+ * An average, with the number of days it was actually computed from.
+ *
+ * `null` means the week holds nothing to average, and that is deliberately not
+ * the same value as zero. "Never turn uncertainty into fake data" applies hard
+ * here: a week where the user logged three dinners and nothing else is not a
+ * week of four zero-calorie days, and a recap that reports 790 kcal/day
+ * because it divided by seven is worse than one that says nothing.
+ */
+export type WeekAverage = { value: number; days: number } | null;
+
+export type WeekSummary = {
+  weekStart: string;
+  weekEnd: string;
+  /** Days with at least one confirmed entry of any kind. */
+  daysLogged: number;
+  meals: number;
+  workouts: number;
+  workoutMinutes: number;
+  commitmentsDone: number;
+  averageCalories: WeekAverage;
+  averageProteinGrams: WeekAverage;
+  averageSteps: WeekAverage;
+  averageWaterMl: WeekAverage;
+  days: DaySummary[];
+};
+
+function averageOver(total: number, days: number): WeekAverage {
+  return days > 0 ? { value: Math.round(total / days), days } : null;
+}
+
+/**
+ * The week read back from what was actually logged.
+ *
+ * Each metric is averaged over the days that carry *that* metric, not over the
+ * seven days of the week and not over the days that carry anything at all. A
+ * day where the user logged only water must not drag the calorie average down
+ * — that number would be arithmetically correct and factually a lie.
+ *
+ * Built entirely from `summariseDay`, so a corrected meal is counted once and
+ * an unconfirmed guess is counted never, exactly as it is in the daily review.
+ */
+export function summariseWeek(
+  weekStart: string,
+  entries: readonly SummarisableEntry[],
+): WeekSummary {
+  const days = weekDates(weekStart).map((date) => summariseDay(date, entries));
+
+  let daysLogged = 0;
+  let daysWithMeals = 0;
+  let daysWithSteps = 0;
+  let daysWithWater = 0;
+  const totals = { calories: 0, protein: 0, steps: 0, water: 0 };
+  const summary: WeekSummary = {
+    weekStart,
+    weekEnd: addLocalDays(weekStart, WEEK_LENGTH_DAYS - 1),
+    daysLogged: 0,
+    meals: 0,
+    workouts: 0,
+    workoutMinutes: 0,
+    commitmentsDone: 0,
+    averageCalories: null,
+    averageProteinGrams: null,
+    averageSteps: null,
+    averageWaterMl: null,
+    days,
+  };
+
+  for (const day of days) {
+    const touched =
+      day.meals > 0 ||
+      day.steps > 0 ||
+      day.waterMl > 0 ||
+      day.workoutMinutes > 0 ||
+      day.commitmentsDone > 0;
+    if (touched) daysLogged += 1;
+
+    if (day.meals > 0) {
+      daysWithMeals += 1;
+      totals.calories += day.calories;
+      totals.protein += day.proteinGrams;
+      summary.meals += day.meals;
+    }
+    if (day.steps > 0) {
+      daysWithSteps += 1;
+      totals.steps += day.steps;
+    }
+    if (day.waterMl > 0) {
+      daysWithWater += 1;
+      totals.water += day.waterMl;
+    }
+    if (day.workoutMinutes > 0) {
+      summary.workouts += 1;
+      summary.workoutMinutes += day.workoutMinutes;
+    }
+    summary.commitmentsDone += day.commitmentsDone;
+  }
+
+  summary.daysLogged = daysLogged;
+  summary.averageCalories = averageOver(totals.calories, daysWithMeals);
+  summary.averageProteinGrams = averageOver(totals.protein, daysWithMeals);
+  summary.averageSteps = averageOver(totals.steps, daysWithSteps);
+  summary.averageWaterMl = averageOver(totals.water, daysWithWater);
+  return summary;
+}
+
+// ---------------------------------------------------------------------------
 // Milestone 10 — near-duplicates and dates that are not today.
 //
 // buildDedupeKey above collapses an exact re-delivery: the same message id, or
@@ -378,12 +557,36 @@ export type ReminderPolicy = {
   pausedUntil?: number | null;
   sentLocalDate?: string | null;
   sentCount?: number | null;
+  /** Nudges sent since the user last said anything at all. */
+  unansweredNudges?: number | null;
+  /** The break has been offered and they have not answered it yet. */
+  awaitingBreakReply?: boolean | null;
 };
 
 export type ReminderDecision = {
   allowed: boolean;
-  reason: "ok" | "quietHours" | "paused" | "dailyCap";
+  reason: "ok" | "quietHours" | "paused" | "dailyCap" | "awaitingReply";
+  /**
+   * Send the break offer instead of the nudge that was due.
+   *
+   * `allowed` is still true: something goes out, it is just not the reminder.
+   */
+  offerBreak?: boolean;
 };
+
+/**
+ * How many unanswered nudges before Ted asks instead of nudging again.
+ *
+ * The failure this prevents is the one that kills these products: a user drifts
+ * off, the reminders keep arriving on schedule, and the thread becomes
+ * something to mute. Muting is not reversible in any way Ted can see, so the
+ * only chance to save the relationship is before it happens.
+ *
+ * Four is chosen to be past coincidence and short of nagging. One or two
+ * unanswered nudges is an ordinary busy couple of days and asking then would
+ * itself be the pestering this is meant to avoid.
+ */
+export const NUDGES_BEFORE_BREAK_OFFER = 4;
 
 // The same values setReminder writes when it creates a row, so a user who has
 // never set anything gets the behaviour they would have got by default rather
@@ -455,12 +658,26 @@ export function decideReminderDelivery(
   if (isPaused(now, policy.pausedUntil)) {
     return { allowed: false, reason: "paused" };
   }
+  // Asked whether they want a break and heard nothing back. Continuing to
+  // nudge would answer the question for them, in the least welcome direction.
+  // This holds until they say something, anything: the reset is any inbound
+  // message, not a particular reply, because someone who starts logging again
+  // has answered more clearly than "no" would have.
+  if (policy.awaitingBreakReply) {
+    return { allowed: false, reason: "awaitingReply" };
+  }
   if (isWithinQuietHours(nowLocalTime, policy.quietHoursStart, policy.quietHoursEnd)) {
     return { allowed: false, reason: "quietHours" };
   }
   const sentToday = policy.sentLocalDate === today ? (policy.sentCount ?? 0) : 0;
   if (sentToday >= policy.maxPerDay) {
     return { allowed: false, reason: "dailyCap" };
+  }
+  // Quiet hours and the cap are checked first on purpose: the break offer is
+  // still a message, and it must not be the one thing that gets to arrive at
+  // 3am or past the daily limit.
+  if ((policy.unansweredNudges ?? 0) >= NUDGES_BEFORE_BREAK_OFFER) {
+    return { allowed: true, reason: "ok", offerBreak: true };
   }
   return { allowed: true, reason: "ok" };
 }
@@ -483,10 +700,12 @@ export const TED_HTTP_ACTIONS = [
   "delete",
   "log",
   "day",
+  "week",
   "target",
   "reminder",
   "onboarding",
   "report",
   "reports",
   "reminderGate",
+  "replied",
 ] as const;

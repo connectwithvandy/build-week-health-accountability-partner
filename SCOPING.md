@@ -72,7 +72,20 @@ Existing tools also require her to remember to open them. They record isolated n
 
 23. Users can pause reminders until a stated time or date and resume them later.
 
+    If four consecutive nudges go unanswered, the coach stops nudging and asks
+    once whether the user wants reminders paused for a few days, then stays
+    silent until the user sends any message at all. It never sends a fifth
+    unanswered nudge. The question obeys quiet hours and the daily cap like any
+    other message.
+
 24. At the user’s chosen evening time, the coach sends a daily review covering meals, nutrition estimates, water, steps, exercise, wins, missed commitments, and one realistic action that can still be completed.
+
+    The coach also offers a weekly recap once, at the end of setup, and sends
+    one only if the user says yes. It runs Monday to Sunday, is no more than
+    four short lines, and is built only from what the user actually logged.
+    Every average names the number of days it was computed from, and a week
+    with nothing logged is reported as nothing logged rather than as zero.
+    Declining is a stored answer, so the offer is never repeated.
 
 25. V1 saves the full conversation and raw media, user profile, uploaded plans, goals, targets, reminders, quiet hours, confirmed logs, corrections, and daily reviews. Raw photos, voice notes, and PDFs remain stored until the user requests deletion. This history is used to make later responses more relevant.
 
@@ -101,7 +114,6 @@ V1 does not include:
 - Coaching for users under 18
 - Voice-call coaching
 - Replies sent as voice notes, GIFs, or stickers
-- Weekly reports
 - Social or community features
 - Payments or subscriptions
 - Human-coach escalation
