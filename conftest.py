@@ -8,6 +8,16 @@ This is not tidiness. Three unit-test fixture keys — "real-memory",
 "staged-memory" and "wrong-tool" — were found sitting in the live consent
 state file. A fixture key that ever collided with a real user key would mark
 that user as already-disclosed and silently skip a disclosure they are owed.
+
+Run the suite with pytest:
+
+    .venv/bin/pytest hermes/test_ted_safety_gates.py
+
+`python3 -m unittest` does not load conftest, so the redirect above never
+happens and the run writes straight into ~/.hermes/state. That is not a
+hypothetical either: it put all eight fixture keys back into the live files on
+3 Sep, including the three named above, five weeks after they were cleaned out.
+The run-isolation test catches it, but only after the damage is done.
 """
 
 from __future__ import annotations

@@ -208,14 +208,44 @@ all three counts, and all three had a cause.
   appear twice, and the model keeps the only part it is actually needed for:
   what the food is and what it means.
 
-Tests: 222 Python, 69 vitest.
+- **The reminder settings now come from the gate too.** `ted_set_reminder` had
+  never been called once, by anyone, in Ted's entire history — so no user had a
+  `reminders` row. Checking why found the mechanism rather than a shy model:
+  five of the nineteen onboarding steps (`reminders`, `dailyReview`,
+  `weeklyReview`, `quietHours`, `morningCommitment`) collect answers that
+  `ted_save_onboarding` had no field for, so the only tool that could store a
+  check-in time or quiet hours was a second one the model never reached for.
+  Ted asked, the user answered, and the answer was dropped. Two halves, because
+  they fail separately. Capture: the reminder settings are defined once in
+  `_REMINDER_SETTING_PROPERTIES` and offered on both tools, so they ride on the
+  `ted_save_onboarding` call the model demonstrably does make. Backstop:
+  passing any of those five steps creates the row from `setReminder`'s own
+  defaults even when the model sends nothing at all, once per user rather than
+  on every later step, because defaults are worth more than an absent row and a
+  missing row is what leaves `maxPerDay`, the pause and the quiet-user back-off
+  with nothing to read. Saving a preference still proves only `memory` and
+  never `cron`, so "8pm check-in is set" is still stripped: storing a time is
+  not booking a message. A failed reminder write reports itself and leaves the
+  row unmarked so the next step retries, rather than failing the onboarding
+  step alongside it.
+
+  What was *not* broken, checked rather than assumed: quiet hours were never
+  inert. `decideReminderDelivery` falls back to 22:00–07:00 on a missing row,
+  deliberately, so Vandy's directly-created cron pings stayed inside them. What
+  a missing row actually cost was the daily cap, the pause, any user-chosen
+  quiet hours, and the break offer.
+
+Tests: 240 Python, 69 vitest.
 
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
 the reasons were found only by checking rather than by remembering.
 
-1. **`ted_set_reminder` has never been called. By anyone. Ever.** Across all of
+1. **`ted_set_reminder` has never been called. By anyone. Ever.** *(Fixed and
+   live 3 Sep 15:22 — see the reminder-settings entry above. Left here because
+   the count is still the check: a fresh onboarding should now leave a
+   `reminders` row behind whether or not that number ever moves.)* Across all of
    Ted's history the model has used `ted_log_entry` (14), `ted_day_summary` (4),
    `ted_save_onboarding` (3), `ted_memory_save` (3), `ted_set_target` (2) and
    `ted_memory_delete` (1). No user therefore has a `reminders` row, which means
@@ -234,7 +264,8 @@ the reasons were found only by checking rather than by remembering.
    inside one 84-message thread. A new tester gets a clean session, so
    onboarding, the disclosure, the name question, the check-in time and the new
    meal block are all on the untested path.
-4. **`session_reset.mode` is `none`**, so a thread grows without bound. With
+4. **`session_reset.mode` is `none`** *(fixed 3 Sep 15:09: `idle`, 720
+   minutes)*, so a thread grows without bound. With
    `compression.protect_last_n: 20`, twenty verbatim examples of Ted's recent
    output sit in context permanently. That is what beat SOUL.md twice on 3 Sep,
    and it will do the same to any real user once their thread is long enough.

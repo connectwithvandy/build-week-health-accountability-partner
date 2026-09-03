@@ -2342,6 +2342,48 @@ TED_SET_TARGET_SCHEMA = {
     },
 }
 
+# The reminder settings themselves, kept in one place because two tools can
+# now save them. ted_set_reminder is the standalone tool the model has never
+# once called; ted_save_onboarding carries the same fields nested, because
+# onboarding asks for a check-in time and quiet hours and until now those
+# answers had nowhere to go. Defined once so the two can never drift apart.
+_REMINDER_SETTING_PROPERTIES: dict[str, Any] = {
+    "max_per_day": {"type": "number"},
+    "morning_commitment_id": {"type": "string"},
+    "daily_review_time": {"type": "string", "description": "24-hour HH:MM"},
+    "weekly_review_enabled": {
+        "type": "boolean",
+        "description": (
+            "True if they said yes to a weekly recap, False if they "
+            "said no. Send False rather than omitting it: a recorded "
+            "no is what stops the offer being repeated."
+        ),
+    },
+    "weekly_review_day": {
+        "type": "string",
+        "enum": list(_WEEKDAYS),
+        "description": "Which day the weekly recap goes out. Default sunday.",
+    },
+    "weekly_review_time": {"type": "string", "description": "24-hour HH:MM"},
+    "quiet_hours_start": {"type": "string", "description": "24-hour HH:MM"},
+    "quiet_hours_end": {"type": "string", "description": "24-hour HH:MM"},
+    "items": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "reminderId": {"type": "string"},
+                "commitmentId": {"type": "string"},
+                "localTime": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "followUpAfterMinutes": {"type": "number"},
+            },
+            "required": ["reminderId", "commitmentId", "localTime", "enabled"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 TED_SET_REMINDER_SCHEMA = {
     "name": "ted_set_reminder",
     "description": (
@@ -2353,43 +2395,10 @@ TED_SET_REMINDER_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "max_per_day": {"type": "number"},
-            "morning_commitment_id": {"type": "string"},
-            "daily_review_time": {"type": "string", "description": "24-hour HH:MM"},
-            "weekly_review_enabled": {
-                "type": "boolean",
-                "description": (
-                    "True if they said yes to a weekly recap, False if they "
-                    "said no. Send False rather than omitting it: a recorded "
-                    "no is what stops the offer being repeated."
-                ),
-            },
-            "weekly_review_day": {
-                "type": "string",
-                "enum": list(_WEEKDAYS),
-                "description": "Which day the weekly recap goes out. Default sunday.",
-            },
-            "weekly_review_time": {"type": "string", "description": "24-hour HH:MM"},
-            "quiet_hours_start": {"type": "string", "description": "24-hour HH:MM"},
-            "quiet_hours_end": {"type": "string", "description": "24-hour HH:MM"},
+            **_REMINDER_SETTING_PROPERTIES,
             "paused_until": {
                 "type": ["number", "null"],
                 "description": "Epoch milliseconds, or null to un-pause.",
-            },
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "reminderId": {"type": "string"},
-                        "commitmentId": {"type": "string"},
-                        "localTime": {"type": "string"},
-                        "enabled": {"type": "boolean"},
-                        "followUpAfterMinutes": {"type": "number"},
-                    },
-                    "required": ["reminderId", "commitmentId", "localTime", "enabled"],
-                    "additionalProperties": False,
-                },
             },
         },
         "additionalProperties": False,
@@ -2428,6 +2437,24 @@ TED_SAVE_ONBOARDING_SCHEMA = {
                     },
                     "goal": {"type": "string", "enum": list(_GOALS)},
                 },
+                "additionalProperties": False,
+            },
+            # Onboarding asks for a check-in time, quiet hours, a daily cap and
+            # the weekly recap, and those four answers used to be storable only
+            # through ted_set_reminder — a second tool that, across every
+            # onboarding Ted has ever run, it never once reached for. The
+            # answers were given and then dropped. They ride here now, on the
+            # call the model demonstrably does make, in the same turn.
+            "reminders": {
+                "type": "object",
+                "description": (
+                    "The reminder answers they just gave: check-in or daily "
+                    "review time, quiet hours, how many nudges a day, the "
+                    "weekly recap. Send them here as they arrive. Saving a "
+                    "preference is not scheduling a message, so I still do "
+                    "not tell them a reminder is set on the strength of it."
+                ),
+                "properties": _REMINDER_SETTING_PROPERTIES,
                 "additionalProperties": False,
             },
         },
@@ -3137,9 +3164,64 @@ def _save_onboarding(
         done = set(_onboarding(user_key).get("done") or ())
         done.add(str(completed))
         _update_onboarding(user_key, done=sorted(done))
+    if result.get("success"):
+        _persist_onboarding_reminders(
+            args, completed, user_key, session_id or task_id, result
+        )
     return json.dumps(
         result,
         ensure_ascii=False,
+    )
+
+
+# Onboarding steps whose whole point is a reminder setting. Passing one of
+# these is the moment a user must end up with a reminders row, whatever the
+# model did or did not send.
+_REMINDER_ONBOARDING_FIELDS = frozenset(
+    {"reminders", "dailyReview", "weeklyReview", "quietHours", "morningCommitment",
+     "complete"}
+)
+
+
+def _persist_onboarding_reminders(
+    args: dict[str, Any],
+    completed: Any,
+    user_key: str,
+    context_id: str,
+    result: dict[str, Any],
+) -> None:
+    """Write the reminder answers onboarding just collected, and make sure the
+    row exists either way.
+
+    Two separate jobs, because they fail separately. The first is capture: the
+    settings the model sent nested in this call, which previously it could only
+    send through a tool it never used. The second is the backstop: once
+    onboarding has passed a reminder step, a row must exist even if the model
+    sent nothing at all — without one `maxPerDay`, the pause and the
+    quiet-user back-off have nothing to read, and `gateReminderDelivery`
+    returns before it can count anything. Defaults are worth more than an
+    absent row, and are exactly what `setReminder` inserts on its own.
+    """
+    settings = args.get("reminders")
+    payload = _camel(settings) if isinstance(settings, dict) and settings else {}
+    ensured = bool(_onboarding(user_key).get("reminders_row"))
+    if not payload and (ensured or completed not in _REMINDER_ONBOARDING_FIELDS):
+        return
+
+    written = _convex_write("reminder", user_key, context_id, body=payload)
+    if not written.get("success"):
+        # Onboarding itself saved. Say what did not, rather than failing the
+        # whole call and losing the step as well.
+        result["remindersError"] = written.get("error") or "Reminder settings not saved"
+        return
+
+    _update_onboarding(user_key, reminders_row=True)
+    result["remindersSaved"] = sorted(payload) or "defaults"
+    LOGGER.info(
+        "ted_onboarding_reminders_saved user_key=%s created=%s fields=%s",
+        user_key,
+        written.get("created"),
+        ",".join(sorted(payload)) or "defaults",
     )
 
 

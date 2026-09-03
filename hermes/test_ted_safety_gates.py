@@ -3532,3 +3532,189 @@ class MealFiguresAreNotSaidTwiceTest(unittest.TestCase):
         ):
             with self.subTest(said=said):
                 self.assertEqual(gates.words_without_figures(said), said)
+
+
+class OnboardingRemindersTest(unittest.TestCase):
+    """Order 18: the check-in time onboarding asks for now has somewhere to go.
+
+    `ted_set_reminder` had never been called once in Ted's entire history, so
+    no user had a reminders row, so `maxPerDay`, the pause and the quiet-user
+    back-off had nothing to read. Onboarding asked for a check-in time and
+    quiet hours and dropped both answers on the floor. These tests hold the
+    two halves of the fix: the answers ride on the call the model does make,
+    and the row exists even when it sends nothing.
+    """
+
+    SESSION = "session-onboarding-reminders"
+    USER_KEY = "whatsapp:sha256:owner"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": self.USER_KEY,
+                "chat_id": "owner@s.whatsapp.net",
+                "message_id": "wamid.LIVE",
+            }
+        self.addCleanup(self._drop_context)
+        for target in (
+            patch.object(gates, "_ONBOARDING_STATE", {}),
+            patch.object(gates, "_persist_onboarding_state"),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def _drop_context(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def _run(self, args, failing=()):
+        """Run the onboarding tool, returning every Convex call it made.
+
+        Unlike the single-call helper above, onboarding can now write twice in
+        one turn, and which call carries what is the whole point.
+        """
+        calls: list[dict] = []
+
+        def fake_request(action, user_key, facts=None, body=None):
+            calls.append({"action": action, "user_key": user_key, "body": body or {}})
+            if action in failing:
+                return {"success": False, "error": "Write rejected"}
+            return {"success": True, "created": True}
+
+        with patch.object(gates, "_convex_request", fake_request):
+            raw = gates._save_onboarding(args, session_id=self.SESSION)
+        return calls, json.loads(raw)
+
+    def test_a_check_in_time_given_during_onboarding_is_saved(self) -> None:
+        calls, result = self._run(
+            {
+                "current_field": "quietHours",
+                "completed_field": "dailyReview",
+                "reminders": {"daily_review_time": "20:00", "max_per_day": 3},
+            }
+        )
+        self.assertTrue(result["success"])
+        reminder = [call for call in calls if call["action"] == "reminder"]
+        self.assertEqual(len(reminder), 1)
+        self.assertEqual(
+            reminder[0]["body"], {"dailyReviewTime": "20:00", "maxPerDay": 3}
+        )
+        self.assertEqual(reminder[0]["user_key"], self.USER_KEY)
+
+    def test_the_onboarding_step_is_still_recorded_in_the_same_call(self) -> None:
+        calls, _ = self._run(
+            {
+                "current_field": "quietHours",
+                "completed_field": "dailyReview",
+                "reminders": {"daily_review_time": "20:00"},
+            }
+        )
+        onboarding = [call for call in calls if call["action"] == "onboarding"]
+        self.assertEqual(len(onboarding), 1)
+        self.assertEqual(onboarding[0]["body"]["completedField"], "dailyReview")
+
+    def test_passing_a_reminder_step_creates_the_row_with_no_settings_sent(self) -> None:
+        """The backstop. The model sending nothing is the case that has always
+        happened, and it must still leave a row behind."""
+        calls, result = self._run(
+            {"current_field": "morningCommitment", "completed_field": "quietHours"}
+        )
+        reminder = [call for call in calls if call["action"] == "reminder"]
+        self.assertEqual(len(reminder), 1)
+        self.assertEqual(reminder[0]["body"], {})
+        self.assertEqual(result["remindersSaved"], "defaults")
+
+    def test_an_early_onboarding_step_does_not_write_reminders(self) -> None:
+        calls, result = self._run(
+            {
+                "current_field": "age",
+                "completed_field": "name",
+                "profile": {"name": "Vandy"},
+            }
+        )
+        self.assertEqual([call["action"] for call in calls], ["onboarding"])
+        self.assertNotIn("remindersSaved", result)
+
+    def test_the_default_row_is_written_once_not_on_every_later_step(self) -> None:
+        first, _ = self._run(
+            {"current_field": "dailyReview", "completed_field": "reminders"}
+        )
+        second, _ = self._run(
+            {"current_field": "confirmation", "completed_field": "complete"}
+        )
+        self.assertEqual(len([c for c in first if c["action"] == "reminder"]), 1)
+        self.assertEqual([c["action"] for c in second], ["onboarding"])
+
+    def test_settings_are_still_saved_after_the_default_row_exists(self) -> None:
+        """Being past the backstop must not swallow a real answer given later."""
+        self._run({"current_field": "dailyReview", "completed_field": "reminders"})
+        calls, _ = self._run(
+            {
+                "current_field": "complete",
+                "completed_field": "quietHours",
+                "reminders": {"quiet_hours_start": "23:00", "quiet_hours_end": "06:30"},
+            }
+        )
+        reminder = [call for call in calls if call["action"] == "reminder"]
+        self.assertEqual(
+            reminder[0]["body"],
+            {"quietHoursStart": "23:00", "quietHoursEnd": "06:30"},
+        )
+
+    def test_a_failed_reminder_write_does_not_lose_the_onboarding_step(self) -> None:
+        calls, result = self._run(
+            {
+                "current_field": "complete",
+                "completed_field": "quietHours",
+                "reminders": {"quiet_hours_start": "23:00"},
+            },
+            failing=("reminder",),
+        )
+        self.assertTrue(result["success"])
+        self.assertIn("remindersError", result)
+        self.assertEqual(len([c for c in calls if c["action"] == "onboarding"]), 1)
+        # Not marked done, so the next step tries again rather than assuming a
+        # row that was never created.
+        self.assertFalse(gates._onboarding(self.USER_KEY).get("reminders_row"))
+
+    def test_nothing_is_written_when_the_onboarding_write_itself_failed(self) -> None:
+        calls, _ = self._run(
+            {"current_field": "complete", "completed_field": "quietHours"},
+            failing=("onboarding",),
+        )
+        self.assertEqual([call["action"] for call in calls], ["onboarding"])
+
+    def test_saving_reminders_through_onboarding_does_not_prove_a_schedule(self) -> None:
+        """Same rule as ted_set_reminder: a stored preference is not a booked
+        message, and the claim gate must still strip "8pm check-in is set"."""
+        _record_tool_success(
+            tool_name="ted_save_onboarding",
+            status="ok",
+            args={"current_field": "complete", "reminders": {"daily_review_time": "20:00"}},
+            result=json.dumps({"success": True}),
+            session_id=self.SESSION,
+        )
+        with gates._TURN_LOCK:
+            proven = set(gates._TURN_CONTEXT[self.SESSION]["successful_actions"])
+        self.assertIn("memory", proven)
+        self.assertNotIn("cron", proven)
+        self.assertNotIn(
+            "8pm check-in is set",
+            action_claim_gate("8pm check-in is set.", successful_actions=proven),
+        )
+
+    def test_the_two_tools_offer_the_same_settings(self) -> None:
+        """One definition, so a field can never exist on one and not the other."""
+        standalone = set(gates.TED_SET_REMINDER_SCHEMA["parameters"]["properties"])
+        nested = set(
+            gates.TED_SAVE_ONBOARDING_SCHEMA["parameters"]["properties"]["reminders"][
+                "properties"
+            ]
+        )
+        self.assertEqual(standalone - nested, {"paused_until"})
+        self.assertIn("quiet_hours_start", nested)
+        self.assertIn("daily_review_time", nested)
