@@ -286,10 +286,30 @@ def _is_delete_confirmation(text: str) -> bool:
     return _normalise_reply(text) in _DELETE_CONFIRMATIONS
 
 
+# Ted writes the confirmation question in its own words, so this cannot demand
+# one particular word. On 3 Sep it asked "you want me to permanently wipe
+# everything I have on you, profile, targets, logs, all of it?" — a better
+# question than the one being insisted on — and the gate refused its own model
+# because the literal "delete" was absent. The user had asked to be erased,
+# said yes, and was told nothing had been deleted.
+#
+# Both halves are required, and so is a question mark. The verb alone is not
+# enough: "shall i delete that meal?" must never let a "yes" wipe an account,
+# which is the failure the strict version was protecting against and which
+# still has to hold.
+_ERASURE_VERB = re.compile(r"\b(delet\w*|wip\w*|eras\w*|remov\w*|clear\w*|gone)\b")
+_ERASURE_SCOPE = re.compile(
+    r"\b(everything|all of it|all of your|all your|all the data|all data|"
+    r"your data|the data i have|every record|the lot|your whole)\b"
+)
+
+
 def _ted_asked_about_deletion(history: Iterable[dict[str, Any]]) -> bool:
     """An answer only confirms something that was actually asked."""
     asked = _last_assistant_turn(history).lower()
-    return "delete" in asked and "?" in asked
+    if "?" not in asked:
+        return False
+    return bool(_ERASURE_VERB.search(asked) and _ERASURE_SCOPE.search(asked))
 
 
 def _delete_user_data(

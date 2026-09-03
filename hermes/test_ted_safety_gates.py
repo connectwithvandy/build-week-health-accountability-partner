@@ -3917,3 +3917,60 @@ class SessionRecordCannotRegrantConsentTest(unittest.TestCase):
         gates._forget_user(self.USER_KEY)
         gates._mark_disclosure_sent(self.USER_KEY, self.SESSION)
         self.assertTrue(self._capture()["disclosure_sent"])
+
+
+class DeletionQuestionIsRecognisedTest(unittest.TestCase):
+    """The erasure Ted promises must not turn on a synonym.
+
+    3 Sep, 15:53: a user asked to be deleted, Ted asked "you want me to
+    permanently wipe everything I have on you, profile, targets, logs, all of
+    it?", the user said "Yes", and the gate refused because the literal word
+    "delete" was missing. The account survived and the user was told nothing
+    was gone. Erasure is promised in the disclosure text itself.
+    """
+
+    def asked(self, said: str) -> bool:
+        return gates._ted_asked_about_deletion([message("assistant", said)])
+
+    def test_the_live_3_sep_question_is_accepted(self) -> None:
+        self.assertTrue(
+            self.asked(
+                "just to make sure, you want me to permanently wipe everything I "
+                "have on you, profile, targets, logs, all of it? no undo once "
+                "it's done. say the word and I'll do it."
+            )
+        )
+
+    def test_the_words_a_model_actually_reaches_for(self) -> None:
+        for said in (
+            "this wipes everything, no undo. delete?",
+            "delete everything i have on you?",
+            "want me to erase all of it? there's no undo",
+            "shall i clear all your data?",
+            "remove everything, permanently? say yes and it's gone",
+            "you want your whole history gone?",
+        ):
+            with self.subTest(said=said):
+                self.assertTrue(self.asked(said))
+
+    def test_a_narrow_question_still_cannot_wipe_an_account(self) -> None:
+        """The reason the strict version existed, and it still has to hold."""
+        for said in (
+            "shall i delete that meal?",
+            "want me to remove the dosa from today?",
+            "should i clear that one entry?",
+            "i'll wipe that last log, ok?",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(self.asked(said))
+
+    def test_a_statement_is_not_a_question(self) -> None:
+        self.assertFalse(self.asked("i can delete everything you've logged."))
+
+    def test_an_unrelated_question_is_not_a_deletion_question(self) -> None:
+        for said in (
+            "how did everything go today?",
+            "want me to log all of it?",
+        ):
+            with self.subTest(said=said):
+                self.assertFalse(self.asked(said))
