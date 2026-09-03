@@ -76,6 +76,17 @@ PATCHES = (
         ),
     },
     {
+        "file": "05-busy-acks-in-teds-voice.patch",
+        "what": "the busy/interrupt acknowledgements in Ted's voice",
+        "checks": (
+            {
+                "path": "gateway/run.py",
+                "present": ("one sec, finishing the last one first",),
+                "absent": ("\u26a1 Interrupting current task",),
+            },
+        ),
+    },
+    {
         "file": "02-plain-language-provider-errors.patch",
         "what": "plain-language provider errors",
         "checks": (

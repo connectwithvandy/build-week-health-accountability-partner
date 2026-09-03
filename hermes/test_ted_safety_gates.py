@@ -4408,3 +4408,32 @@ class TedsVoiceSurvivesTheFigureStripTest(unittest.TestCase):
         self.assertEqual(
             gates.words_without_figures("ooh power bowl 💪 that is 614 kcal"), ""
         )
+
+
+class OpenerNamesTheThreeInputsTest(unittest.TestCase):
+    """A capability nobody is told about is a capability nobody has.
+
+    A tester on 3 Sep typed everything out for forty minutes and only tried a
+    voice note after being told by another person that voice worked. Text,
+    photo and voice are all built, and the opener named none of them.
+    """
+
+    def test_the_opener_names_photo_and_voice(self) -> None:
+        opener = gates.OPENING_MESSAGE.lower()
+        self.assertIn("photo", opener)
+        self.assertIn("voice", opener)
+
+    def test_it_still_ends_on_the_name_question(self) -> None:
+        """The opener counts as asking for the name, so it has to still ask."""
+        self.assertTrue(gates.OPENING_MESSAGE.rstrip().endswith("?"))
+        self.assertIn("call you", gates.OPENING_MESSAGE)
+
+    def test_a_prepared_start_still_gets_it_verbatim(self) -> None:
+        self.assertEqual(
+            transform_response(
+                history=[message("user", "Okay Ted, let's do this!")],
+                user_message="Okay Ted, let's do this!",
+                response_text="something the model made up instead.",
+            ),
+            gates.OPENING_MESSAGE,
+        )

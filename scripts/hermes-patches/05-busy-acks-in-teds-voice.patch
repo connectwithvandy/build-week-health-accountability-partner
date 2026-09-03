@@ -1,0 +1,47 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -6236,29 +6236,15 @@
+-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+-        if is_steer_mode:
+-            message = (
+-                f"⏩ Steered into current run{status_detail}. "
+-                f"Your message arrives after the next tool call."
+-            )
+-        elif is_queue_mode and demoted_for_subagents:
+-            # #30170 — explain the demotion so the user knows their
+-            # follow-up didn't accidentally kill the subagent and
+-            # discovers `/stop` as the explicit escape hatch.
+-            message = (
+-                f"⏳ Subagent working{status_detail} — your message is queued for "
+-                f"when it finishes (use /stop to cancel everything)."
+-            )
+-        elif is_queue_mode and demoted_for_compression:
+-            message = (
+-                f"⏳ Compressing context{status_detail} — your message is queued for "
+-                f"when it finishes (use /stop to cancel everything)."
+-            )
+-        elif is_queue_mode:
+-            message = (
+-                f"⏳ Queued for the next turn{status_detail}. "
+-                f"I'll respond once the current task finishes."
+-            )
+-        else:
+-            message = (
+-                f"⚡ Interrupting current task{status_detail}. "
+-                f"I'll respond to your message shortly."
+-            )
++        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
++        # Ted patch 05. This goes to a person on WhatsApp who sent two messages
++        # in a row, which is how people talk. "Interrupting current task",
++        # "Queued for the next turn", "/stop" and the status detail are all
++        # internal machinery, and SOUL.md forbids showing it. A tester on 3 Sep
++        # read these as the product breaking. Identical behaviour, said the way
++        # someone who is a moment behind would say it. The compression and
++        # subagent branches collapse into one because the difference between
++        # them is not the user's to care about.
++        if is_steer_mode:
++            message = "got it, adding that to what i'm already on 👍"
++        elif is_queue_mode:
++            message = "one sec, finishing the last one first 🙏"
++        else:
++            message = "one sec 🙏"

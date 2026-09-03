@@ -20,12 +20,18 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOGGER = logging.getLogger("ted.safety_gates")
 PRIVACY_URL = "https://heyted.vercel.app/privacy"
+# The three inputs are named here because nowhere else said so. A tester on
+# 3 Sep used Ted for forty minutes typing everything out, and only sent a
+# voice note after being told by someone else that it worked. A capability
+# nobody is told about is a capability nobody has.
 OPENING_MESSAGE = (
     "hey! good energy, let's set this up right.\n\n"
     "here's the deal: you tell me what you ate or what you got done, i keep "
     "score, nudge you when it's useful, and close out the day with a quick "
     "recap, like \"protein: on track, steps: short by 2k, one thing for "
     "tomorrow.\"\n\n"
+    "type it, send a photo of your plate, or just talk to me — voice notes "
+    "are usually fastest.\n\n"
     "first things first. what should i call you?"
 )
 DISCLOSURE_MESSAGE = (
