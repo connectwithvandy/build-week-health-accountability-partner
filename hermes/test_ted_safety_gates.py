@@ -2128,6 +2128,21 @@ class RepeatTargetAskGateTest(unittest.TestCase):
         "just numbers floating without a goal, wanna fix that?"
     )
 
+    # Live, 3 Sep, 20:54:59 and 20:55:04 — two "how am i doing" messages that
+    # arrived five seconds apart. Kept verbatim: the second one is the exact
+    # sentence the gate was built to stop and did not.
+    FIRST_LIVE = (
+        "sprouts, cutlets, and that peanut toast, three light meals so far, "
+        "but zero water and steps logged. no target set either so i can't "
+        "really tell you good or bad, just... floating. wanna fix the target "
+        "bit?"
+    )
+    SECOND_LIVE = (
+        "same picture as a sec ago Vandy, three meals in, water and steps "
+        "still at zero. give me a target and this actually turns into an "
+        "answer instead of a shrug \U0001f937\u200d\u2640\ufe0f"
+    )
+
     def setUp(self) -> None:
         self.user_key = f"repeat-target-{id(self)}"
         self.addCleanup(gates._ONBOARDING_STATE.pop, self.user_key, None)
@@ -2149,6 +2164,41 @@ class RepeatTargetAskGateTest(unittest.TestCase):
         # What is left is the actual answer to "how am i doing".
         self.assertIn("peanut toast", stripped)
         self.assertIn("three light-ish meals", stripped)
+
+
+    def test_an_ask_without_a_question_mark_still_counts(self) -> None:
+        """The 20:54 pair on 3 Sep, five seconds apart, that got past the gate.
+
+        The first ask ended "wanna fix the target bit?" and was counted. The
+        second was an imperative — no "?" — so the trigger said no and the
+        nag went out.
+        """
+        self.assertIsNone(self.ask(self.FIRST_LIVE))
+        stripped = self.ask(self.SECOND_LIVE)
+        self.assertEqual(
+            stripped,
+            "same picture as a sec ago Vandy, three meals in, water and "
+            "steps still at zero.",
+        )
+
+    def test_a_demand_is_told_apart_from_a_confirmation(self) -> None:
+        """Both open with a verb and both say "target"; only one is an ask."""
+        for demand in (
+            "give me a target and this actually turns into an answer",
+            "set a target and we're away",
+            "let's fix a calorie target",
+            "just tell me your protein target",
+        ):
+            with self.subTest(demand=demand):
+                self.assertTrue(gates._is_target_ask(demand))
+        for statement in (
+            "your daily step target is set at 9000 steps.",
+            "i've set your protein target to 90g.",
+            "8,200 is close, just 800 short of your 9,000 target today.",
+            "give me a shout when you're done",
+        ):
+            with self.subTest(statement=statement):
+                self.assertFalse(gates._is_target_ask(statement))
 
     def test_a_new_day_earns_one_more_ask(self) -> None:
         self.assertIsNone(self.ask(self.FIRST))
@@ -2301,6 +2351,75 @@ class RepeatTargetAskGateTest(unittest.TestCase):
         self.assertIsNone(
             gates.repeat_target_ask_gate("how am i doing", self.SECOND, "")
         )
+
+
+class TheCardDoesNotTeachRudenessTest(unittest.TestCase):
+    """The rude line came from the documents, not from the model.
+
+    "want to give me a protein target so this actually means something?" sat
+    in SOUL.md as the good answer and in VOICE_CARD as a worked example. On
+    3 Sep at 20:55 Ted wrote "give me a target and this actually turns into
+    an answer instead of a shrug" — the same sentence with the serial numbers
+    filed off. It copied what it was shown, which is what a worked example is
+    for. So the examples are the fix, and this is the guard on them.
+    """
+
+    SOUL = Path(__file__).with_name("SOUL.md")
+
+    # Telling the user their own day is worthless until they do you a favour.
+    PUNCHLINE = (
+        "so this actually means something",
+        "instead of a shrug",
+        "just numbers floating",
+        "nothing to measure against",
+    )
+
+    def examples(self) -> list[str]:
+        """Only the "Real examples of you:" block.
+
+        The "Never you:" block quotes these same sentences on purpose, which
+        is the point of it.
+        """
+        lines: list[str] = []
+        collecting = False
+        for line in gates.VOICE_CARD.splitlines():
+            if line.startswith("Real examples of you:"):
+                collecting = True
+                continue
+            if collecting and line and not line.startswith(" "):
+                break
+            if collecting and line.strip():
+                lines.append(line.strip())
+        return lines
+
+    def test_the_block_is_found_at_all(self) -> None:
+        """A guard on the guard: a renamed heading must not pass silently."""
+        self.assertGreater(len(self.examples()), 4)
+
+    def test_the_card_never_shows_it_as_something_to_say(self) -> None:
+        for said in self.examples():
+            for phrase in self.PUNCHLINE:
+                with self.subTest(line=said, phrase=phrase):
+                    self.assertNotIn(phrase, said)
+
+    def test_ted_does_not_order_the_user_about(self) -> None:
+        """"give me a target" is an order. The card must not model one."""
+        for said in self.examples():
+            with self.subTest(said=said):
+                self.assertFalse(
+                    said.strip('"').startswith(("give me a target", "set a target")),
+                    f"the card shows an order as something to say: {said}",
+                )
+
+    def test_soul_never_marks_it_with_a_tick(self) -> None:
+        if not self.SOUL.exists():
+            self.skipTest("SOUL.md is not beside the tests")
+        for line in self.SOUL.read_text(encoding="utf-8").splitlines():
+            if "\u2713" not in line and "\u2705" not in line:
+                continue
+            for phrase in self.PUNCHLINE:
+                with self.subTest(line=line[:60], phrase=phrase):
+                    self.assertNotIn(phrase, line)
 
 
 class ReminderReceiptGateTest(unittest.TestCase):

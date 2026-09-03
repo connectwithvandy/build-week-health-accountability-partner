@@ -2098,12 +2098,38 @@ def _sentences(text: str) -> Iterator[str]:
                 yield sentence
 
 
+# An ask does not need a question mark.
+#
+# The 20:54 pair on 3 Sep is the whole reason this exists, and the gate
+# watched it go past. The first ask ended "wanna fix the target bit?" and was
+# counted; the second was "give me a target and this actually turns into an
+# answer instead of a shrug", which is an imperative. No "?", so
+# `_is_target_ask` said no and the nag went out five seconds after the one it
+# was repeating.
+#
+# Dropping the question mark outright is not the fix: the cue list contains
+# "set", and "your calorie target is set at 1400" would become an ask. What
+# separates them is who the sentence is addressed to. A demand opens with the
+# verb and points at the user; a confirmation opens with "your", "i've", or a
+# number. So the imperative is matched at the start of the sentence, where it
+# has to be to be a demand at all.
+_TARGET_DEMAND = re.compile(
+    r"^(?:so\s+|ok(?:ay)?\s+|now\s+|and\s+|but\s+|then\s+|just\s+"
+    r"|let'?s\s+|c'?mon\s+|come\s+on\s+)*"
+    r"(?:give|set|send|pick|choose|share|tell|drop|throw|name|decide|fix"
+    r"|hit\s+me\s+with)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_target_ask(sentence: str) -> bool:
+    stripped = sentence.strip()
+    asks = "?" in stripped or _TARGET_DEMAND.match(stripped)
     return bool(
-        "?" in sentence
-        and _TARGET_WORD.search(sentence)
-        and _TARGET_ASK_CUE.search(sentence)
-        and not _NOT_A_TARGET_ASK.search(sentence)
+        asks
+        and _TARGET_WORD.search(stripped)
+        and _TARGET_ASK_CUE.search(stripped)
+        and not _NOT_A_TARGET_ASK.search(stripped)
     )
 
 
@@ -2527,8 +2553,9 @@ Real examples of you:
   "can't read PDFs yet 😅 screenshot it?"
   "green tea, ten minutes on the clock ⏳"
   "that's your ten. green tea 🍵"
-  "sprouts and cutlets so far, light-ish day. want to give me a protein
-   target so this actually means something?"
+  "sprouts and cutlets \u2014 two meals in, nice one \U0001f64c want to give me a
+   protein target to aim at?"
+  "three meals in and that's the solid bit \U0001f4aa water's the one still at zero"
 
 Never you:
   "Got it! Let's adjust the breakdown:" then a bulleted table
@@ -2538,6 +2565,10 @@ Never you:
   "done, pinging you in 10 🍵" (a receipt. say the thing back instead)
   "green tea time 🍵" (a calendar alert wearing an emoji)
   The same answer you gave two hours ago with new adjectives on it
+  "so this actually means something" / "instead of a shrug" — their day
+   is never the punchline
+  "give me a target" — you ask, never instruct
+  Opening with the gap. What they did comes first.
   Any sentence you would not say out loud at a chai stall.
 
 The numbers are appended under your reply by code, from the database. Do not
@@ -2572,7 +2603,7 @@ def _voice_card(user_key: str) -> str:
         "something lands: a nudge they have already skipped, a streak worth "
         "marking, one soft push. Never as a greeting, never in every message, "
         "never in the same message twice.\n"
-        f'  "{name}, water\'s at zero and it\'s 6pm \U0001f4a7"\n'
+        f'  "{name}, water\'s the one thing missing today \U0001f4a7"\n'
         f'  "three days straight now {name} \U0001f44f"'
     )
 
