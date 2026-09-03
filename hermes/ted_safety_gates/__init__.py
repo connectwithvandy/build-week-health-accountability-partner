@@ -266,6 +266,10 @@ _DELETE_CONFIRMATIONS = frozenset(
     {
         "yes", "y", "yeah", "yep", "yes please",
         "yes delete", "yes delete it", "yes delete everything",
+        # DELETE_CONFIRMATION_QUESTION asks for this exact word, and it was
+        # missing: on 3 Sep Ted told a user to reply "delete", they replied
+        # "Delete", and it was not read as a confirmation.
+        "delete",
         "delete it", "delete everything",
         "confirm", "confirmed", "i confirm",
         "go ahead", "yes go ahead",
@@ -304,12 +308,76 @@ _ERASURE_SCOPE = re.compile(
 )
 
 
+# The request, which is never also the confirmation. Scope is mandatory:
+# "delete my data", "erase my account", "wipe everything" — but not "delete
+# that meal", which is an ordinary correction.
+_DELETE_REQUEST = re.compile(
+    r"\b(?:delete|erase|wipe|remove|clear|forget)\s+"
+    r"(?:all\s+)?(?:of\s+)?"
+    r"(?:my|the)?\s*"
+    r"(?:data|account|info|information|history|records?|profile|everything|"
+    r"stuff|details)\b"
+    r"|\b(?:delete|erase|wipe|remove|forget)\s+everything\b"
+    r"|\bforget\s+(?:me|about\s+me)\b"
+)
+
+
 def _ted_asked_about_deletion(history: Iterable[dict[str, Any]]) -> bool:
     """An answer only confirms something that was actually asked."""
     asked = _last_assistant_turn(history).lower()
     if "?" not in asked:
         return False
     return bool(_ERASURE_VERB.search(asked) and _ERASURE_SCOPE.search(asked))
+
+
+# Reading Ted's prose to decide whether Ted asked was wrong twice in ten
+# minutes on 3 Sep. First it wanted the word "delete" and Ted said "wipe".
+# Then it wanted a question mark and Ted wrote `reply with the single word
+# "delete" if you mean it.` — a clearer request than a question, ending in a
+# full stop. Both times the user had asked to be erased, answered, and been
+# told nothing was deleted. A third vocabulary patch would have been the same
+# bet again, so the gate asks the question itself and remembers that it did.
+# The heuristic above stays as a fallback, for a model that gets there first.
+DELETE_CONFIRMATION_QUESTION = (
+    "this deletes everything i have on you — your profile, targets, logs and "
+    "this whole conversation. there is no undo. do you want me to delete all "
+    "of it? reply “delete” if you do."
+)
+
+# How long a pending confirmation stays good. Long enough to answer after
+# putting the phone down, short enough that a "yes" tomorrow, to something
+# else entirely, cannot land on a question nobody remembers being asked.
+_DELETE_PENDING_SECONDS = 30 * 60
+
+
+def _asks_to_delete(text: str) -> bool:
+    """Whether this user turn is a request to erase their account.
+
+    Scope is required: "delete that meal" is an edit, not an erasure, and must
+    never open a confirmation that a later "yes" can walk into.
+    """
+    return bool(_DELETE_REQUEST.search(_normalise_reply(_strip_memory_context(text))))
+
+
+def _mark_delete_pending(user_key: str) -> None:
+    _update_onboarding(user_key, delete_asked_at=time.time())
+
+
+def _clear_delete_pending(user_key: str) -> None:
+    if not user_key or "delete_asked_at" not in _onboarding(user_key):
+        return
+    with _ONBOARDING_LOCK:
+        record = _ONBOARDING_STATE.get(user_key)
+        if record is not None and record.pop("delete_asked_at", None) is not None:
+            _persist_onboarding_state()
+
+
+def _delete_is_pending(user_key: str) -> bool:
+    """Whether the gate itself asked this user to confirm, recently."""
+    asked_at = _onboarding(user_key).get("delete_asked_at")
+    if not isinstance(asked_at, (int, float)):
+        return False
+    return (time.time() - asked_at) <= _DELETE_PENDING_SECONDS
 
 
 def _delete_user_data(
@@ -334,7 +402,8 @@ def _delete_user_data(
 
     # `confirmed` is the model's opinion of the conversation. Below is what the
     # user actually typed, and what Ted actually asked. Both have to hold.
-    if not _ted_asked_about_deletion(context.get("history") or []):
+    history = context.get("history") or []
+    if not (_delete_is_pending(user_key) or _ted_asked_about_deletion(history)):
         return json.dumps(
             {
                 "success": False,
@@ -360,6 +429,10 @@ def _delete_user_data(
 
     result = _convex_write("delete", user_key, context_id)
     if result.get("success"):
+        # _forget_user drops the pending record with everything else, but the
+        # order is not obvious enough to rely on, and a stale one is exactly
+        # what must not outlive the deletion it belongs to.
+        _clear_delete_pending(user_key)
         _forget_user(user_key)
         LOGGER.info(
             "ted_user_data_deleted user_key=%s removed=%s",
@@ -1730,6 +1803,20 @@ def transform_response(
     # whatever the model decided to say about it.
     if report_saved is not None:
         return REPORT_CONFIRMATION if report_saved else REPORT_NOT_SAVED
+    # Erasure, before the consent gate: someone asking to be forgotten is
+    # owed that whatever stage of onboarding they are in, and a disclosure is
+    # not an answer to it. The question is fixed so the check on the way back
+    # is a stored fact rather than a reading of Ted's prose.
+    if user_key:
+        if _delete_is_pending(user_key):
+            if not _is_delete_confirmation(user_message):
+                # They said something else, so the question is no longer live.
+                # A "yes" three turns from now must not land on it.
+                _clear_delete_pending(user_key)
+        elif _asks_to_delete(user_message):
+            _mark_delete_pending(user_key)
+            LOGGER.info("ted_delete_confirmation_asked user_key=%s", user_key)
+            return DELETE_CONFIRMATION_QUESTION
     disclosure = consent_gate(history, response_text, user_key)
     if disclosure:
         return disclosure

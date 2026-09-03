@@ -2547,10 +2547,14 @@ class GoldenPathTest(unittest.TestCase):
         self.assertIn("3 meals logged", review)
         self.assertIn("tomorrow: protein at breakfast", review)
 
-        # 8. "delete my data" — claiming deletion with no tool behind it is
-        #    replaced, however confidently the model said it.
+        # 8. "delete my data" — the model claiming it is done, with no tool
+        #    behind it, still never reaches the user. It used to be replaced
+        #    with the generic "I haven't completed that action"; the gate now
+        #    asks the confirmation question itself, which blocks the same
+        #    false claim and moves the erasure forward instead of stalling it.
         refused = self.turn("delete my data", "Done, everything has been deleted.")
-        self.assertEqual(refused, gates.CLAIM_NOT_DONE)
+        self.assertEqual(refused, gates.DELETE_CONFIRMATION_QUESTION)
+        self.assertNotIn("has been deleted", refused)
 
         # 9. Confirmed, with the delete tool proven this turn. Only now does a
         #    deletion confirmation reach the user.
@@ -3974,3 +3978,130 @@ class DeletionQuestionIsRecognisedTest(unittest.TestCase):
         ):
             with self.subTest(said=said):
                 self.assertFalse(self.asked(said))
+
+
+class GateOwnsTheDeletionQuestionTest(unittest.TestCase):
+    """Reading Ted's prose to decide whether Ted asked failed twice on 3 Sep.
+
+    15:53 — Ted asked "you want me to permanently wipe everything I have on
+    you ... all of it?" and the check wanted the literal word "delete".
+    16:02 — Ted wrote `reply with the single word "delete" if you mean it.`
+    and the check wanted a question mark. Both times the user had asked to be
+    erased, answered clearly, and been told nothing was deleted. The gate now
+    asks the question itself and remembers that it did.
+    """
+
+    SESSION = "session-delete-owned"
+    USER_KEY = "whatsapp:sha256:deleter"
+
+    def setUp(self) -> None:
+        for target in (
+            patch.object(gates, "_ONBOARDING_STATE", {}),
+            patch.object(gates, "_persist_onboarding_state"),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [message("assistant", DISCLOSURE_MESSAGE)],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": self.USER_KEY,
+            }
+        self.addCleanup(self._drop)
+
+    def _drop(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def ask(self, said: str, reply: str = "sure thing") -> str | None:
+        return gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message=said,
+            response_text=reply,
+            user_key=self.USER_KEY,
+        )
+
+    def confirm(self, said: str) -> dict:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION]["user_message"] = said
+        with patch.object(gates, "_convex_request", lambda *a, **k: {"success": True}):
+            with patch.object(gates, "_forget_user"):
+                return json.loads(
+                    gates._delete_user_data({"confirmed": True}, session_id=self.SESSION)
+                )
+
+    def test_the_request_gets_the_gate_s_own_question(self) -> None:
+        self.assertEqual(self.ask("delete my data"), gates.DELETE_CONFIRMATION_QUESTION)
+        self.assertTrue(gates._delete_is_pending(self.USER_KEY))
+
+    def test_the_word_the_question_asks_for_is_accepted(self) -> None:
+        """Ted told a user to reply "delete"; "Delete" was then refused."""
+        self.ask("delete my data")
+        self.assertTrue(self.confirm("Delete")["success"])
+
+    def test_the_erasure_completes_without_reading_ted_s_wording(self) -> None:
+        self.ask("delete my data")
+        for word in ("yes", "Yes", "confirm", "go ahead", "haan"):
+            with self.subTest(word=word):
+                gates._mark_delete_pending(self.USER_KEY)
+                self.assertTrue(self.confirm(word)["success"])
+
+    def test_a_request_is_still_never_its_own_confirmation(self) -> None:
+        self.ask("delete my data")
+        result = self.confirm("delete my data")
+        self.assertFalse(result["success"])
+        self.assertIn("not an explicit confirmation", result["error"])
+
+    def test_nothing_is_deleted_when_the_gate_never_asked(self) -> None:
+        result = self.confirm("yes")
+        self.assertFalse(result["success"])
+        self.assertIn("Nothing has been deleted", result["error"])
+
+    def test_editing_one_meal_is_not_an_erasure_request(self) -> None:
+        for said in (
+            "delete that meal",
+            "remove the dosa from today",
+            "clear that last entry",
+        ):
+            with self.subTest(said=said):
+                self.assertNotEqual(
+                    self.ask(said), gates.DELETE_CONFIRMATION_QUESTION
+                )
+                self.assertFalse(gates._delete_is_pending(self.USER_KEY))
+
+    def test_the_question_stops_being_live_once_they_talk_about_something_else(
+        self,
+    ) -> None:
+        """A "yes" three turns later must not land on a question nobody
+        remembers being asked."""
+        self.ask("delete my data")
+        self.ask("actually, logged a dosa for lunch")
+        self.assertFalse(gates._delete_is_pending(self.USER_KEY))
+        self.assertFalse(self.confirm("yes")["success"])
+
+    def test_a_stale_question_expires(self) -> None:
+        self.ask("delete my data")
+        gates._update_onboarding(
+            self.USER_KEY,
+            delete_asked_at=time.time() - gates._DELETE_PENDING_SECONDS - 1,
+        )
+        self.assertFalse(gates._delete_is_pending(self.USER_KEY))
+        self.assertFalse(self.confirm("yes")["success"])
+
+    def test_the_ways_people_ask_to_be_forgotten(self) -> None:
+        for said in (
+            "delete my data",
+            "Delete my data",
+            "delete my account",
+            "erase everything",
+            "wipe my data please",
+            "remove all my information",
+            "forget me",
+        ):
+            with self.subTest(said=said):
+                gates._clear_delete_pending(self.USER_KEY)
+                self.assertEqual(
+                    self.ask(said), gates.DELETE_CONFIRMATION_QUESTION
+                )
