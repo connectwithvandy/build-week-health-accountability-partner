@@ -236,13 +236,60 @@ describe("Near-duplicate logs (milestone 10)", () => {
     },
   });
 
+  const plate = (items: string[]) => ({
+    items,
+    calories: 400,
+    proteinGrams: 14,
+    carbohydrateGrams: 50,
+    fatGrams: 10,
+    fiberGrams: 5,
+  });
+
   it("flags the same lunch described again twenty minutes later", () => {
     const clash = findClashingEntry([meal(noon)], {
       entryType: "meal",
       occurredAt: noon + minutes(20),
       commitmentId: undefined,
+      meal: plate(["rice", "dal"]),
     });
     expect(clash?.dedupeKey).toBe(`k${noon}`);
+  });
+
+  it("lets a second photo of different food straight through", () => {
+    // 3 Sep: a second photo, of completely different food, was held back to
+    // ask "is this a second one or the same thing again?". The window was the
+    // only thing being checked, so the answer was always obvious.
+    expect(
+      findClashingEntry([meal(noon)], {
+        entryType: "meal",
+        occurredAt: noon + minutes(20),
+        commitmentId: undefined,
+        meal: plate(["oats", "protein powder", "nuts and seeds"]),
+      }),
+    ).toBeNull();
+  });
+
+  it("still catches the same meal worded differently", () => {
+    expect(
+      findClashingEntry([meal(noon)], {
+        entryType: "meal",
+        occurredAt: noon + minutes(10),
+        commitmentId: undefined,
+        meal: plate(["the rice I just had"]),
+      })?.dedupeKey,
+    ).toBe(`k${noon}`);
+  });
+
+  it("falls back to the window when a meal has no readable items", () => {
+    // An empty set must not silently switch the duplicate guard off.
+    expect(
+      findClashingEntry([meal(noon)], {
+        entryType: "meal",
+        occurredAt: noon + minutes(20),
+        commitmentId: undefined,
+        meal: plate([]),
+      })?.dedupeKey,
+    ).toBe(`k${noon}`);
   });
 
   it("lets a genuinely separate meal through once the window has passed", () => {

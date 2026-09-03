@@ -2353,11 +2353,20 @@ TED_LOG_ENTRY_SCHEMA = {
     "description": (
         "Record one thing the current WhatsApp user actually did today: a "
         "meal, water, steps, a workout, or a commitment they kept. Call this "
-        "every time they tell you about one, before you reply about it. To "
-        "replace an entry they corrected, pass corrects_dedupe_key with the "
-        "dedupe_key returned when you logged the original. If this returns "
-        "needsConfirmation, nothing was written: ask the one question in "
-        "'ask', then call it again with the flag it names."
+        "every time they tell you about one, before you reply about it. "
+        "Estimate first, ask later: assume ordinary home portions and log "
+        "your best numbers the moment they name the food. Do NOT ask about "
+        "portion size, brand, cooking method or whether milk went in before "
+        "calling this — a logged estimate they can correct in one message is "
+        "worth more to them than a more accurate number three questions "
+        "later, and correcting is one call with corrects_dedupe_key. If you "
+        "genuinely cannot tell what the food is, log it with "
+        "state 'pendingClarification' and ask; that keeps it out of their "
+        "totals until they answer, and still leaves something on the record. "
+        "To replace an entry they corrected, pass corrects_dedupe_key with "
+        "the dedupe_key returned when you logged the original. If this "
+        "returns needsConfirmation, nothing was written: ask the one question "
+        "in 'ask', then call it again with the flag it names."
     ),
     "parameters": {
         "type": "object",
@@ -3109,6 +3118,45 @@ def _confirmation_needed(
     }
 
 
+# Protein and carbohydrate are about 4 kcal a gram, fat about 9. The sum is an
+# approximation — fibre yields less, cooking and rounding move it — so the
+# tolerance is deliberately loose. This is not here to grade an estimate. It is
+# here to catch a number that cannot be true at all, because nothing else
+# would: the gate guarantees the figure it prints is the figure in the
+# database, and would print a physically impossible one just as confidently.
+#
+# Checked only when a macro was actually given. A meal logged as calories
+# alone is an estimate with nothing to contradict, not a wrong one.
+_MACRO_KCAL = (("proteinGrams", 4.0), ("carbohydrateGrams", 4.0), ("fatGrams", 9.0))
+
+
+def _macros_contradict_calories(meal: dict[str, Any]) -> str:
+    """A short reason when the macros and the calorie figure cannot agree."""
+    macros = [(name, float(meal.get(name) or 0)) for name, _ in _MACRO_KCAL]
+    if not any(grams > 0 for _, grams in macros):
+        return ""
+    implied = sum(
+        float(meal.get(name) or 0) * kcal_per_gram for name, kcal_per_gram in _MACRO_KCAL
+    )
+    stated = float(meal.get("calories") or 0)
+    # A meal with macros and no calorie figure at all is its own contradiction:
+    # the number the user is shown would be zero.
+    if stated <= 0:
+        return f"macros imply about {implied:.0f} kcal but calories is {stated:.0f}"
+    tolerance = max(0.3 * stated, 75.0)
+    # Too few calories for the macros listed is always wrong, however partial
+    # the macros are: the grams already named cannot cost less than they cost.
+    if implied - stated > tolerance:
+        return f"macros imply at least {implied:.0f} kcal, not {stated:.0f}"
+    # Too many is only wrong when all three are present. "380 kcal, 19g
+    # protein" is an ordinary partial estimate, not a contradiction — the
+    # carbohydrate and fat it does not mention are what make up the rest, and
+    # the first version of this check refused exactly that.
+    if all(grams > 0 for _, grams in macros) and stated - implied > tolerance:
+        return f"macros imply about {implied:.0f} kcal, not {stated:.0f}"
+    return ""
+
+
 def _log_daily_entry(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -3162,6 +3210,15 @@ def _log_daily_entry(
             "fatGrams": float(meal.get("fat_grams") or 0),
             "fiberGrams": float(meal.get("fiber_grams") or 0),
         }
+        impossible = _macros_contradict_calories(body["meal"])
+        if impossible:
+            LOGGER.info("ted_meal_macros_rejected user_key=%s %s", user_key, impossible)
+            return _refused(
+                "Nothing was saved: those macros and that calorie number "
+                f"cannot both be true ({impossible}). Work the calories out "
+                "from the macros — protein and carbs are 4 kcal a gram, fat "
+                "is 9 — and call this again. Do not tell them it is logged."
+            )
 
     # Milestone 10. `today` is what makes a named date checkable at all; the
     # two flags are how the model says the question has been asked and

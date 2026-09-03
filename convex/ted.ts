@@ -362,6 +362,7 @@ export const logDailyEntry = internalMutation({
         entryType: args.entryType,
         occurredAt,
         commitmentId: args.commitmentId,
+        meal: args.meal,
       });
       if (clash) {
         return {

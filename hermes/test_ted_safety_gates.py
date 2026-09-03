@@ -4105,3 +4105,124 @@ class GateOwnsTheDeletionQuestionTest(unittest.TestCase):
                 self.assertEqual(
                     self.ask(said), gates.DELETE_CONFIRMATION_QUESTION
                 )
+
+
+class MacrosMustAgreeWithCaloriesTest(unittest.TestCase):
+    """The gate guarantees the figure it prints is the figure in the database.
+
+    It does not guarantee the figure is possible. Nutrition is a language
+    model's guess with no food database behind it, and an impossible meal
+    would be stored and shown in the same confident block as a good one.
+    This is the cheapest floor under it: protein and carbs at 4 kcal a gram,
+    fat at 9, with a loose tolerance because the sum is an approximation and
+    this is not here to grade an estimate.
+    """
+
+    def reason(self, **meal) -> str:
+        full = {
+            "proteinGrams": 0.0,
+            "carbohydrateGrams": 0.0,
+            "fatGrams": 0.0,
+            "fiberGrams": 0.0,
+            "calories": 0.0,
+        }
+        full.update(meal)
+        return gates._macros_contradict_calories(full)
+
+    def test_the_two_real_meals_from_3_sep_pass(self) -> None:
+        """Both of Pradosh's, before and after he corrected the oats."""
+        self.assertEqual(
+            self.reason(
+                calories=390, proteinGrams=33, carbohydrateGrams=34, fatGrams=14
+            ),
+            "",
+        )
+        self.assertEqual(
+            self.reason(
+                calories=610, proteinGrams=41, carbohydrateGrams=72, fatGrams=17
+            ),
+            "",
+        )
+
+    def test_a_partial_estimate_is_not_a_contradiction(self) -> None:
+        """"380 kcal, 19g protein" is an ordinary meal. The first version of
+        this check refused it, and an existing test caught that."""
+        self.assertEqual(self.reason(calories=380, proteinGrams=19), "")
+
+    def test_a_calorie_figure_far_above_its_macros_is_refused(self) -> None:
+        self.assertIn(
+            "not 1200",
+            self.reason(
+                calories=1200, proteinGrams=10, carbohydrateGrams=20, fatGrams=5
+            ),
+        )
+
+    def test_a_calorie_figure_far_below_its_macros_is_refused(self) -> None:
+        self.assertIn(
+            "not 100",
+            self.reason(
+                calories=100, proteinGrams=50, carbohydrateGrams=50, fatGrams=20
+            ),
+        )
+
+    def test_macros_with_no_calorie_figure_are_refused(self) -> None:
+        self.assertIn("calories is 0", self.reason(proteinGrams=30, fatGrams=10))
+
+    def test_calories_alone_are_left_alone(self) -> None:
+        """An estimate with nothing to contradict is not a wrong one."""
+        self.assertEqual(self.reason(calories=450), "")
+
+    def test_ordinary_rounding_is_not_a_contradiction(self) -> None:
+        for calories in (380, 400, 394, 350, 440):
+            with self.subTest(calories=calories):
+                self.assertEqual(
+                    self.reason(
+                        calories=calories,
+                        proteinGrams=33,
+                        carbohydrateGrams=34,
+                        fatGrams=14,
+                    ),
+                    "",
+                )
+
+    def test_a_small_meal_gets_the_flat_margin_not_the_percentage(self) -> None:
+        """30% of a 60 kcal meal is 18, which would fail on rounding alone."""
+        self.assertEqual(self.reason(calories=60, proteinGrams=5, fatGrams=2), "")
+
+    def test_the_impossible_meal_never_reaches_convex(self) -> None:
+        session = "session-macro-guard"
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[session] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": "whatsapp:sha256:macro",
+            }
+        self.addCleanup(
+            lambda: gates._TURN_CONTEXT.pop(session, None)
+        )
+        sent = {}
+
+        def fake_request(action, user_key, facts=None, body=None):
+            sent["called"] = True
+            return {"success": True}
+
+        with patch.object(gates, "_convex_request", fake_request):
+            raw = gates._log_daily_entry(
+                {
+                    "entry_type": "meal",
+                    "meal": {
+                        "items": ["protein shake"],
+                        "calories": 100,
+                        "protein_grams": 50,
+                        "carbohydrate_grams": 50,
+                        "fat_grams": 20,
+                    },
+                },
+                session_id=session,
+            )
+        result = json.loads(raw)
+        self.assertFalse(result["success"])
+        self.assertNotIn("called", sent)
+        self.assertIn("Do not tell them it is logged", result["error"])

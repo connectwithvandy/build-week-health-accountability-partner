@@ -480,9 +480,49 @@ export type ClashCandidate = {
  * Only `confirmed` entries can clash. A `corrected` row has already been
  * superseded, and a `pendingClarification` row is itself an open question.
  */
+/**
+ * The words in a meal's items, as a set, ignoring anything too short to
+ * identify a food. "oats", "protein powder", "nuts and seeds" gives oats,
+ * protein, powder, nuts, seeds — "and" is dropped for being three letters.
+ */
+function foodWords(meal: MealDetail | null | undefined): Set<string> {
+  const words = new Set<string>();
+  for (const item of meal?.items ?? []) {
+    for (const word of String(item).toLowerCase().split(/[^a-z0-9]+/)) {
+      if (word.length >= 4) words.add(word);
+    }
+  }
+  return words;
+}
+
+/**
+ * Whether two entries name any of the same food.
+ *
+ * Only meals carry food, so anything else falls back to the time window
+ * alone, which is the behaviour a workout has always had. A meal with no
+ * readable items also falls back, because an empty set would silently stop
+ * the duplicate guard from ever firing.
+ */
+function sharesFood(
+  entry: ClashCandidate,
+  candidate: Pick<ClashCandidate, "entryType" | "meal">,
+): boolean {
+  if (candidate.entryType !== "meal") return true;
+  const theirs = foodWords(entry.meal);
+  const ours = foodWords(candidate.meal);
+  if (theirs.size === 0 || ours.size === 0) return true;
+  for (const word of ours) {
+    if (theirs.has(word)) return true;
+  }
+  return false;
+}
+
 export function findClashingEntry(
   existing: readonly ClashCandidate[],
-  candidate: Pick<ClashCandidate, "entryType" | "occurredAt" | "commitmentId">,
+  candidate: Pick<
+    ClashCandidate,
+    "entryType" | "occurredAt" | "commitmentId" | "meal"
+  >,
 ): ClashCandidate | null {
   const confirmed = existing.filter((entry) => entry.state === "confirmed");
 
@@ -511,7 +551,15 @@ export function findClashingEntry(
   const inWindow = confirmed.filter(
     (entry) =>
       entry.entryType === candidate.entryType &&
-      Math.abs(entry.occurredAt - candidate.occurredAt) <= windowMs,
+      Math.abs(entry.occurredAt - candidate.occurredAt) <= windowMs &&
+      // Two meals close in time are only a possible repeat when they are
+      // plausibly the same food. On 3 Sep a second photo, of completely
+      // different food, was held back to ask "is this a second one or the
+      // same thing again?" — a question with an obvious answer, asked because
+      // the window was the only thing being checked. A re-delivered message
+      // still carries identical items, so dedupe, which is what this window
+      // exists for, is untouched.
+      sharesFood(entry, candidate),
   );
   if (inWindow.length === 0) return null;
 
