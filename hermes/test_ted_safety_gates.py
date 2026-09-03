@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from hermes import ted_safety_gates as gates
 from hermes.ted_safety_gates import (
@@ -1249,11 +1250,20 @@ class StructuredWriteToolsTest(unittest.TestCase):
             gates._TURN_CONTEXT.pop(self.SESSION, None)
 
     def _capture(self, handler, args):
-        """Run a tool handler, returning the payload it would send to Convex."""
+        """Run a tool handler, returning the write it would send to Convex.
+
+        Reads are skipped. Saving a reminder now also schedules it, and
+        working out when 10:30 in London is on a laptop in Kolkata means
+        reading the user's timezone — a `get` that would otherwise be the last
+        call recorded and leave every assertion here looking at an empty body.
+        """
         sent: dict[str, object] = {}
 
         def fake_request(action, user_key, facts=None, body=None):
-            sent.update({"action": action, "user_key": user_key, "body": body or {}})
+            if action != "get":
+                sent.update(
+                    {"action": action, "user_key": user_key, "body": body or {}}
+                )
             return {"success": True}
 
         with patch.object(gates, "_convex_request", fake_request):
@@ -4437,3 +4447,274 @@ class OpenerNamesTheThreeInputsTest(unittest.TestCase):
             ),
             gates.OPENING_MESSAGE,
         )
+
+
+class RemindersActuallyGetScheduledTest(unittest.TestCase):
+    """A stored preference is not a booked message, and now one becomes one.
+
+    3 Sep, 16:35: a tester asked for a 10:30 supplement nudge. The row saved
+    perfectly, as a separate item, exactly as designed. Nothing scheduled it,
+    so it could never have arrived. Ted's own guard — never claim a reminder
+    is set on the strength of that row — was the right rule about the wrong
+    problem.
+    """
+
+    SESSION = "session-scheduling"
+    USER_KEY = "whatsapp:sha256:scheduled"
+    CHAT = "150319677886614@lid"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": self.USER_KEY,
+                "chat_id": self.CHAT,
+            }
+        self.addCleanup(self._drop)
+        self.calls: list[list[str]] = []
+        for target in (
+            patch.object(gates, "_run_cron_cli", self._fake_cron),
+            patch.object(gates, "_convex_request", lambda *a, **k: {"success": True}),
+            patch.object(gates, "_load_cron_jobs", lambda: self.jobs),
+            patch.object(gates, "_user_time_zone", lambda key: ZoneInfo("Europe/London")),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+        self.jobs: list[dict] = []
+
+    def _fake_cron(self, args) -> bool:
+        self.calls.append(list(args))
+        return True
+
+    def _drop(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def created(self) -> list[list[str]]:
+        return [call for call in self.calls if call and call[0] == "create"]
+
+    def test_a_supplement_nudge_becomes_a_real_job(self) -> None:
+        raw = gates._set_reminder(
+            {
+                "items": [
+                    {
+                        "reminderId": "supplements_morning",
+                        "commitmentId": "supplements",
+                        "localTime": "10:30",
+                        "enabled": True,
+                    }
+                ]
+            },
+            session_id=self.SESSION,
+        )
+        self.assertIn("supplements_morning", json.loads(raw)["scheduled"])
+        create = self.created()[0]
+        self.assertIn(f"whatsapp:{self.CHAT}", create)
+        self.assertIn("supplements", " ".join(create))
+
+    def test_the_job_fires_at_the_users_clock_not_the_laptops(self) -> None:
+        """The scheduler runs in Asia/Kolkata. Pradosh is in London. 10:30
+        means 10:30 where he is."""
+        gates._sync_reminder_jobs(
+            self.USER_KEY,
+            self.CHAT,
+            {
+                "items": [
+                    {
+                        "reminderId": "supplements_morning",
+                        "commitmentId": "supplements",
+                        "localTime": "10:30",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+        expression = self.created()[0][1]
+        london = datetime(2026, 9, 3, 10, 30, tzinfo=ZoneInfo("Europe/London"))
+        here = london.astimezone()
+        self.assertEqual(expression, f"{here.minute} {here.hour} * * *")
+
+    def test_the_daily_review_time_is_scheduled_too(self) -> None:
+        gates._sync_reminder_jobs(
+            self.USER_KEY, self.CHAT, {"dailyReviewTime": "22:00"}
+        )
+        self.assertEqual(len(self.created()), 1)
+
+    def test_a_disabled_reminder_is_not_scheduled(self) -> None:
+        gates._sync_reminder_jobs(
+            self.USER_KEY,
+            self.CHAT,
+            {
+                "items": [
+                    {
+                        "reminderId": "off",
+                        "commitmentId": "x",
+                        "localTime": "09:00",
+                        "enabled": False,
+                    }
+                ]
+            },
+        )
+        self.assertEqual(self.created(), [])
+
+    def test_saving_the_same_preference_twice_does_not_stack_jobs(self) -> None:
+        item = {
+            "reminderId": "supplements_morning",
+            "commitmentId": "supplements",
+            "localTime": "10:30",
+            "enabled": True,
+        }
+        gates._sync_reminder_jobs(self.USER_KEY, self.CHAT, {"items": [item]})
+        expression = self.created()[0][1]
+        # The job now exists, with that schedule.
+        self.jobs = [
+            {
+                "id": "abc123",
+                "name": gates._reminder_job_name(self.USER_KEY, "supplements_morning"),
+                "schedule_display": expression,
+            }
+        ]
+        self.calls.clear()
+        gates._sync_reminder_jobs(self.USER_KEY, self.CHAT, {"items": [item]})
+        self.assertEqual(self.calls, [])
+
+    def test_changing_the_time_replaces_the_job_rather_than_adding_one(self) -> None:
+        self.jobs = [
+            {
+                "id": "abc123",
+                "name": gates._reminder_job_name(self.USER_KEY, "supplements_morning"),
+                "schedule_display": "0 5 * * *",
+            }
+        ]
+        gates._sync_reminder_jobs(
+            self.USER_KEY,
+            self.CHAT,
+            {
+                "items": [
+                    {
+                        "reminderId": "supplements_morning",
+                        "commitmentId": "supplements",
+                        "localTime": "11:00",
+                        "enabled": True,
+                    }
+                ]
+            },
+        )
+        self.assertEqual(self.calls[0][:2], ["remove", "abc123"])
+        self.assertEqual(len(self.created()), 1)
+
+    def test_a_reminder_the_user_removed_stops_firing(self) -> None:
+        self.jobs = [
+            {
+                "id": "old1",
+                "name": gates._reminder_job_name(self.USER_KEY, "gone"),
+                "schedule_display": "0 5 * * *",
+            }
+        ]
+        gates._sync_reminder_jobs(self.USER_KEY, self.CHAT, {"items": []})
+        self.assertEqual(self.calls[0][:2], ["remove", "old1"])
+
+    def test_changing_only_quiet_hours_cancels_nothing(self) -> None:
+        """Convex leaves the items array alone when it is not sent, so this
+        payload says nothing about which reminders exist. Reading its silence
+        as "none" would cancel every nudge the user has."""
+        self.jobs = [
+            {
+                "id": "keep1",
+                "name": gates._reminder_job_name(self.USER_KEY, "supplements_morning"),
+                "schedule_display": "0 5 * * *",
+            }
+        ]
+        gates._sync_reminder_jobs(
+            self.USER_KEY,
+            self.CHAT,
+            {"quietHoursStart": "23:00", "quietHoursEnd": "07:00"},
+        )
+        self.assertEqual(self.calls, [])
+
+    def test_a_scheduling_failure_never_loses_the_saved_preference(self) -> None:
+        with patch.object(gates, "_sync_reminder_jobs", side_effect=RuntimeError("no")):
+            result = json.loads(
+                gates._set_reminder({"max_per_day": 2}, session_id=self.SESSION)
+            )
+        self.assertTrue(result["success"])
+        self.assertNotIn("scheduled", result)
+
+    def test_a_malformed_time_is_skipped_not_scheduled(self) -> None:
+        for bad in ("10:30 am", "25:00", "1030", "", "half past ten"):
+            with self.subTest(bad=bad):
+                self.assertIsNone(
+                    gates._cron_expression(bad, ZoneInfo("Europe/London"))
+                )
+
+
+class ScheduledIsTheOnlyThingThatProvesAReminderTest(unittest.TestCase):
+    """"8pm check-in is set" is true only when something will fire at 8pm."""
+
+    SESSION = "session-claim-scheduled"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": "whatsapp:sha256:claims",
+            }
+        self.addCleanup(self._drop)
+
+    def _drop(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def proven(self, payload: dict, tool: str = "ted_set_reminder") -> set:
+        _record_tool_success(
+            tool_name=tool,
+            status="ok",
+            args={},
+            result=json.dumps(payload),
+            session_id=self.SESSION,
+        )
+        with gates._TURN_LOCK:
+            return set(gates._TURN_CONTEXT[self.SESSION]["successful_actions"])
+
+    def test_a_stored_preference_alone_still_strips_the_claim(self) -> None:
+        proven = self.proven({"success": True})
+        self.assertIn("memory", proven)
+        self.assertNotIn("cron", proven)
+        self.assertNotIn(
+            "8pm check-in is set",
+            action_claim_gate("8pm check-in is set.", successful_actions=proven),
+        )
+
+    def test_a_scheduled_reminder_lets_ted_say_so(self) -> None:
+        proven = self.proven({"success": True, "scheduled": ["supplements_morning"]})
+        self.assertIn("cron", proven)
+        # None means the gate left Ted's sentence alone, which is the whole
+        # point: the claim is now true, so nothing is stripped.
+        self.assertIsNone(
+            action_claim_gate("10:30 nudge is set.", successful_actions=proven)
+        )
+
+    def test_an_empty_scheduled_list_proves_nothing(self) -> None:
+        """Scheduling was attempted and nothing reached the crontab."""
+        self.assertNotIn("cron", self.proven({"success": True, "scheduled": []}))
+
+    def test_onboarding_can_prove_it_too(self) -> None:
+        """The check-in time usually arrives through ted_save_onboarding, and
+        it schedules by the same path."""
+        proven = self.proven(
+            {"success": True, "scheduled": ["daily_review"]}, tool="ted_save_onboarding"
+        )
+        self.assertIn("cron", proven)
+
+    def test_onboarding_without_scheduling_is_still_only_memory(self) -> None:
+        proven = self.proven(
+            {"success": True, "remindersSaved": "defaults"}, tool="ted_save_onboarding"
+        )
+        self.assertIn("memory", proven)
+        self.assertNotIn("cron", proven)

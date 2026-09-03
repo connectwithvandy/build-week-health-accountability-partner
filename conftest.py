@@ -34,6 +34,12 @@ _SANDBOX = Path(tempfile.mkdtemp(prefix="ted-gates-tests-"))
 os.environ["TED_GATES_STATE_DIR"] = str(_SANDBOX / "state")
 os.environ["TED_GATES_AGENT_LOG"] = str(_SANDBOX / "logs" / "agent.log")
 
+# Reminders are real Hermes cron jobs, created by shelling out to the CLI. A
+# test run must not schedule, reschedule or cancel anything on this machine —
+# a stray job is the fixture-key mistake again, with a WhatsApp message on the
+# end of it. Tests that care about scheduling patch _run_cron_cli directly.
+os.environ["TED_GATES_DISABLE_CRON"] = "1"
+
 # The real gateway reads these from ~/.hermes/.env. A test run must never
 # inherit a live Convex URL or secret and write to production.
 os.environ.pop("TED_CONVEX_SITE_URL", None)

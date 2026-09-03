@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
 import urllib.error
@@ -2173,14 +2174,22 @@ def _record_tool_success(**kwargs: Any) -> None:
         proven.add("memory")
     elif tool_name == "ted_memory_delete":
         proven.update({"delete", "memory"})
-    elif tool_name in ("ted_log_entry", "ted_set_target", "ted_save_onboarding"):
+    elif tool_name in ("ted_log_entry", "ted_set_target"):
         proven.add("memory")
-    elif tool_name == "ted_set_reminder":
-        # Deliberately NOT "cron". This stores the user's reminder preference;
-        # the ping itself is a Hermes cronjob. Proving "cron" here would let
-        # "8pm check-in is set" through on the strength of a row that schedules
-        # nothing, which is the exact false claim the gate exists to stop.
+    elif tool_name in ("ted_set_reminder", "ted_save_onboarding"):
+        # Storing the preference proves "memory" and nothing else. The ping is
+        # a Hermes cron job, and for Ted's whole life there was never one:
+        # proving "cron" here would have let "8pm check-in is set" through on
+        # the strength of a row that scheduled nothing.
+        #
+        # It schedules now, and says so. `scheduled` is a list of the reminder
+        # ids that reached the actual crontab, written by this gate from the
+        # CLI's own exit status — not by the model. When it is there, the
+        # claim is true and Ted may make it. When scheduling failed, it is
+        # absent and the claim is stripped exactly as before.
         proven.add("memory")
+        if isinstance(payload.get("scheduled"), list) and payload["scheduled"]:
+            proven.add("cron")
     if not proven:
         return None
 
@@ -3510,6 +3519,180 @@ def _set_target(
     )
 
 
+# ---------------------------------------------------------------------------
+# Reminders that actually arrive.
+#
+# ted_set_reminder writes a preference row. The thing that sends a nudge is a
+# Hermes cron job, and until now nothing created one — so on 3 Sep a tester
+# asked for a 10:30 supplement nudge, the row saved perfectly, Ted said it was
+# set, and the nudge could never have arrived. SOUL.md forbids claiming a
+# reminder is scheduled on the strength of that row, which was the right guard
+# on the wrong problem: the answer is to schedule it.
+#
+# Created through `hermes cron create` rather than by writing jobs.json, so the
+# running scheduler learns about it the way it learns about everything else.
+_CRON_TIME = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _cron_expression(local_time: str, zone: ZoneInfo) -> str | None:
+    """A daily cron expression in *machine* time for a user's wall clock.
+
+    The scheduler runs on Vandy's laptop in Asia/Kolkata. Pradosh is in
+    London. "10:30" means 10:30 where he is, which is not 10:30 here, and a
+    reminder that fires four and a half hours off is worse than none.
+    """
+    match = _CRON_TIME.match(str(local_time or "").strip())
+    if not match:
+        return None
+    hour, minute = int(match.group(1)), int(match.group(2))
+    # Anchored to today so the offset is the one actually in force, rather than
+    # a fixed number that a daylight-saving change quietly invalidates.
+    today = datetime.now(zone).date()
+    theirs = datetime(today.year, today.month, today.day, hour, minute, tzinfo=zone)
+    here = theirs.astimezone()
+    return f"{here.minute} {here.hour} * * *"
+
+
+def _reminder_job_name(user_key: str, reminder_id: str) -> str:
+    """Stable, so re-saving a preference edits one job instead of stacking."""
+    return f"ted:{user_key[-12:]}:{reminder_id}"
+
+
+def _existing_reminder_jobs(prefix: str) -> dict[str, dict[str, Any]]:
+    return {
+        str(job.get("name")): job
+        for job in _load_cron_jobs()
+        if str(job.get("name") or "").startswith(prefix)
+    }
+
+
+def _run_cron_cli(args: list[str]) -> bool:
+    # A test run must never create, edit or delete a real scheduled job on the
+    # machine. conftest.py sets this alongside the state and log redirects, for
+    # the same reason: on 2 Sep test fixture keys were found sitting in live
+    # gateway state, and a stray cron job is the same mistake with a WhatsApp
+    # message on the end of it.
+    if os.environ.get("TED_GATES_DISABLE_CRON") == "1":
+        LOGGER.debug("ted_reminder_cron_suppressed args=%s", args[:2])
+        return False
+    try:
+        finished = subprocess.run(
+            ["hermes", "cron", *args],
+            capture_output=True,
+            text=True,
+            timeout=_CRON_CLI_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        LOGGER.warning("ted_reminder_cron_failed args=%s error=%s", args[:2], error)
+        return False
+    if finished.returncode != 0:
+        LOGGER.warning(
+            "ted_reminder_cron_failed args=%s rc=%s err=%s",
+            args[:2],
+            finished.returncode,
+            (finished.stderr or "").strip()[:200],
+        )
+        return False
+    return True
+
+
+_CRON_CLI_TIMEOUT = 20
+
+
+def _reminder_prompt(label: str) -> str:
+    """What the scheduled run is told to say.
+
+    Deliberately thin. The cron gate already puts whatever comes back under
+    the claim gate, the calorie gate and quiet hours, so this only has to
+    supply the subject.
+    """
+    return (
+        f"Send a short warm WhatsApp nudge about: {label}. One line, lowercase, "
+        "at most one emoji. Ask, do not announce, and never state a number."
+    )
+
+
+def _sync_reminder_jobs(
+    user_key: str, chat_id: str, settings: dict[str, Any]
+) -> list[str]:
+    """Make the schedule on disk match the preferences just saved.
+
+    Returns the reminder ids now actually scheduled. Never raises: a failure
+    here must not take down the write that has already succeeded, and the
+    caller reports what did and did not get scheduled.
+    """
+    if not user_key or not chat_id:
+        return []
+    zone = _user_time_zone(user_key)
+    prefix = f"ted:{user_key[-12:]}:"
+    existing = _existing_reminder_jobs(prefix)
+
+    wanted: list[tuple[str, str, str]] = []
+    for item in settings.get("items") or []:
+        if not isinstance(item, dict) or item.get("enabled") is False:
+            continue
+        reminder_id = str(item.get("reminderId") or "").strip()
+        local_time = str(item.get("localTime") or "")
+        if reminder_id and local_time:
+            label = str(item.get("commitmentId") or reminder_id).replace("_", " ")
+            wanted.append((reminder_id, local_time, label))
+    review_time = str(settings.get("dailyReviewTime") or "")
+    if review_time:
+        wanted.append(("daily_review", review_time, "how their day went"))
+
+    scheduled: list[str] = []
+    for reminder_id, local_time, label in wanted:
+        expression = _cron_expression(local_time, zone)
+        if not expression:
+            continue
+        name = _reminder_job_name(user_key, reminder_id)
+        previous = existing.pop(name, None)
+        if previous:
+            if str(previous.get("schedule_display") or "") == expression:
+                scheduled.append(reminder_id)
+                continue
+            _run_cron_cli(["remove", str(previous.get("id"))])
+        if _run_cron_cli(
+            [
+                "create",
+                expression,
+                _reminder_prompt(label),
+                "--name",
+                name,
+                "--deliver",
+                f"whatsapp:{chat_id}",
+            ]
+        ):
+            scheduled.append(reminder_id)
+            LOGGER.info(
+                "ted_reminder_scheduled user_key=%s id=%s local=%s cron=%s",
+                user_key,
+                reminder_id,
+                local_time,
+                expression,
+            )
+
+    # Anything left in `existing` is a job for a preference that no longer
+    # exists. Left behind, it keeps pinging for something the user turned off.
+    #
+    # Only when this payload carried `items` at all, though. Convex replaces
+    # the whole array when it is sent and leaves it alone when it is not, so a
+    # call that only changed quiet hours says nothing about which reminders
+    # exist — and treating its silence as "none" would cancel every nudge the
+    # user has. The daily review is never removed here for the same reason: it
+    # is set by its own field, and its absence is not a request to stop it.
+    if "items" in settings:
+        for name, job in existing.items():
+            if name.endswith(":daily_review"):
+                continue
+            if _run_cron_cli(["remove", str(job.get("id"))]):
+                LOGGER.info(
+                    "ted_reminder_unscheduled user_key=%s name=%s", user_key, name
+                )
+    return scheduled
+
+
 def _set_reminder(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -3521,10 +3704,31 @@ def _set_reminder(
     body = _camel(args)
     if "pausedUntil" not in body and args.get("paused_until", "missing") is None:
         body["pausedUntil"] = None
-    return json.dumps(
-        _convex_write("reminder", user_key, session_id or task_id, body=body),
-        ensure_ascii=False,
-    )
+    result = _convex_write("reminder", user_key, session_id or task_id, body=body)
+    if result.get("success"):
+        _schedule_saved_reminders(user_key, session_id or task_id, body, result)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _schedule_saved_reminders(
+    user_key: str, context_id: str, settings: dict[str, Any], result: dict[str, Any]
+) -> None:
+    """Put the preferences that just saved onto the actual schedule.
+
+    Reported back to the model so it can only say a reminder is set when one
+    is. A stored row still proves `memory` and never `cron`, so the claim gate
+    is unchanged: this is what finally makes the claim true rather than what
+    lets Ted make it.
+    """
+    with _TURN_LOCK:
+        chat_id = str((_TURN_CONTEXT.get(context_id) or {}).get("chat_id") or "")
+    try:
+        scheduled = _sync_reminder_jobs(user_key, chat_id, settings)
+    except Exception as error:  # noqa: BLE001 - never fail a saved preference
+        LOGGER.warning("ted_reminder_schedule_error user_key=%s %s", user_key, error)
+        return
+    if scheduled:
+        result["scheduled"] = scheduled
 
 
 def _save_onboarding(
@@ -3608,6 +3812,7 @@ def _persist_onboarding_reminders(
 
     _update_onboarding(user_key, reminders_row=True)
     result["remindersSaved"] = sorted(payload) or "defaults"
+    _schedule_saved_reminders(user_key, context_id, payload, result)
     LOGGER.info(
         "ted_onboarding_reminders_saved user_key=%s created=%s fields=%s",
         user_key,
