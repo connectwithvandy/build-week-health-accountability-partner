@@ -244,6 +244,13 @@ def _forget_user(user_key: str) -> None:
         if user_key in _DISCLOSURE_SENT_KEYS:
             _DISCLOSURE_SENT_KEYS.discard(user_key)
             _persist_disclosure_state()
+    # Everything above is now gone, which is the point. This one mark goes back
+    # deliberately: a hashed key and a time, no profile and nothing they told
+    # Ted. Without it the only surviving record of the erasure is the absence
+    # of a record, and absence loses to a transcript that still holds the old
+    # disclosure. Keeping strictly less than the deletion removed is the trade
+    # that makes the deletion hold.
+    _update_onboarding(user_key, forgotten_at=time.time())
     LOGGER.info("ted_user_state_forgotten user_key=%s", user_key)
 
 
@@ -718,6 +725,16 @@ def _disclosure_was_sent(
     """
     if user_key and user_key in _DISCLOSURE_SENT_KEYS:
         return True
+    # Someone who asked to be forgotten is owed the disclosure again, and their
+    # old transcript is the one place the original still exists. The session
+    # outlives the deletion — on 3 Sep a wipe cleared Convex and the durable
+    # record at 15:32, and the next message was answered inside the same
+    # 101-message thread, where the scan below found a disclosure from 1 Sep
+    # and skipped consent for a user whose data had just been erased. An
+    # erasure that scrollback can undo is not an erasure. The durable check
+    # above is what lifts this, so a genuine re-disclosure still counts.
+    if user_key and _onboarding(user_key).get("forgotten_at"):
+        return False
     return any(
         role == "assistant" and _DISCLOSURE_MARKER in text and PRIVACY_URL in text
         for role, text in _messages(history)

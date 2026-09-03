@@ -27,6 +27,21 @@ def message(role: str, content: str) -> dict[str, str]:
     return {"role": role, "content": content}
 
 
+def reset_user(user_key: str) -> None:
+    """Wipe a test key completely, tombstone included.
+
+    `_forget_user` is production behaviour, not a reset: it deliberately
+    leaves a `forgotten_at` mark so a live erasure cannot be undone by a
+    thread that is still open. Used as teardown it therefore leaks a
+    forgotten user into the next test in the class, which is exactly what
+    happened — six meal-breakdown tests started demanding a fresh disclosure.
+    Teardown wants the key gone, so it says so.
+    """
+    gates._forget_user(user_key)
+    with gates._ONBOARDING_LOCK:
+        gates._ONBOARDING_STATE.pop(user_key, None)
+
+
 VANDY_DISCLOSURE = f"hey Vandy 🙂\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
 
 
@@ -2884,8 +2899,8 @@ class MinorFlagDurabilityTest(unittest.TestCase):
     LEAK = "today so far: 1 sandwich + pasta salad, 800 kcal total, 45g protein."
 
     def setUp(self) -> None:
-        self.addCleanup(gates._forget_user, self.KEY)
-        self.addCleanup(gates._forget_user, self.ADULT)
+        self.addCleanup(reset_user, self.KEY)
+        self.addCleanup(reset_user, self.ADULT)
 
     def gate(self, history: list, message: str, reply: str, key: str = "") -> object:
         return gates.calorie_gate(history, message, reply, key or self.KEY)
@@ -2977,7 +2992,7 @@ class UnreadableDocumentTest(unittest.TestCase):
     )
 
     def setUp(self) -> None:
-        self.addCleanup(gates._forget_user, self.KEY)
+        self.addCleanup(reset_user, self.KEY)
         self.history = [message("assistant", DISCLOSURE_MESSAGE)]
 
     def transform(self, user_message: str, reply: str) -> object:
@@ -3269,7 +3284,7 @@ class GatedReplyParityTest(unittest.TestCase):
     def setUp(self) -> None:
         gates._LAST_GATED_REPLY.clear()
         self.addCleanup(gates._LAST_GATED_REPLY.clear)
-        self.addCleanup(gates._forget_user, self.KEY)
+        self.addCleanup(reset_user, self.KEY)
         self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
 
     def key(self) -> str:
@@ -3376,7 +3391,7 @@ class MealBreakdownTest(unittest.TestCase):
     DAY = {"calories": 1060, "proteinGrams": 46}
 
     def setUp(self) -> None:
-        self.addCleanup(gates._forget_user, self.KEY)
+        self.addCleanup(reset_user, self.KEY)
         self.history = [message("assistant", DISCLOSURE_MESSAGE)]
 
     def transform(self, reply: str, meal=None, day=None, **kw):
@@ -3718,3 +3733,109 @@ class OnboardingRemindersTest(unittest.TestCase):
         self.assertEqual(standalone - nested, {"paused_until"})
         self.assertIn("quiet_hours_start", nested)
         self.assertIn("daily_review_time", nested)
+
+
+class ErasureSurvivesTheOpenThreadTest(unittest.TestCase):
+    """Order 18: a deletion the scrollback cannot undo.
+
+    On 3 Sep a wipe cleared Convex and the durable consent record at 15:32:39.
+    The next message was answered inside the same 101-message thread, and the
+    transcript fallback found Ted's disclosure from 1 Sep and reported consent
+    for a user whose data had just been erased. No disclosure went out, no
+    onboarding ran, and the next photo was logged against the emptied account.
+
+    A first-time user was never affected — an empty thread has nothing for the
+    fallback to find. This is the path of someone who used the erasure Ted
+    promises them, in writing, in the disclosure itself.
+    """
+
+    USER_KEY = "whatsapp:sha256:forgotten"
+    UNTOUCHED = "whatsapp:sha256:never-asked"
+
+    def setUp(self) -> None:
+        for target in (
+            patch.object(gates, "_ONBOARDING_STATE", {}),
+            patch.object(gates, "_persist_onboarding_state"),
+            patch.object(gates, "_DISCLOSURE_SENT_KEYS", set()),
+            patch.object(gates, "_persist_disclosure_state"),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def _old_thread(self) -> list[dict[str, str]]:
+        """The thread as it stands when someone asks to be forgotten: their
+        name in it, and Ted's disclosure from days ago."""
+        return [
+            message("user", "hi"),
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+            message("assistant", VANDY_DISCLOSURE),
+            message("user", "logged a dosa"),
+            message("assistant", "nice one"),
+        ]
+
+    def test_the_old_disclosure_stops_counting_once_they_are_forgotten(self) -> None:
+        history = self._old_thread()
+        self.assertTrue(gates._disclosure_was_sent(history, self.USER_KEY))
+        gates._forget_user(self.USER_KEY)
+        self.assertFalse(gates._disclosure_was_sent(history, self.USER_KEY))
+
+    def test_consent_is_asked_for_again_rather_than_assumed(self) -> None:
+        """The live failure: this returned None, so nothing went out at all."""
+        history = self._old_thread()
+        gates._forget_user(self.USER_KEY)
+        self.assertIsNotNone(
+            consent_gate(history, "logged that for you", user_key=self.USER_KEY)
+        )
+
+    def test_the_disclosure_goes_out_once_they_give_a_name_again(self) -> None:
+        history = self._old_thread()
+        gates._forget_user(self.USER_KEY)
+        # Asked and answered after the wipe, which is the only name Ted may use.
+        history += [
+            message("assistant", "What should I call you?"),
+            message("user", "Vandy"),
+        ]
+        reply = consent_gate(history, "ok", user_key=self.USER_KEY)
+        self.assertIn(gates.PRIVACY_URL, reply or "")
+        self.assertIn(gates.GOAL_QUESTION, reply or "")
+
+    def test_the_name_still_comes_from_the_thread_after_a_wipe(self) -> None:
+        """Deliberately not guarded, and the reason is written down.
+
+        Blocking the transcript here was tried and reverted: it also blocks
+        the name they give *after* the wipe, because that answer is only ever
+        read back out of the same transcript. The result was a permanent loop
+        on "what should I call you?" and a disclosure that never went out —
+        worse than the leak it prevented. The right fix is to scan only the
+        part of the thread after the erasure, which needs a marker the history
+        does not carry yet. Until then the disclosure going out is what
+        matters, and it does.
+        """
+        history = self._old_thread()
+        gates._forget_user(self.USER_KEY)
+        self.assertEqual(gates._given_name(history, self.USER_KEY), "Vandy")
+
+    def test_a_fresh_disclosure_after_the_wipe_counts_again(self) -> None:
+        """The mark must not pin them to re-disclosing forever."""
+        history = self._old_thread()
+        gates._forget_user(self.USER_KEY)
+        gates._mark_disclosure_sent(self.USER_KEY, "session-after-wipe")
+        self.assertTrue(gates._disclosure_was_sent(history, self.USER_KEY))
+        self.assertIsNone(
+            consent_gate(history, "what did you have?", user_key=self.USER_KEY)
+        )
+
+    def test_forgetting_keeps_a_timestamp_and_nothing_else(self) -> None:
+        gates._update_onboarding(self.USER_KEY, name="Vandy", age=31, minor=False)
+        gates._forget_user(self.USER_KEY)
+        record = gates._onboarding(self.USER_KEY)
+        self.assertEqual(set(record), {"forgotten_at"})
+        self.assertIsInstance(record["forgotten_at"], float)
+
+    def test_an_untouched_user_still_reads_their_transcript(self) -> None:
+        """The fallback is still the fallback for everyone who never asked."""
+        history = self._old_thread()
+        gates._forget_user(self.USER_KEY)
+        self.assertTrue(gates._disclosure_was_sent(history, self.UNTOUCHED))
+        self.assertEqual(gates._given_name(history, self.UNTOUCHED), "Vandy")
