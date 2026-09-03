@@ -79,6 +79,16 @@ went cool rather than warm and stays a shade off white, because pure white
 wallpaper would swallow the incoming white bubbles. The privacy note moved onto
 a soft band for the same reason: a white bubble needs wallpaper behind it.
 
+## Ted reads the photo correctly now
+
+The hero reply said "paneer and kidney beans". The photograph is a burrito bowl:
+pinto beans in a thin gravy, turmeric paneer, corn salsa, sautéed peppers, pico
+de gallo and white rice. Rajma is darker and kidney shaped; these are pintos. The
+alt text was worse, it described "a pot of greek yogurt" that is not in the frame
+at all. Both are corrected, and the dosa alt now mentions its second chutney. The
+photo section claims Ted "names what it sees before it counts anything", so this
+is the one place on the page that cannot be approximately right.
+
 ## Copy rules applied
 
 - **No dashes joining sentences** anywhere a visitor can read, including inside

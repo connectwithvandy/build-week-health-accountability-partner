@@ -98,6 +98,12 @@ display:
   # as model names, provider names, gateway events"). Plain lines in Ted's
   # voice, per SCOPING.md #27. Full diagnostics still go to
   # ~/.hermes/logs/agent.log. An empty string means "say nothing in chat".
+  # A photo is the slowest thing a user can send, so Ted says something before
+  # the vision model runs rather than leaving the thread silent. Throttled to
+  # one per 90 seconds per chat, so a burst of photos of one plate gets one
+  # acknowledgement. Set to an empty string to turn it off.
+  media_ack:
+    image: "ooh a pic \U0001F440 taking a look, one sec\u2026"
   provider_messages:
     auth: "something's broken on my end, not yours. try me again in a bit."
     policy: "that one didn't land. mind saying it a different way?"

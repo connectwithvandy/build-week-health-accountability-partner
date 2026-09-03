@@ -73,3 +73,26 @@ so it is real, wanted, and was surviving only in a working tree that
 Exported here so it is saved and re-appliable like the other two, and added to
 the guard so its disappearance is noticed rather than discovered later by a
 voice note going quiet.
+
+## 04 — the photo "taking a look" acknowledgement
+
+The landing page shows Ted answering a meal photo in two beats: "ooh a pic 👀
+taking a look, one sec…" and then the numbers. Only the second beat existed. A
+photo is the slowest thing a user can send, because the routing decision does
+blocking network I/O and then a vision model runs, and until it finished the
+thread just sat there. On WhatsApp that reads as broken.
+
+Patch 03 already does this for voice notes, and PRODUCT_BUILD_GUARDRAILS asks
+for it directly: "acknowledge slow media quickly, then process asynchronously
+where appropriate". This is the same shape for images.
+
+The part worth keeping is the throttle. WhatsApp delivers a burst of photos as
+separate messages, each its own gateway event, so a per-event acknowledgement
+would send five of them for one plate — exactly the noise the guardrail "one
+user action should feel like one interaction" exists to prevent. The
+acknowledgement is therefore throttled per session over a 90-second window, and
+skipped entirely when `display.media_ack.image` is set to an empty string.
+
+Copy lives in `~/.hermes/config.yaml` under `display.media_ack`, for the same
+reason `display.provider_messages` does: it is Ted's voice, and Ted's voice
+should not require patching Hermes to change.

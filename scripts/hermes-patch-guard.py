@@ -62,6 +62,20 @@ PATCHES = (
         ),
     },
     {
+        "file": "04-photo-taking-a-look-ack.patch",
+        "what": "the photo 'taking a look' acknowledgement",
+        "checks": (
+            {
+                "path": "gateway/run.py",
+                "present": (
+                    "_gateway_photo_ack_sent",
+                    "_GATEWAY_PHOTO_ACK_WINDOW_SECONDS",
+                ),
+                "absent": (),
+            },
+        ),
+    },
+    {
         "file": "02-plain-language-provider-errors.patch",
         "what": "plain-language provider errors",
         "checks": (
