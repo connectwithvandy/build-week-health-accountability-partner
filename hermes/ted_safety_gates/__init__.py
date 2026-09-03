@@ -1580,11 +1580,85 @@ def meal_breakdown(meal: dict[str, Any], day: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# A figure the block is about to print anyway: "1340 kcal", "58g protein",
+# "280 calories", "protein: 12". SOUL.md tells Ted not to write these itself,
+# and Ted writes them anyway, because twenty protected examples of doing so sit
+# in its context. Asking twice does not work; this is the enforcement.
+_MEAL_FIGURE = re.compile(
+    r"\d[\d,.]*\s*(?:k?cals?\b|calories\b|kcal\b"
+    r"|g\s*(?:of\s+)?(?:protein|carbs?|carbohydrates?|fat|fibre|fiber)\b)"
+    r"|\b(?:protein|carbs?|calories|fat|fibre|fiber)\b\s*[:=]?\s*\d",
+    re.IGNORECASE,
+)
+
+
+def words_without_figures(text: str) -> str:
+    """Ted's sentence with any number-carrying clause removed.
+
+    Sentence-level, because a clause-level cut mangles real prose. If the whole
+    reply was numbers, nothing survives and the block stands alone, which is
+    the right answer: the block already says everything that sentence did.
+    """
+    kept = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        if sentence.strip() and not _MEAL_FIGURE.search(sentence)
+    ]
+    return " ".join(kept).strip()
+
+
+def _meal_name(meal: dict[str, Any]) -> str:
+    """What was on the plate, from what was saved.
+
+    The model already named it, in the tool call it made. It just does not
+    always repeat it to the user, which is how "logged 👍" became a reply to a
+    plate of food. Naming is interpretation and stays the model's job; saying
+    it out loud does not have to be.
+    """
+    items = [str(item).strip() for item in (meal.get("items") or []) if str(item).strip()]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _food_words(meal: dict[str, Any]) -> set[str]:
+    """The nameable words in a saved meal: cheela, ketchup, rajma, paneer."""
+    words: set[str] = set()
+    for item in meal.get("items") or []:
+        for word in re.findall(r"[a-z]{4,}", str(item).lower()):
+            words.add(word)
+    # Words that describe a portion rather than a food, so "2 pieces" does not
+    # count as having named the dish.
+    return words - {
+        "pieces", "piece", "bowl", "bowls", "plate", "plates", "cups", "cup",
+        "small", "large", "medium", "grams", "gram", "slice", "slices",
+        "serving", "servings", "with", "and", "some",
+    }
+
+
+def _mentions_food(words: str, meal: dict[str, Any]) -> bool:
+    """Whether Ted's own sentence already said what the food was."""
+    if not words:
+        return False
+    spoken = set(re.findall(r"[a-z]{4,}", words.lower()))
+    return bool(spoken & _food_words(meal))
+
+
 def _with_meal_breakdown(reply: str, meal: dict[str, Any], day: dict[str, Any]) -> str:
     block = meal_breakdown(meal, day)
     if not block:
         return reply
-    words = (reply or "").strip()
+    words = words_without_figures(reply)
+    # The food is named exactly once. If Ted already named it, Ted's version
+    # wins: "ooh cheela and ketchup" carries warmth that "besan/moong dal
+    # cheela (2-3 pieces) and ketchup" does not. Matched on words rather than
+    # the whole string, because Ted's phrasing is always the shorter one.
+    if not _mentions_food(words, meal):
+        name = _meal_name(meal)
+        if name:
+            block = f"{name}\n\n{block}"
     return f"{words}\n\n{block}" if words else block
 
 

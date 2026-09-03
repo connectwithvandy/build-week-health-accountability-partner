@@ -70,6 +70,25 @@ review that follows it on the page is stamped 10:45 PM. Every clock on the page
 now moves one way: 3:00 the meal, 7:42 to 8:19 the walk, 8:31 the reminders set,
 9:00 the dose it fires, 9:04 the travel pause, 10:45 the review.
 
+## The ground
+
+A pin emboss, white on white, at 60%. Each pinhead is drawn three times: a white
+highlight, a shadow a hair the other way, and a faint dimple between them, which
+is what makes it read as pressed paper rather than a printed dot. The light then
+walks a slow circle every 30 seconds, so the relief keeps changing which way it
+is pressed. Ink peaks at 2%.
+
+It is a fixed pseudo element rather than a background on the body: a 24px grid
+cannot be seen to scroll, and pinning it means one viewport repaints instead of
+the whole 5,800px page. The pale band carries the same relief, so it reads as
+the same sheet.
+
+Rejected on the way: a tiled Ted-mark watermark, an aurora shader, poster shapes
+in five arrangements, a scroll-driven sky that ran from afternoon to night, and a
+Voronoi cell field. The useful correction was that orange, white and green is the
+Indian flag, so every shape variant built from brand colours read as the same
+basic thing no matter how the shapes were arranged.
+
 ## Off the beige
 
 The ground is white. Ted's own mark is scattered across it on a 300px tile at

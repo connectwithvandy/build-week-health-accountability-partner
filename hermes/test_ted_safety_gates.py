@@ -3455,3 +3455,80 @@ class MealBreakdownTest(unittest.TestCase):
         for line in block.splitlines():
             if any(ch.isdigit() for ch in line):
                 self.assertTrue(line.isascii(), f"non-ascii beside a metric: {line!r}")
+
+
+class MealFiguresAreNotSaidTwiceTest(unittest.TestCase):
+    """The block owns the numbers, so Ted's prose must not repeat them.
+
+    Live on 3 Sep, after the block shipped: "logged 👍 you're at 1340 kcal, 58g
+    protein for the day now — solid amount of food today." The block appended
+    the same day total underneath, so the user was told it twice and the food
+    was never named at all, even though the tool call that saved it knew the
+    plate was cheela and ketchup. SOUL.md already forbade both. The model had
+    twenty protected examples of doing it anyway.
+    """
+
+    MEAL = {
+        "items": ["besan/moong dal cheela (2-3 pieces)", "ketchup"],
+        "calories": 280,
+        "proteinGrams": 12,
+        "carbohydrateGrams": 32,
+        "fatGrams": 9,
+    }
+    DAY = {"calories": 1340, "proteinGrams": 58}
+    LIVE = "logged 👍 you're at 1340 kcal, 58g protein for the day now."
+
+    def out(self, reply: str, meal=None, day=None) -> str:
+        return gates._with_meal_breakdown(
+            reply, meal or self.MEAL, day or self.DAY
+        )
+
+    def test_the_day_total_appears_exactly_once(self) -> None:
+        out = self.out(self.LIVE)
+        self.assertEqual(out.count("1,340"), 1)
+        self.assertNotIn("1340 kcal", out)
+
+    def test_the_food_is_named_when_ted_did_not_name_it(self) -> None:
+        self.assertIn("cheela", self.out(self.LIVE))
+
+    def test_the_food_is_not_named_twice_when_ted_did(self) -> None:
+        out = self.out("ooh cheela and ketchup 😍 proper breakfast food")
+        self.assertTrue(out.startswith("ooh cheela and ketchup"))
+        self.assertNotIn("besan/moong dal", out)
+
+    def test_warm_words_without_numbers_are_kept(self) -> None:
+        out = self.out("ooh cheela 😍 solid start. that's proper breakfast food.")
+        self.assertIn("solid start", out)
+        self.assertIn("proper breakfast food", out)
+
+    def test_only_the_number_sentence_is_dropped(self) -> None:
+        out = self.out("ooh cheela 😍 that's 280 calories. nice easy breakfast.")
+        self.assertIn("nice easy breakfast", out)
+        self.assertNotIn("280 calories", out)
+
+    def test_a_portion_word_does_not_count_as_naming_the_food(self) -> None:
+        """"2 pieces" is not the name of a dish."""
+        out = self.out("logged, two pieces")
+        self.assertIn("cheela", out)
+
+    def test_every_figure_shape_the_model_uses_is_caught(self) -> None:
+        for said in (
+            "you're at 1340 kcal for the day",
+            "that's 58g protein so far",
+            "280 calories in that one",
+            "protein: 12 for this meal",
+            "roughly 1,340 cal today",
+            "32g carbs and 9g fat",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.words_without_figures(said), "")
+
+    def test_ordinary_sentences_survive_the_filter(self) -> None:
+        for said in (
+            "ooh cheela 😍",
+            "proper breakfast food",
+            "that's a solid start to the day",
+            "want me to remind you at 8?",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.words_without_figures(said), said)
