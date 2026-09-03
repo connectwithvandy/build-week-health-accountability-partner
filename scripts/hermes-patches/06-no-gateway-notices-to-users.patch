@@ -1,0 +1,33 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -6368,8 +6368,22 @@
+-    async def _notify_active_sessions_of_shutdown(self) -> None:
+-        """Send shutdown/restart notifications to active chats and home channels.
+-
+-        Called at the very start of stop() — adapters are still connected so
+-        messages can be delivered. Best-effort: individual send failures are
+-        logged and swallowed so they never block the shutdown sequence.
+-        """
+-        active = self._snapshot_running_agents()
++    async def _notify_active_sessions_of_shutdown(self) -> None:
++        """Send shutdown/restart notifications to active chats and home channels.
++
++        Called at the very start of stop() — adapters are still connected so
++        messages can be delivered. Best-effort: individual send failures are
++        logged and swallowed so they never block the shutdown sequence.
++        """
++        # Ted patch 06. A restart here is a deploy, and the people on the other
++        # end are users of a health app, not operators of a gateway. On 3 Sep
++        # eight of these landed in one person's chat in ninety minutes, one per
++        # deploy — "⚠️ Gateway shutting down — Your current task will be
++        # interrupted." Nothing they had sent was lost, so it announced an
++        # outage that did not affect them, in language from a different
++        # product. The restart still happens; nobody is told about the
++        # plumbing.
++        logger.info(
++            "Ted: suppressing gateway shutdown notice to %d active session(s)",
++            len(self._snapshot_running_agents()),
++        )
++        return
++
++        active = self._snapshot_running_agents()

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone as dt_timezone
 import time
 import unittest
@@ -133,7 +134,7 @@ class TedSafetyGatesTest(unittest.TestCase):
         history = [message("user", "I am 17 and want to track calories")]
         self.assertEqual(
             calorie_gate(history, history[0]["content"], "Try 1,400 calories."),
-            "I can’t provide calorie numbers because this beta is only for adults.",
+            gates.UNDER_18_REFUSAL,
         )
 
     def test_requires_one_missing_maintenance_input(self) -> None:
@@ -288,7 +289,7 @@ class TedSafetyGatesTest(unittest.TestCase):
                 session_id="wrong-tool",
                 response_text="Your target is saved.",
             ),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_staged_memory_write_does_not_unlock_a_save_claim(self) -> None:
@@ -312,7 +313,7 @@ class TedSafetyGatesTest(unittest.TestCase):
                 session_id="staged-memory",
                 response_text="Your target is saved.",
             ),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_real_memory_write_unlocks_only_memory_claim(self) -> None:
@@ -343,7 +344,7 @@ class TedSafetyGatesTest(unittest.TestCase):
                 session_id="real-memory",
                 response_text="Your reminder is scheduled.",
             ),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_disclosure_is_not_repeated_when_transformed_text_is_missing_from_history(self) -> None:
@@ -810,14 +811,14 @@ class ClaimGateTest(unittest.TestCase):
     def test_an_unbacked_save_claim_is_still_removed(self) -> None:
         self.assertEqual(
             action_claim_gate("I've saved that to your log."),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_the_check_in_claim_no_longer_slips_through(self) -> None:
         """The false claim the cron gate was built to catch, and missed."""
         self.assertEqual(
             action_claim_gate("chalo, 8pm check-in is set."),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_other_scheduling_promises_are_caught(self) -> None:
@@ -828,7 +829,7 @@ class ClaimGateTest(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 self.assertEqual(
-                    action_claim_gate(reply), "I haven’t completed that action."
+                    action_claim_gate(reply), gates.CLAIM_NOT_DONE
                 )
 
     def test_real_scheduling_replies_from_the_2_sep_thread(self) -> None:
@@ -839,7 +840,7 @@ class ClaimGateTest(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 self.assertEqual(
-                    action_claim_gate(reply), "I haven’t completed that action."
+                    action_claim_gate(reply), gates.CLAIM_NOT_DONE
                 )
                 self.assertIsNone(
                     action_claim_gate(reply, successful_actions={"cron"})
@@ -952,7 +953,7 @@ class DeleteMyDataTest(unittest.TestCase):
     def test_the_confirmation_that_slipped_through_is_now_caught(self) -> None:
         self.assertEqual(
             action_claim_gate("done, your profile, logs and uploads are deleted."),
-            "I haven’t completed that action.",
+            gates.CLAIM_NOT_DONE,
         )
 
     def test_other_ways_of_confirming_a_deletion_are_caught(self) -> None:
@@ -963,7 +964,7 @@ class DeleteMyDataTest(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 self.assertEqual(
-                    action_claim_gate(reply), "I haven’t completed that action."
+                    action_claim_gate(reply), gates.CLAIM_NOT_DONE
                 )
 
     def test_ordinary_health_talk_is_not_a_deletion_claim(self) -> None:
@@ -4718,3 +4719,108 @@ class ScheduledIsTheOnlyThingThatProvesAReminderTest(unittest.TestCase):
         )
         self.assertIn("memory", proven)
         self.assertNotIn("cron", proven)
+
+
+class EveryLineTedSaysSoundsLikeTedTest(unittest.TestCase):
+    """Personality cannot live only in SOUL.md.
+
+    Ted's messages come from three places and SOUL.md governs one of them.
+    The model writes some; this gate writes fixed strings that never reach the
+    model at all; Hermes writes its own gateway notices. Every reliability fix
+    on 3 Sep moved *more* of Ted into the second category — the meal numbers,
+    the deletion question, the busy acknowledgements — which is exactly why it
+    read as more robotic the more correct it became. So the gate's own lines
+    are held to the voice here, by a test, instead of drifting one merge at a
+    time back towards "I haven't completed that action."
+    """
+
+    #: Everything a user can actually receive, written by this gate.
+    SPOKEN = (
+        "OPENING_MESSAGE",
+        "GOAL_QUESTION",
+        "ALREADY_STARTED_MESSAGE",
+        "NAME_NOT_USABLE_MESSAGE",
+        "AGE_QUESTION",
+        "UNDER_18_REFUSAL",
+        "CLAIM_NOT_DONE",
+        "STORAGE_NOT_SAVED",
+        "REPORT_CONFIRMATION",
+        "REPORT_NOT_SAVED",
+        "UNREADABLE_DOCUMENT_REPLY",
+        "REVIEW_TIME_QUESTION",
+        "WEEKLY_REVIEW_OFFER",
+        "DELETE_CONFIRMATION_QUESTION",
+    )
+
+    # DISCLOSURE_MESSAGE is deliberately absent. It is a privacy notice that
+    # names the product in the third person, `_DISCLOSURE_MARKER` matches its
+    # opening words, and consent records going back to 1 Sep were written
+    # against that exact text. It is the one line where being unmistakable
+    # beats sounding like Ted.
+
+    #: Words from a different product. None of these belong in a health app.
+    MACHINE_WORDS = (
+        "action", "invalid", "error", "request", "processing", "unable to",
+        "task", "operation", "system", "please try again", "user",
+    )
+
+    def spoken(self):
+        for name in self.SPOKEN:
+            yield name, getattr(gates, name)
+
+    def test_every_one_of_them_exists(self) -> None:
+        """A renamed constant must fail here rather than quietly stop being
+        checked."""
+        for name, value in self.spoken():
+            with self.subTest(name=name):
+                self.assertTrue(value and isinstance(value, str))
+
+    def test_none_of_them_talk_like_a_machine(self) -> None:
+        for name, value in self.spoken():
+            for word in self.MACHINE_WORDS:
+                with self.subTest(name=name, word=word):
+                    self.assertNotIn(word, value.lower())
+
+    def test_they_start_in_lower_case_like_ted_does(self) -> None:
+        for name, value in self.spoken():
+            with self.subTest(name=name):
+                first = value.lstrip()[0]
+                self.assertTrue(
+                    first.islower() or not first.isalpha(),
+                    f"{name} opens with a capital: {value[:40]!r}",
+                )
+
+    def test_none_of_them_shout(self) -> None:
+        """One "hey!" is warmth. Two is breathless, and capitals are shouting.
+
+        The first version of this banned exclamation marks outright and failed
+        on the opener's "hey!", which is the one thing in it doing any work.
+        """
+        for name, value in self.spoken():
+            with self.subTest(name=name):
+                self.assertLessEqual(value.count("!"), 1, f"{name} is breathless")
+                shouted = [
+                    word
+                    for word in re.findall(r"[A-Za-z]{3,}", value)
+                    if word.isupper()
+                ]
+                self.assertEqual(shouted, [], f"{name} shouts: {shouted}")
+
+    def test_a_refusal_still_says_what_and_why(self) -> None:
+        """Voice must not cost clarity. These two say no to something, and a
+        person has to be able to tell what and why."""
+        self.assertIn("adults", gates.UNDER_18_REFUSAL)
+        self.assertIn("calorie", gates.UNDER_18_REFUSAL)
+        self.assertIn("pdf", gates.UNREADABLE_DOCUMENT_REPLY.lower())
+
+    def test_the_deletion_question_is_still_unmistakable(self) -> None:
+        """The one place warmth must not soften the meaning."""
+        for word in ("delete", "everything", "no undo"):
+            with self.subTest(word=word):
+                self.assertIn(word, gates.DELETE_CONFIRMATION_QUESTION.lower())
+
+    def test_the_disclosure_is_left_exactly_as_it_is(self) -> None:
+        """Consent records since 1 Sep were written against this text and
+        _DISCLOSURE_MARKER matches its opening words."""
+        self.assertTrue(gates.DISCLOSURE_MESSAGE.startswith(gates._DISCLOSURE_MARKER))
+        self.assertIn(gates.PRIVACY_URL, gates.DISCLOSURE_MESSAGE)

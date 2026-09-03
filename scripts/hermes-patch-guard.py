@@ -87,6 +87,17 @@ PATCHES = (
         ),
     },
     {
+        "file": "06-no-gateway-notices-to-users.patch",
+        "what": "silence for gateway shutdown and restart notices",
+        "checks": (
+            {
+                "path": "gateway/run.py",
+                "present": ("suppressing gateway shutdown notice",),
+                "absent": (),
+            },
+        ),
+    },
+    {
         "file": "02-plain-language-provider-errors.patch",
         "what": "plain-language provider errors",
         "checks": (

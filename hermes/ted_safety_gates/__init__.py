@@ -1360,7 +1360,8 @@ def _maintenance_or_target_flow(user_message: str, response_text: str) -> bool:
 # lowercase, and it says why it is asking.
 AGE_QUESTION = "quick one before i do calorie maths. how old are you? beta's 18+"
 UNDER_18_REFUSAL = (
-    "I can’t provide calorie numbers because this beta is only for adults."
+    "i can’t do calorie numbers with you — this one’s adults only for now. "
+    "sorry, that one’s not mine to bend."
 )
 
 
@@ -1567,7 +1568,7 @@ def _claim_types(text: str) -> set[str]:
 # NOT_DONE means Ted claimed an action no tool performed. NOT_SAVED means the
 # tool ran and the storage was down — SCOPING.md #27: say the update was not
 # saved and ask them to send it again.
-CLAIM_NOT_DONE = "I haven’t completed that action."
+CLAIM_NOT_DONE = "i couldn’t get that done just now — try me again in a minute?"
 STORAGE_NOT_SAVED = "that didn’t save, send it again in a minute."
 
 
@@ -3293,7 +3294,11 @@ TED_FOOD_LOOKUP_SCHEMA = {
         "composition table rather than memory. Use the total as the meal's "
         "numbers. Anything not in the table comes back found:false and is "
         "yours to estimate as before — say which ones those were if the user "
-        "asks how you got there. This reads a table; it logs nothing."
+        "asks how you got there. Call it again when someone disputes a number: "
+        "the per-item rows are the answer, and disagreement on its own is not "
+        "a reason to move a figure the table supports. Change it when they "
+        "give you a fact you did not have — a weight, a label, an ingredient "
+        "you missed. This reads a table; it logs nothing."
     ),
     "parameters": {
         "type": "object",
