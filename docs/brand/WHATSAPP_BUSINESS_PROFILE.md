@@ -129,8 +129,9 @@ change is an edit and a re-render, not a redraw.
 
 | File | Size | Where it goes |
 |---|---|---|
-| `public/brand/ted-profile-picture.png` | 1024x1024 | **Profile picture.** Orange ground, ink face. Cropped to a circle it still reads at 48px in a chat list. |
-| `public/brand/ted-profile-picture-bubble.png` | 1024x1024 | Alternative: the site's exact logo mark on paper. Truer to the page, weaker as a thumbnail. |
+| `public/brand/ted-profile-picture.png` | 1024x1024 | **Profile picture.** Paper ground: the orange bubble stacked above the `ted` wordmark, exactly as the site draws it. |
+| `public/brand/ted-profile-picture-orange.png` | 1024x1024 | Alternative: the same stack inverted onto the orange ground, ink bubble with an orange face. |
+| `public/brand/ted-profile-picture-lockup.png` | 1024x1024 | Alternative: bubble and wordmark side by side rather than stacked. Reads best when it is not cropped to a circle. |
 | `public/brand/ted-business-cover.png` | 1125x750 | **Cover photo** for the Business profile. |
 | `public/brand/ted-business-cover-orange.png` | 1125x750 | Alternative cover, orange ground. |
 | `public/brand/ted-whatsapp-cover.png` | 1600x900 | Link preview when the site is shared. Wired into the page's `og:image`. |
