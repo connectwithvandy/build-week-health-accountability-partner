@@ -210,6 +210,39 @@ all three counts, and all three had a cause.
 
 Tests: 222 Python, 69 vitest.
 
+## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
+
+Asked directly whether Ted could be distributed. The answer was no, and two of
+the reasons were found only by checking rather than by remembering.
+
+1. **`ted_set_reminder` has never been called. By anyone. Ever.** Across all of
+   Ted's history the model has used `ted_log_entry` (14), `ted_day_summary` (4),
+   `ted_save_onboarding` (3), `ted_memory_save` (3), `ted_set_target` (2) and
+   `ted_memory_delete` (1). No user therefore has a `reminders` row, which means
+   no stored check-in time, no quiet-hours preference, no daily cap, and **the
+   quiet-user back-off built in order 17 can never fire**: `unansweredNudges`
+   lives on that row and `gateReminderDelivery` returns early when it is
+   missing. Reminders still arrive, because they are Hermes cron jobs created
+   directly, but the whole policy layer is unexercised in production. The fix is
+   the same one the meal numbers needed: stop hoping the model calls the tool.
+2. **Two-user isolation has never been tested.** `PRODUCT_BUILD_GUARDRAILS.md`
+   §4 makes it the explicit pre-invite gate. Ted has served exactly two distinct
+   user keys in its history and never two at once. Everything is designed for
+   it; nothing has proved it. This is the one failure that cannot be walked
+   back.
+3. **Nothing from 3 Sep has run in a fresh session.** Every test that day was
+   inside one 84-message thread. A new tester gets a clean session, so
+   onboarding, the disclosure, the name question, the check-in time and the new
+   meal block are all on the untested path.
+4. **`session_reset.mode` is `none`**, so a thread grows without bound. With
+   `compression.protect_last_n: 20`, twenty verbatim examples of Ted's recent
+   output sit in context permanently. That is what beat SOUL.md twice on 3 Sep,
+   and it will do the same to any real user once their thread is long enough.
+   Setting `idle` or `daily` would stop it.
+5. **Ted runs on Vandy's laptop.** Closing the lid takes Ted down for every
+   tester at once. Workable for a handful of people who can be messaged
+   directly; not for open distribution.
+
 ### Still open after order 16
 
 1. **`main` is 11 commits behind `ship/landing-v6`** and still holds the local
