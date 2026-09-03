@@ -1668,6 +1668,11 @@ def meal_breakdown(meal: dict[str, Any], day: dict[str, Any]) -> str:
         ("protein", _number(meal.get("proteinGrams")), "g"),
         ("carbs", _number(meal.get("carbohydrateGrams")), "g"),
         ("fat", _number(meal.get("fatGrams")), "g"),
+        # Fibre was left out of this block when it was written, while being
+        # stored and counted like everything else. It is the one line here a
+        # user can act on the same day, and Ted's own drafts kept adding it
+        # back, so the block was showing less than the model wanted to say.
+        ("fiber", _number(meal.get("fiberGrams")), "g"),
     ]
     # A zero is dropped rather than printed. "carbs 0g" is not a fact about a
     # plate of food, it is a gap in the estimate wearing a number's clothes,
@@ -1705,16 +1710,33 @@ _MEAL_FIGURE = re.compile(
 def words_without_figures(text: str) -> str:
     """Ted's sentence with any number-carrying clause removed.
 
-    Sentence-level, because a clause-level cut mangles real prose. If the whole
-    reply was numbers, nothing survives and the block stands alone, which is
-    the right answer: the block already says everything that sentence did.
+    Line by line, then sentence by sentence within each line. Sentences alone
+    were not enough, and the cost was Ted's whole voice: it writes in short
+    lines and emoji and often no full stop at all, so a reply reading
+
+        Today · 2 meals
+        615 kcal · 41g protein
+        good breakfast lineup, coffee barely counts anyway
+
+    was one "sentence" containing figures, and every word of it was dropped.
+    The user got a bare block of numbers and nothing else. That is what "it
+    feels a little off" was, on 3 Sep.
+
+    A clause-level cut would still mangle real prose, so a line that is one
+    unpunctuated sentence wrapped around a number does still go entirely. The
+    block says what it said, and that remains the right answer.
     """
-    kept = [
-        sentence
-        for sentence in re.split(r"(?<=[.!?])\s+", (text or "").strip())
-        if sentence.strip() and not _MEAL_FIGURE.search(sentence)
-    ]
-    return " ".join(kept).strip()
+    kept_lines: list[str] = []
+    for line in (text or "").strip().splitlines():
+        kept = [
+            sentence
+            for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
+            if sentence.strip() and not _MEAL_FIGURE.search(sentence)
+        ]
+        joined = " ".join(kept).strip()
+        if joined:
+            kept_lines.append(joined)
+    return "\n".join(kept_lines).strip()
 
 
 def _meal_name(meal: dict[str, Any]) -> str:

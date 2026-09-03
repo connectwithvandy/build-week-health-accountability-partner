@@ -3421,6 +3421,7 @@ class MealBreakdownTest(unittest.TestCase):
         self.assertIn("protein 14g", out)
         self.assertIn("carbs 30g", out)
         self.assertIn("fat 3g", out)
+        self.assertIn("fiber 9g", out)
 
     def test_the_day_total_comes_after_the_meal_not_instead_of_it(self) -> None:
         out = self.transform("ooh sprouts bowl")
@@ -4339,4 +4340,71 @@ class FoodTableTest(unittest.TestCase):
                 }
             ),
             "",
+        )
+
+
+class TedsVoiceSurvivesTheFigureStripTest(unittest.TestCase):
+    """The block owns the numbers. It was also taking the words with them.
+
+    Splitting on `.!?` alone assumed prose Ted does not write. It writes short
+    lines, emoji, and frequently no full stop, so a reply whose middle line
+    held the figures was one sentence containing figures and was removed
+    whole. The user received a bare block of numbers and not one word.
+    """
+
+    PRADOSH = (
+        "Today · 2 meals\n"
+        "615 / kcal · 41g protein\n"
+        "good breakfast lineup, coffee barely counts anyway ☕"
+    )
+
+    def test_the_real_3_sep_reply_keeps_its_words(self) -> None:
+        kept = gates.words_without_figures(self.PRADOSH)
+        self.assertIn("good breakfast lineup", kept)
+        self.assertNotIn("41g protein", kept)
+        self.assertNotIn("615", kept)
+
+    def test_the_figures_still_only_come_from_the_block(self) -> None:
+        out = gates._with_meal_breakdown(
+            self.PRADOSH,
+            {
+                "calories": 614,
+                "proteinGrams": 40.6,
+                "carbohydrateGrams": 74.1,
+                "fatGrams": 18.0,
+                "fiberGrams": 11.7,
+            },
+            {"calories": 619, "proteinGrams": 40.8},
+        )
+        self.assertIn("good breakfast lineup", out)
+        self.assertIn("calories 614", out)
+        # The model's own numbers appear nowhere, so nothing is printed twice.
+        self.assertNotIn("615", out)
+        self.assertEqual(out.count("41g protein"), 1)
+        self.assertLess(out.index("good breakfast"), out.index("calories 614"))
+
+    def test_a_line_of_pure_numbers_still_goes(self) -> None:
+        self.assertEqual(gates.words_without_figures("1,340 cal, 58g protein"), "")
+
+    def test_sentence_splitting_within_a_line_still_works(self) -> None:
+        self.assertEqual(
+            gates.words_without_figures("nice one. 614 kcal, 41g protein. good start"),
+            "nice one. good start",
+        )
+
+    def test_ordinary_replies_are_untouched(self) -> None:
+        for said in (
+            "ooh cheela 😍",
+            "proper breakfast food",
+            "that's a solid start to the day",
+            "want me to remind you at 8?",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.words_without_figures(said), said)
+
+    def test_a_whole_line_wrapped_around_a_number_still_goes(self) -> None:
+        """Not fixed, and deliberately: a clause-level cut mangles prose, and
+        the block says what the sentence said."""
+        self.assertEqual(
+            gates.words_without_figures("ooh power bowl 💪 that is 614 kcal"), ""
         )
