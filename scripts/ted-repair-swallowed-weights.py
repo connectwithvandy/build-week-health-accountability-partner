@@ -70,6 +70,31 @@ def suspect(record: dict) -> str | None:
     return None
 
 
+def age_is_really_a_weight(record: dict) -> str | None:
+    """An age identical to the stored weight is the weight, leaked.
+
+    Ram answered "27" to 1/5, "160" to 2/5 and "80" to 3/5. Height and weight
+    both landed correctly; the broad age scan took the 80 as well and filed it
+    as his age. He was told 1,690 kcal when his real figure is 2,000, agreed
+    to a read-back showing "80", and finished onboarding on a number 310 kcal
+    short.
+
+    Clearing the age also clears the maintenance figure computed from it, and
+    `calorie_gate` refuses every number while the age is unknown. So Ted stops
+    handing out the wrong one and asks instead, which is the right way round.
+
+    A real 80 year old who weighs 80 kg is cleared here and asked again. The
+    cost is one repeated question; the alternative is a target built on a
+    number nobody gave.
+    """
+    age, weight = record.get("age"), record.get("weight_kg")
+    if age is None or weight is None:
+        return None
+    if float(age) != float(weight):
+        return None
+    return f"age {age:g} is identical to their weight"
+
+
 MAX_SETUP_ASKS = 3
 
 
@@ -108,6 +133,7 @@ def main() -> int:
 
     found = []
     stuck = []
+    ages = []
     for key, record in users.items():
         reason = suspect(record)
         if reason:
@@ -115,8 +141,11 @@ def main() -> int:
         bound = spent_on_a_bug(record)
         if bound:
             stuck.append((key, record, bound))
+        leaked = age_is_really_a_weight(record)
+        if leaked:
+            ages.append((key, record, leaked))
 
-    if not found and not stuck:
+    if not found and not stuck and not ages:
         print("nothing to repair.")
         return 0
 
@@ -126,9 +155,12 @@ def main() -> int:
     for key, record, bound in stuck:
         name = record.get("name") or "(no name)"
         print(f"  {name:12} {bound}")
+    for key, record, why in ages:
+        name = record.get("name") or "(no name)"
+        print(f"  {name:12} {why}")
 
     if not args.apply:
-        print(f"\n{len(found)} weight(s) to clear, {len(stuck)} to un-stick.")
+        print(f"\n{len(found)} weight(s), {len(stuck)} stuck, {len(ages)} age(s).")
         print("Re-run with --apply.")
         return 0
 
@@ -155,10 +187,16 @@ def main() -> int:
         record["setup"] = "running"
         record.pop("setup_asks", None)
 
+    for _, record, _ in ages:
+        record.pop("age", None)
+        record.pop("minor", None)
+        # Computed from the wrong age, so it goes with it.
+        record.pop("maintenance_kcal", None)
+
     STATE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"\ncleared {len(found)}, un-stuck {len(stuck)}. backup: {backup.name}")
+    print(f"\ncleared {len(found)}, un-stuck {len(stuck)}, ages {len(ages)}. backup: {backup.name}")
     print("restart the gateway now, or the running process will write it back.")
     return 0
 
