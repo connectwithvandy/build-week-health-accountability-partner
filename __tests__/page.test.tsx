@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import Home from "@/app/page";
 
-const openingMessage = "Okay Ted, let's do this 💪";
+const openingMessage = "Okay Ted, let's do this ⚡";
 
 describe("Home", () => {
   it("explains Ted's core promise", () => {
@@ -38,7 +38,17 @@ describe("Home", () => {
       const href = link.getAttribute("href");
       expect(href).toContain("https://wa.me/");
       expect(decodeURIComponent(href ?? "")).toContain(openingMessage);
-      expect(decodeURIComponent(href ?? "")).toContain("💪");
+      // The real rule, not one blessed emoji. 🫡 was swapped for 💪 on the
+      // theory that older emoji travel better; both are astral, so the swap
+      // fixed nothing and three users in ten kept getting a single U+FFFD.
+      // Anything above U+FFFF needs a surrogate pair, and the sender-side
+      // handoff into WhatsApp drops it. Assert the property so the next person
+      // reaching for a nicer emoji is stopped by a test rather than by a beta
+      // user seeing a replacement character.
+      const prefill = decodeURIComponent(href ?? "");
+      for (const character of prefill) {
+        expect(character.codePointAt(0)).toBeLessThanOrEqual(0xffff);
+      }
     }
   });
 });

@@ -1,6 +1,16 @@
 import Link from "next/link";
 
-const openingMessage = "Okay Ted, let's do this 💪";
+// The emoji here must stay inside the Basic Multilingual Plane (U+0000 to
+// U+FFFF). 🫡 and then 💪 both arrived as a single U+FFFD for about three
+// users in ten: not mojibake and not a missing font, but the signature of
+// something in the browser to WhatsApp handoff on the sender's device that
+// can only carry 16-bit characters. Both were astral, so the first swap
+// fixed nothing. ⚡ is U+26A1 and needs no surrogate pair.
+//
+// Ted's own outgoing messages are unaffected and may use any emoji, and
+// _is_prepared_start matches on "okay ted" and length only, never on this
+// character, so the copy is free to change.
+const openingMessage = "Okay Ted, let's do this ⚡";
 
 function getWhatsAppUrl() {
   const number = (process.env.NEXT_PUBLIC_TED_WHATSAPP_NUMBER ?? "").replace(/\D/g, "");
