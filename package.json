@@ -14,9 +14,11 @@
     "hermes:patch": "python3 scripts/hermes-patch-guard.py --apply",
     "hermes:patch:check": "python3 scripts/hermes-patch-guard.py",
     "reports": "python3 scripts/ted-reports.py",
+    "submission:report": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/submission-report.ts",
     "convex:check": "python3 scripts/ted-convex-check.py"
   },
   "dependencies": {
+    "@vercel/analytics": "^2.0.1",
     "convex": "^1.45.0",
     "next": "16.3.3",
     "react": "19.2.8",

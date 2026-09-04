@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Baloo_2, Fraunces, Outfit } from "next/font/google";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
+
 import { ConvexClientProvider } from "./ConvexClientProvider";
 
 /**
@@ -47,6 +49,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col">
         <ConvexClientProvider>{children}</ConvexClientProvider>
+        {/*
+          Covers the App Router pages only — /privacy and anything added later.
+          "/" is a static file served by the rewrite in next.config.ts and never
+          passes through this layout, so it carries its own copy of the Vercel
+          insights script instead. Move the landing page back into React and
+          that script tag becomes redundant; until then both are needed.
+        */}
+        <Analytics />
       </body>
     </html>
   );

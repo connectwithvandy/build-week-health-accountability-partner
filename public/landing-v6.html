@@ -983,5 +983,11 @@ if(!motionOK){
   requestAnimationFrame(loop);
 }
 </script>
+<!-- Vercel Web Analytics. This page is served straight from /public via the
+     `beforeFiles` rewrite in next.config.ts, so the App Router layout and the
+     @vercel/analytics package never reach it — the script tag is the only way
+     this page gets counted. Counts nothing until Web Analytics is enabled for
+     the project in the Vercel dashboard. -->
+<script defer src="/_vercel/insights/script.js"></script>
 </body>
 </html>
