@@ -627,6 +627,18 @@ def _record_setup_ask(user_key: str, field: str) -> None:
     _update_onboarding(user_key, setup_asks=asks)
 
 
+def _setup_asking(user_key: str) -> str | None:
+    """The field Ted's last counted question asked for."""
+    if not user_key:
+        return None
+    value = _onboarding(user_key).get("setup_asking")
+    return value if isinstance(value, str) else None
+
+
+def _mark_setup_asking(user_key: str, field: str) -> None:
+    _update_onboarding(user_key, setup_asking=field)
+
+
 def _mark_setup_stalled(user_key: str) -> None:
     """Stop asking. Not done — just not worth asking a fourth time.
 
@@ -1694,6 +1706,7 @@ def consent_gate(
         # and that copy is the first time the age was asked.
         _mark_setup_running(user_key)
         _record_setup_ask(user_key, SETUP_QUESTIONS[0][0])
+        _mark_setup_asking(user_key, SETUP_QUESTIONS[0][0])
         return _personalized_disclosure(name)
 
     # The model asked in its own words. Record that it was asked and let it
@@ -1717,6 +1730,7 @@ def consent_gate(
         # knowing what to call somebody.
         _mark_setup_running(user_key)
         _record_setup_ask(user_key, SETUP_QUESTIONS[0][0])
+        _mark_setup_asking(user_key, SETUP_QUESTIONS[0][0])
         return _personalized_disclosure(None)
 
     _record_name_ask(user_key)
@@ -2416,6 +2430,62 @@ def _next_setup_field(profile: CalorieProfile) -> tuple[int, str] | None:
     return None
 
 
+def _setup_answer(field: str, written: str) -> Any:
+    """Read one answer, for the one field Ted actually asked about."""
+    if field == "age":
+        return _find_age([written])
+    if field in _MEASUREMENT_FIELDS:
+        return _correction_value(field, written)
+    if field == "sex":
+        return _find_sex([written])
+    return _find_activity([written])
+
+
+def _setup_profile(
+    user_key: str, asked: str | None, written: str, transcript_age: int | None
+) -> CalorieProfile:
+    """What Ted knows, plus the answer to the question he just asked.
+
+    The transcript is not a source while the five are running, and this is
+    not tidiness. Hermes writes the *model's* text to the transcript, never
+    the gate's, and the model is running its own onboarding in parallel — it
+    has not been told the gate is asking anything. On 4 Sep 2026 Ted asked a
+    real user "*1/5* how old are you?" while the model wrote "and your
+    weight?" underneath it. He answered "33". The bare number anchored to the
+    model's question, and 33 was filed as his weight in kilograms.
+
+    Ted knows which question he asked. That is the only thing the next answer
+    can be an answer to, so nothing else is read out of the conversation.
+
+    Age is the exception, and deliberately: it is also taken from the wider
+    transcript, because every error in reading an age makes the under-18
+    refusal *more* likely to fire, never less. Errors there fail safe. A
+    weight read wrong fails dangerous — it is what the calorie number is
+    built from.
+    """
+    record = _onboarding(user_key)
+    sex = record.get("sex")
+    activity = record.get("activity")
+    profile = CalorieProfile(
+        age=_stored_age(user_key) or transcript_age,
+        height_cm=_stored_measurement(user_key, "height_cm"),
+        weight_kg=_stored_measurement(user_key, "weight_kg"),
+        sex=sex if isinstance(sex, str) else None,
+        activity=activity if isinstance(activity, str) else None,
+    )
+    if asked is None or getattr(profile, asked) is not None:
+        return profile
+    answer = _setup_answer(asked, written)
+    if answer is None:
+        return profile
+    if asked in ("sex", "activity"):
+        # Not measurements, so they have no pending/confirm machinery. They
+        # still have to persist, or the next turn re-reads them from a
+        # transcript this function has just stopped trusting.
+        _update_onboarding(user_key, **{asked: answer})
+    return replace(profile, **{asked: answer})
+
+
 def _setup_payoff(profile: CalorieProfile) -> str:
     """The number, and why it is that number and not a smaller one.
 
@@ -2579,9 +2649,11 @@ def setup_gate(
     if _setup_state(user_key) != "running":
         return None
 
-    profile = extract_calorie_profile(history, user_message)
-    _remember_age(user_key, profile.age)
-    age = profile.age if profile.age is not None else _stored_age(user_key)
+    # Read broadly for the age only, so a minor cannot slip past by mentioning
+    # it somewhere the counted question did not reach.
+    transcript_age = extract_calorie_profile(history, user_message).age
+    _remember_age(user_key, transcript_age)
+    age = _stored_age(user_key) or transcript_age
 
     # Same rule as everywhere else, and it has to be here too: the five
     # questions end in a calorie number, so a minor must never finish them.
@@ -2589,7 +2661,10 @@ def setup_gate(
         _mark_setup_done(user_key)
         return UNDER_18_REFUSAL
 
-    profile = replace(profile, age=age)
+    written = _user_written_text(user_message)
+    profile = _setup_profile(
+        user_key, _setup_asking(user_key), written, transcript_age
+    )
     profile, doubt = _resolve_measurements(profile, history, user_message, user_key)
     if doubt:
         return doubt
@@ -2604,6 +2679,8 @@ def setup_gate(
             )
             return None
         _record_setup_ask(user_key, field)
+        # So the next turn knows what its answer is an answer to.
+        _mark_setup_asking(user_key, field)
         return _setup_question(index)
 
     # All five are in. The read-back comes before the number, because the one
@@ -2619,6 +2696,7 @@ def setup_gate(
     if state is None:
         _mark_summary_shown(user_key)
         _record_setup_ask(user_key, "summary")
+        _update_onboarding(user_key, setup_asking=None)
         LOGGER.info("ted_setup_summary_shown user_key=%s", user_key)
         return _profile_summary(profile, user_key)
     if state == "shown":

@@ -7050,3 +7050,69 @@ class TheCountedFiveTest(unittest.TestCase):
         # A number that is not a weight is not a correction.
         self.assertIsNone(gates._correction_value("weight_kg", "i had 2 rotis"))
         self.assertIsNone(gates._correction_value("weight_kg", "nope"))
+
+    def test_an_answer_belongs_to_the_question_ted_asked(self) -> None:
+        """Found live, on a real user, twelve minutes after going live.
+
+        Ted asked "*1/5* how old are you?". Hermes wrote the *model's* text to
+        the transcript instead — and the model, which has not been told the
+        gate is asking anything, ran its own onboarding underneath: "and your
+        weight?". He answered "33". The bare number anchored to the model's
+        question and 33 was filed as his weight in kilograms, which would have
+        built his maintenance figure from a 33 kg body.
+
+        The transcript cannot decide what a counted answer answers. Ted knows
+        which question he asked.
+        """
+        self.start()
+        self.history.append(message("user", "33"))
+        transform_response(
+            history=list(self.history),
+            # What the model wrote while Ted was asking question one.
+            user_message="33",
+            response_text="got it! and your weight?",
+            user_key=self.USER_KEY,
+        )
+        self.assertEqual(gates._stored_age(self.USER_KEY), 33)
+        self.assertIsNone(gates._stored_measurement(self.USER_KEY, "weight_kg"))
+
+    def test_the_model_running_ahead_cannot_fill_any_of_the_five(self) -> None:
+        """The same shape for every field, not just the one that was caught."""
+        self.start()
+        for answer, model_text in (
+            ("33", "and your weight? also your height?"),
+            ("182cm", "great — male or female? and how active are you?"),
+        ):
+            self.history.append(message("user", answer))
+            transform_response(
+                history=list(self.history),
+                user_message=answer,
+                response_text=model_text,
+                user_key=self.USER_KEY,
+            )
+            self.history.append(message("assistant", model_text))
+        record = gates._onboarding(self.USER_KEY)
+        self.assertEqual(gates._stored_measurement(self.USER_KEY, "height_cm"), 182.0)
+        self.assertIsNone(gates._stored_measurement(self.USER_KEY, "weight_kg"))
+        self.assertIsNone(record.get("sex"))
+        self.assertIsNone(record.get("activity"))
+        # And the count has not skipped anything: weight is still next.
+        self.assertEqual(gates._setup_asking(self.USER_KEY), "weight_kg")
+
+    def test_an_age_stated_anywhere_still_reaches_the_refusal(self) -> None:
+        """The one field read broadly on purpose.
+
+        Every misread age makes the under-18 refusal more likely to fire, not
+        less. Errors there fail safe; a weight read wrong fails dangerous.
+        """
+        self.start()
+        self.history.append(message("user", "my mum says i'm 15 and too young for this"))
+        self.assertEqual(
+            transform_response(
+                history=list(self.history),
+                user_message="my mum says i'm 15 and too young for this",
+                response_text="sure, here's a plan",
+                user_key=self.USER_KEY,
+            ),
+            gates.UNDER_18_REFUSAL,
+        )
