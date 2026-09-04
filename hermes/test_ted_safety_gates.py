@@ -7210,3 +7210,56 @@ class TheCountedFiveTest(unittest.TestCase):
         profile = gates.CalorieProfile(age=33, weight_kg=33.0)
         settled, _ = gates._resolve_measurements(profile, [], "33 kg", self.USER_KEY)
         self.assertEqual(settled.weight_kg, 33.0)
+
+    def test_a_bare_number_answers_question_one(self) -> None:
+        """Everyone answers "how old are you?" with a number and nothing else.
+
+        `_find_age` needs "i'm 33" or a year on purpose, because a stray 33
+        anywhere in a conversation is not an age. Under a counted question it
+        is nothing else, and requiring the sentence would have looped 1/5
+        forever.
+        """
+        for reply, expected in (("32", 32), ("29", 29), ("i am 33", 33), ("15", 15)):
+            with self.subTest(reply=reply):
+                self.assertEqual(gates._setup_answer("age", reply), expected)
+
+    def test_eighteen_plus_is_not_an_age(self) -> None:
+        """A real user answered 1/5 by echoing the question's own "beta's 18+".
+
+        She is 32. Read as an age it says 18 — the one number that switches
+        the under-18 refusal off — so a minor echoing the same three
+        characters would walk through it. It is a category, not an age.
+        """
+        self.assertIsNone(gates._setup_answer("age", "18+"))
+        self.assertIsNone(gates._setup_answer("age", "beta's 18+"))
+
+    def test_five_point_seven_feet_is_five_foot_seven(self) -> None:
+        """Read as seven feet until 4 Sep 2026.
+
+        "5.7 ft" failed to match at the 5 — ".7 " is not whitespace — so the
+        engine slid along and matched the 7 instead. A 170 cm user was stored
+        at 213.36 cm; she followed it with "170 cm", which is 5 foot 7 exactly
+        and is how that phrasing is meant.
+        """
+        self.assertEqual(gates._find_height_cm(["5.7 ft"]), 170.18)
+        self.assertEqual(gates._find_height_cm(["5.11"]), 180.34)
+        # The forms that already worked still do.
+        for text, expected in (
+            ("5ft 11 inches", 180.34),
+            ("5 foot 11", 180.34),
+            ("5'11", 180.34),
+            ("175 cm", 175.0),
+            ("5 feet 4 and a half inches", 163.83),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(gates._find_height_cm([text]), expected)
+
+    def test_training_on_its_own_is_an_answer(self) -> None:
+        """PG answered 5/5 three times — "Training 4-5 days a week mostly",
+        "Training", "Training" — and none of them read. The bound gave up on
+        him with a complete profile except for this one field."""
+        self.assertEqual(gates._find_activity(["Training 4-5 days a week mostly"]), "active")
+        self.assertEqual(gates._find_activity(["gym 5x a week"]), "active")
+        # No frequency named, so not the top factor.
+        self.assertEqual(gates._find_activity(["Training"]), "moderate")
+        self.assertEqual(gates._find_activity(["i lift weights"]), "moderate")

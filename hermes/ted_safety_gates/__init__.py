@@ -1907,7 +1907,11 @@ def _find_age(texts: list[str]) -> int | None:
 # at 152.4 cm — 12 cm short — and handed a maintenance figure 100 kcal under
 # her real one, inside the sentence that promises it used only her numbers.
 _FEET_INCHES = re.compile(
-    r"\b([4-7])\s*(?:ft|feet|foot|')"
+    # Not preceded by a digit or a decimal point. Without this, "5.7 ft" fails
+    # to match at the 5 (the ".7 " is not whitespace), the engine slides along,
+    # and matches at the 7 instead — reading a 170 cm person as seven feet
+    # tall. A real user typed exactly that on 4 Sep and Ted stored 213.36 cm.
+    r"(?<![\d.])([4-7])\s*(?:ft|feet|foot|')"
     # 0-11 only, and closed by a word break, so "5 feet 63 kg" cannot read a
     # weight as inches and "5 feet 63" cannot read a leading 6 as inches.
     r"(?:\s*(1[01]|\d)\b)?"
@@ -1917,11 +1921,26 @@ _FEET_INCHES = re.compile(
 )
 
 
+# "5.7 ft" and "5.11" — feet and inches written with a dot instead of a
+# quote. Common in India, and it is not decimal feet: the user who typed
+# "5.7 ft" on 4 Sep followed it with "170 cm", which is 5 foot 7 exactly.
+# Read as decimal feet it would have been 173.7, and read as the old regex
+# read it, 213.36.
+_DOTTED_FEET = re.compile(
+    r"(?<![\d.])([4-7])\.(1[01]|\d)\s*(?:ft\b|feet\b|foot\b|'|\"|$)",
+    re.IGNORECASE,
+)
+
+
 def _find_height_cm(texts: list[str]) -> float | None:
     joined = "\n".join(texts)
     cm = re.search(r"\b(1\d{2}(?:\.\d+)?)\s*cm\b", joined, re.IGNORECASE)
     if cm:
         return float(cm.group(1))
+    dotted = _DOTTED_FEET.search(joined)
+    if dotted:
+        inches = int(dotted.group(1)) * 12 + int(dotted.group(2))
+        return round(inches * 2.54, 2)
     feet = _FEET_INCHES.search(joined)
     if feet:
         inches = int(feet.group(1)) * 12 + int(feet.group(2) or 0)
@@ -2082,6 +2101,15 @@ _EXERCISE_CUE = re.compile(
 )
 
 
+# Four or more sessions a week, or every day. Below that an unstated
+# frequency is not evidence of one.
+_TRAINS_OFTEN = re.compile(
+    r"\b(?:[4-7]\s*(?:-\s*[4-7]\s*)?(?:x|times)?\s*(?:days?|a week|per week|"
+    r"weekly)|daily|every ?day|most days)\b",
+    re.IGNORECASE,
+)
+
+
 def _find_activity(texts: list[str]) -> str | None:
     joined = "\n".join(texts).lower()
     # Read the shape before the labels. A desk answer that also names exercise
@@ -2096,6 +2124,16 @@ def _find_activity(texts: list[str]) -> str | None:
     for phrase, activity in _ACTIVITY_PHRASES:
         if re.search(rf"\b{re.escape(phrase)}\b", joined):
             return activity
+    # Exercise on its own, with no desk to weigh it against. "training
+    # regularly" was in the table; "Training" was not, and PG answered 5/5
+    # with "Training 4-5 days a week mostly", then "Training", then
+    # "Training" — three times, none read, and the bound gave up on him.
+    #
+    # A named high frequency earns the high factor. Without one, "moderate"
+    # — below what the table gives the question's own "training regularly"
+    # option, because an unstated frequency should not buy the larger number.
+    if _EXERCISE_CUE.search(joined):
+        return "active" if _TRAINS_OFTEN.search(joined) else "moderate"
     return None
 
 
@@ -2464,9 +2502,31 @@ def _next_setup_field(profile: CalorieProfile) -> tuple[int, str] | None:
 
 
 def _setup_answer(field: str, written: str) -> Any:
-    """Read one answer, for the one field Ted actually asked about."""
+    """Read one answer, for the one field Ted actually asked about.
+
+    Every parser here is allowed to be looser than its free-text cousin,
+    because the ambiguity those guard against is gone: Ted asked one question
+    and this is the reply to it. `_find_age` needs "i'm 33" or a year, since
+    a stray 33 anywhere in a conversation is not an age — but a bare "33"
+    under "*1/5* how old are you?" is nothing else.
+    """
     if field == "age":
-        return _find_age([written])
+        age = _find_age([written])
+        if age is not None:
+            return age
+        # Not "18+". The question ends "beta's 18+", and a real user answered
+        # by echoing that back — she is 32. Read as an age it says 18, which
+        # is the one number that turns the under-18 refusal off. A minor
+        # echoing the same three characters would walk straight through it.
+        # It is a category, not an age, and Ted has to ask again.
+        bare = re.search(r"\b(\d{1,3})\b(?!\s*\+)", written)
+        if bare:
+            value = int(bare.group(1))
+            # Same band as `_find_age`: starting at 10 rather than 18 so
+            # "15" is still seen, and still refused.
+            if 10 <= value <= 99:
+                return value
+        return None
     if field in _MEASUREMENT_FIELDS:
         return _correction_value(field, written)
     if field == "sex":
