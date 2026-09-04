@@ -7375,3 +7375,41 @@ class TheDisputeMatcherIsNotTooEagerTest(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 self.assertTrue(gates._says_something_is_wrong(reply))
+
+
+class TheAgeIsSettledOnceTest(TheCountedFiveTest):
+    """A number later in the flow must not become the age."""
+
+    USER_KEY = "age-settled-once"
+
+    def test_a_later_number_cannot_overwrite_a_settled_age(self) -> None:
+        """Ram answered 27, then 160, then 80. His age became 80.
+
+        The broad age read exists so a minor cannot slip past by mentioning
+        their age somewhere the counted question did not reach. I argued it
+        failed safe, because a wrong age makes the refusal more likely. That
+        only holds for errors crossing the 18 line. 27 to 80 is adult to
+        adult: no refusal, and 265 kcal off the number he was about to be
+        handed.
+        """
+        self.start()
+        self.turn("27")
+        self.assertEqual(gates._stored_age(self.USER_KEY), 27)
+        self.turn("160")
+        self.turn("80")
+        self.assertEqual(gates._stored_age(self.USER_KEY), 27)
+
+    def test_a_minor_mentioned_anywhere_is_still_caught(self) -> None:
+        """The safety property the broad read was there for, still intact."""
+        self.start()
+        self.turn("33")
+        self.history.append(message("user", "my son is 15 and asks a lot"))
+        self.assertEqual(
+            transform_response(
+                history=list(self.history),
+                user_message="actually i'm 15, i lied earlier",
+                response_text="sure, 1800 a day",
+                user_key=self.USER_KEY,
+            ),
+            gates.UNDER_18_REFUSAL,
+        )

@@ -2940,10 +2940,34 @@ def setup_gate(
     if _setup_state(user_key) != "running":
         return None
 
-    # Read broadly for the age only, so a minor cannot slip past by mentioning
-    # it somewhere the counted question did not reach.
+    # Read broadly for the age, so a minor cannot slip past by mentioning it
+    # somewhere the counted question did not reach. But only *keep* a broad
+    # read when it is the age being asked for, or when it says under 18.
+    #
+    # I argued when writing this that a misread age fails safe, because a
+    # wrong age makes the refusal more likely to fire. That only holds for
+    # errors that cross the 18 line. Ram answered "27" to 1/5, "160" to 2/5
+    # and "80" to 3/5, and the broad read took his weight as his age: 27
+    # became 80, adult to adult, no refusal, and 265 kcal off the maintenance
+    # figure he was about to be handed. Silent and wrong is the failure this
+    # whole flow exists to prevent.
     transcript_age = extract_calorie_profile(history, user_message).age
-    _remember_age(user_key, transcript_age)
+    asking = _setup_asking(user_key)
+    if transcript_age is not None and (
+        asking == "age" or transcript_age < 18 or _stored_age(user_key) is None
+    ):
+        _remember_age(user_key, transcript_age)
+
+    # An under-18 age stated *in this message* outranks anything already on
+    # file. `extract_calorie_profile` returns the first age it finds in the
+    # history, so once an adult age is stored a later "actually i'm 15" never
+    # reaches the refusal: Ted keeps the 33 and hands over a number. That is
+    # the under-18 hole again, wearing different clothes. Found by a test
+    # written for a different bug, which is the only reason it was found.
+    said_now = _find_age([_user_written_text(user_message)])
+    if said_now is not None and said_now < 18:
+        _remember_age(user_key, said_now)
+
     age = _stored_age(user_key) or transcript_age
 
     # Same rule as everywhere else, and it has to be here too: the five
