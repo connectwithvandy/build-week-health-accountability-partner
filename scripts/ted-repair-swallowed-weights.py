@@ -70,6 +70,32 @@ def suspect(record: dict) -> str | None:
     return None
 
 
+MAX_SETUP_ASKS = 3
+
+
+def spent_on_a_bug(record: dict) -> str | None:
+    """A question Ted has given up asking, for a reason since fixed.
+
+    Every bound hit on 4 Sep was hit on a parser that could not read a real
+    answer. "5 11" and "5 2\u201d" for a height. "Training" for an activity.
+    The user answered; Ted could not hear them, counted it against them, and
+    stopped asking. The parsers read all of those now, so the asks go back.
+
+    Only for a field that is still empty: somebody who answered on the third
+    go has nothing to give back.
+    """
+    if record.get("setup") not in ("running", "stalled"):
+        return None
+    asks = record.get("setup_asks") or {}
+    for field in ("age", "height_cm", "weight_kg", "sex", "activity"):
+        stored = record.get(field)
+        if stored is not None:
+            continue
+        if int(asks.get(field) or 0) >= MAX_SETUP_ASKS:
+            return f"{field} asked {asks[field]}x and never read"
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -81,21 +107,29 @@ def main() -> int:
     users = payload.get("users") or {}
 
     found = []
+    stuck = []
     for key, record in users.items():
         reason = suspect(record)
         if reason:
             found.append((key, record, reason))
+        bound = spent_on_a_bug(record)
+        if bound:
+            stuck.append((key, record, bound))
 
-    if not found:
-        print("nothing to clear.")
+    if not found and not stuck:
+        print("nothing to repair.")
         return 0
 
     for key, record, reason in found:
         name = record.get("name") or "(no name)"
-        print(f"  {name:12} weight {record['weight_kg']:g} kg — {reason}")
+        print(f"  {name:12} weight {record['weight_kg']:g} kg, {reason}")
+    for key, record, bound in stuck:
+        name = record.get("name") or "(no name)"
+        print(f"  {name:12} {bound}")
 
     if not args.apply:
-        print(f"\n{len(found)} to clear. Re-run with --apply.")
+        print(f"\n{len(found)} weight(s) to clear, {len(stuck)} to un-stick.")
+        print("Re-run with --apply.")
         return 0
 
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -115,10 +149,16 @@ def main() -> int:
             record["setup"] = "running"
             record.pop("setup_asks", None)
 
+    for _, record, _ in stuck:
+        # Back in the flow with a clean count. The parsers that spent these
+        # can read the answers now.
+        record["setup"] = "running"
+        record.pop("setup_asks", None)
+
     STATE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    print(f"\ncleared {len(found)}. backup: {backup.name}")
+    print(f"\ncleared {len(found)}, un-stuck {len(stuck)}. backup: {backup.name}")
     print("restart the gateway now, or the running process will write it back.")
     return 0
 

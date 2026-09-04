@@ -95,6 +95,19 @@
           ]
         }
       ]
+    },
+    {
+      "file": "07-no-fallback-notice-to-users.patch",
+      "what": "the fallback-switch notice staying out of chat",
+      "checks": [
+        {
+          "path": "run_agent.py",
+          "present": [
+            "_TED_CHAT_SURFACES"
+          ],
+          "absent": []
+        }
+      ]
     }
   ]
 }

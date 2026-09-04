@@ -1,6 +1,6 @@
 # Hermes patches
 
-Six fixes now live *below* Ted's plugin, in the Hermes gateway
+Seven fixes now live *below* Ted's plugin, in the Hermes gateway
 itself (`~/.hermes/hermes-agent`). A plugin cannot reach them: the strings are
 emitted by Hermes' own retry machinery, and `VALID_HOOKS` has no hook for
 outbound gateway status messages.
@@ -13,7 +13,7 @@ destroyed, but the gateway silently goes back to leaking model names into
 WhatsApp and charging laptop sleep to the provider — which is why this is
 checked rather than remembered.
 
-`npm run gates:guard` reports whether all six patches are still applied, alongside
+`npm run gates:guard` reports whether all seven patches are still applied, alongside
 its existing gate checks. It treats a missing patch as a warning, not a stop:
 an unpatched Ted is noisy, but he still refuses under-18s, still never returns a
 deficit, and still keeps users' memories apart.

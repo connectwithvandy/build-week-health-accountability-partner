@@ -4223,9 +4223,11 @@ class MealBreakdownTest(unittest.TestCase):
 
     def test_the_day_total_comes_after_the_meal_not_instead_of_it(self) -> None:
         out = self.transform("ooh sprouts bowl")
-        self.assertIn("day so far 1,060 cal, 46g protein", out)
+        self.assertIn("calories 1,060", out)
+        self.assertIn("protein 46g", out)
+        self.assertIn("*Today*", out)
         # Order matters: this meal first, the day underneath.
-        self.assertLess(out.index("calories 220"), out.index("day so far"))
+        self.assertLess(out.index("calories 220"), out.index("*Today*"))
 
     def test_ted_s_own_words_are_kept_and_come_first(self) -> None:
         out = self.transform("ooh sprouts bowl 😍 proper protein for a veg plate")
@@ -4255,7 +4257,8 @@ class MealBreakdownTest(unittest.TestCase):
         )
         self.assertIn("calories 1,235", out)
         self.assertIn("protein 45g", out)
-        self.assertIn("day so far 2,500 cal", out)
+        self.assertIn("calories 2,500", out)
+        self.assertIn("*Today*", out)
         # A zero macro is omitted rather than printed as a hollow "carbs 0g".
         self.assertNotIn("carbs 0g", out)
 
@@ -5180,7 +5183,11 @@ class TedsVoiceSurvivesTheFigureStripTest(unittest.TestCase):
         self.assertIn("calories 614", out)
         # The model's own numbers appear nowhere, so nothing is printed twice.
         self.assertNotIn("615", out)
-        self.assertEqual(out.count("41g protein"), 1)
+        # "41g protein" is the model's phrasing and is stripped; "protein 41g"
+        # is the block's own. It can legitimately appear twice — the meal and
+        # the day round to the same figure on the first meal of the day.
+        self.assertNotIn("41g protein", out)
+        self.assertIn("protein 41g", out)
         self.assertLess(out.index("good breakfast"), out.index("calories 614"))
 
     def test_a_line_of_pure_numbers_still_goes(self) -> None:
@@ -5791,7 +5798,7 @@ class TheDayLineIsWrittenOnceTest(unittest.TestCase):
         )
         self.assertIn("veggie peanut toast", out)
         self.assertNotIn("Today · 3 meals", out)
-        self.assertEqual(out.count("day so far"), 1)
+        self.assertEqual(out.count("*Today*"), 1)
 
     def test_the_shapes_a_model_reaches_for(self) -> None:
         for said in (
@@ -7263,3 +7270,35 @@ class TheCountedFiveTest(unittest.TestCase):
         # No frequency named, so not the top factor.
         self.assertEqual(gates._find_activity(["Training"]), "moderate")
         self.assertEqual(gates._find_activity(["i lift weights"]), "moderate")
+
+    def test_feet_and_inches_with_no_unit_answer_question_two(self) -> None:
+        """"5 11" and "5 2”" are heights once Ted knows he asked for one.
+
+        Refused everywhere else, and rightly: two numbers side by side could
+        be a date, a weight, a time. Under "*2/5* how tall are you?" they are
+        nothing else. Two real users typed exactly these on 4 Sep and were
+        asked again; one of them ran out of asks over it.
+        """
+        for text, expected in (
+            ("5 2”", 157.48),
+            ("5 11", 180.34),
+            ("5'2", 157.48),
+            ("5 2", 157.48),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(gates._setup_answer("height_cm", text), expected)
+
+    def test_two_numbers_that_are_not_a_height_are_still_refused(self) -> None:
+        for text in ("12 30", "5 2 3", "2024 11"):
+            with self.subTest(text=text):
+                self.assertIsNone(gates._bare_feet_inches(text))
+
+    def test_the_forms_that_already_worked_still_do(self) -> None:
+        for text, expected in (
+            ("175 cm", 175.0),
+            ("5ft 11 inches", 180.34),
+            ("5.7 ft", 170.18),
+            ("170", 170.0),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(gates._setup_answer("height_cm", text), expected)

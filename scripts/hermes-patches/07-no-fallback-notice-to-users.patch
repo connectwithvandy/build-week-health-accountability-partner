@@ -1,0 +1,41 @@
+diff --git a/run_agent.py b/run_agent.py
+index b92ea16d0..781ceaffa 100644
+--- a/run_agent.py
++++ b/run_agent.py
+@@ -358,6 +358,11 @@ def _safe_session_filename_component(session_id: str) -> str:
+     return f"{sanitized}_{digest}"
+ 
+ 
++_TED_CHAT_SURFACES = frozenset(
++    {"whatsapp", "telegram", "slack", "discord", "imessage", "signal"}
++)
++
++
+ class _StreamErrorEvent(Exception):
+     """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
+ 
+@@ -1043,6 +1048,24 @@ class AIAgent:
+                 # Clear before emitting so a (swallowed) callback error can't
+                 # leave the notice set for a stale re-emit on a later turn.
+                 self._pending_fallback_notice = None
++                # Ted patch 07. A model swap is plumbing. On 4 Sep 2026 people
++                # onboarding on WhatsApp were shown "Switched to fallback
++                # model: anthropic/claude-sonnet-5 via openrouter → openai/
++                # gpt-5.3-codex via openrouter" mid-conversation: two vendors
++                # and two model versions, in a health chat, describing an event
++                # that did not affect them and that they cannot act on. It is
++                # the same mistake as the shutdown notice patch 06 removed.
++                #
++                # Operators still need it, so it stays at INFO in agent.log and
++                # on every non-chat surface. Only the chat surfaces lose it.
++                _ted_platform = str(getattr(self, "platform", "") or "").lower()
++                if _ted_platform in _TED_CHAT_SURFACES:
++                    logger.info(
++                        "Ted: suppressing fallback notice on %s: %s",
++                        _ted_platform,
++                        notice,
++                    )
++                    return
+                 self._emit_status(notice)
+         except Exception:
+             # Never break the conversation loop on a notice hiccup.

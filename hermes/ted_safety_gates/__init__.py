@@ -2501,6 +2501,27 @@ def _next_setup_field(profile: CalorieProfile) -> tuple[int, str] | None:
     return None
 
 
+# Feet and inches with no unit on the feet: "5 11", "5 2\u201d", "5'2".
+#
+# Refused everywhere else, and rightly: two numbers side by side could be a
+# date, a weight, a time. Under "*2/5* how tall are you?" they are a height,
+# which is the whole point of knowing which question was asked. Two real
+# users typed exactly these on 4 Sep and were asked again; one of them ran
+# out of asks.
+_BARE_FEET_INCHES = re.compile(
+    r"^\s*([4-7])\s*[\u2019'\u2032]?\s*(1[01]|\d)\s*(?:[\u201d\"\u2033]|in\b|inch\w*)?\s*$"
+)
+
+
+def _bare_feet_inches(written: str) -> float | None:
+    """A height written as two bare numbers, once we know it is a height."""
+    match = _BARE_FEET_INCHES.match(written or "")
+    if not match:
+        return None
+    inches = int(match.group(1)) * 12 + int(match.group(2))
+    return round(inches * 2.54, 2)
+
+
 def _setup_answer(field: str, written: str) -> Any:
     """Read one answer, for the one field Ted actually asked about.
 
@@ -2527,6 +2548,8 @@ def _setup_answer(field: str, written: str) -> Any:
             if 10 <= value <= 99:
                 return value
         return None
+    if field == "height_cm":
+        return _correction_value(field, written) or _bare_feet_inches(written)
     if field in _MEASUREMENT_FIELDS:
         return _correction_value(field, written)
     if field == "sex":
@@ -2951,6 +2974,13 @@ def setup_gate(
         _mark_summary_agreed(user_key)
 
     _mark_setup_done(user_key)
+    # The number the day counts against. Stored here because this is the only
+    # place it is ever worked out from a profile the user has agreed to, and
+    # because the meal card needs a target to say "left" against. It is
+    # maintenance and only maintenance — the same value that just went out in
+    # the payoff, so the card can never quietly disagree with the message that
+    # introduced it.
+    _update_onboarding(user_key, maintenance_kcal=_estimated_maintenance(profile))
     LOGGER.info("ted_setup_complete user_key=%s", user_key)
     return _setup_payoff(profile)
 
@@ -3286,7 +3316,9 @@ def _number(value: Any) -> str:
     return f"{round(number):,}"
 
 
-def meal_breakdown(meal: dict[str, Any], day: dict[str, Any]) -> str:
+def meal_breakdown(
+    meal: dict[str, Any], day: dict[str, Any], user_key: str = ""
+) -> str:
     """The numbers for this meal, then the day so far.
 
     Written by the gate, from what was actually saved, because the model
@@ -3321,14 +3353,105 @@ def meal_breakdown(meal: dict[str, Any], day: dict[str, Any]) -> str:
     if not lines:
         return ""
 
-    # The day is a separate beat, and only worth saying when it is more than
-    # the meal we just printed. Repeating identical numbers reads as a bug.
-    day_calories = _number(day.get("calories"))
-    day_protein = _number(day.get("proteinGrams"))
-    if day_calories and day_calories != _number(meal.get("calories")):
+    meals = day.get("meals")
+    header = f"*Meal {meals}*" if isinstance(meals, int) and meals > 0 else "*Meal*"
+    lines = [header, ""] + lines
+
+    day_block = _daily_overview(day, user_key)
+    if day_block:
         lines.append("")
-        lines.append(f"day so far {day_calories} cal, {day_protein}g protein")
+        lines.append(day_block)
     return "\n".join(lines)
+
+
+def _calorie_bar(eaten: float, target: float, width: int = 10) -> str:
+    """Ten squares. Green for eaten, hollow for what is left.
+
+    Deliberately not a percentage and not a warning colour. The bar fills and
+    that is all it does: nobody is told they have gone too far, because the
+    target is maintenance and eating to maintenance is not a failure. Past it
+    the bar is simply full.
+    """
+    if target <= 0:
+        return ""
+    filled = int(round(min(eaten / target, 1.0) * width))
+    return "\U0001F7E9" * filled + "\u2B1C" * (width - filled)
+
+
+# "how much dal roughly?", "how many rotis was that?", "what size portion?"
+#
+# A question about the amount, in the same breath as an exact calorie count
+# for that amount. Ted cannot be both still asking and already sure, and the
+# block underneath makes him look like he was guessing. The estimate is an
+# estimate either way; what has to go is the pretence that a number is
+# pending. If the portion genuinely matters, the person will correct it, and
+# a correction is a thing this flow already handles.
+_ASKS_ABOUT_PORTION = re.compile(
+    r"\b(?:how (?:much|many|big|large)|what (?:size|portion)|"
+    r"roughly how|portion size|how's the portion)\b",
+    re.IGNORECASE,
+)
+
+
+def _without_portion_question(text: str) -> str:
+    """Ted's sentence with any "how much was it?" removed."""
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        sentences = [
+            sentence
+            for sentence in re.split(r"(?<=[?!.])\s+", line.strip())
+            if sentence.strip() and not _ASKS_ABOUT_PORTION.search(sentence)
+        ]
+        joined = " ".join(sentences).strip()
+        if joined:
+            kept.append(joined)
+    return "\n".join(kept).strip()
+
+
+def _daily_overview(day: dict[str, Any], user_key: str) -> str:
+    """The day so far, against the number the five questions produced.
+
+    "X left" needs something to be left of, and until the counted five stored
+    a maintenance figure there was nothing — which is why this block used to
+    be one line of raw totals. It is maintenance, never a cut: the target is
+    the value the user agreed to in their own read-back, so this cannot
+    quietly become a deficit.
+    """
+    day_calories = day.get("calories")
+    if not day_calories:
+        return ""
+    target = _onboarding(user_key).get("maintenance_kcal") if user_key else None
+
+    rows = ["*Today*"]
+    if isinstance(target, (int, float)) and target > 0:
+        bar = _calorie_bar(float(day_calories), float(target))
+        if bar:
+            rows.append(bar)
+        left = round(float(target) - float(day_calories))
+        # Same shape as the meal above it — one figure per line, label first —
+        # so the eye reads straight down the two blocks. What is left rides on
+        # the calories line because that is the line it is left of.
+        #
+        # Past maintenance there is nothing left, and "-200 left" turns a
+        # neutral number into a scolding. It just stops counting.
+        suffix = f" ({left:,} left)" if left > 0 else ""
+        rows.append(f"calories {_number(day_calories)}{suffix}")
+    else:
+        rows.append(f"calories {_number(day_calories)}")
+    # Carbs, fat and fibre are only here once Convex sums them. The day
+    # summary carried calories and protein alone until 4 Sep, so a gate that
+    # assumed the rest would print blanks against a live deployment that has
+    # not caught up. Absent is absent; the line simply does not appear.
+    for label, key, unit in (
+        ("protein", "proteinGrams", "g"),
+        ("carbs", "carbohydrateGrams", "g"),
+        ("fat", "fatGrams", "g"),
+        ("fiber", "fiberGrams", "g"),
+    ):
+        value = _number(day.get(key))
+        if value and value != "0":
+            rows.append(f"{label} {value}{unit}")
+    return "\n".join(rows)
 
 
 # A figure the block is about to print anyway: "1340 kcal", "58g protein",
@@ -3494,11 +3617,13 @@ def _mentions_food(words: str, meal: dict[str, Any]) -> bool:
     return bool(spoken & _food_words(meal))
 
 
-def _with_meal_breakdown(reply: str, meal: dict[str, Any], day: dict[str, Any]) -> str:
-    block = meal_breakdown(meal, day)
+def _with_meal_breakdown(
+    reply: str, meal: dict[str, Any], day: dict[str, Any], user_key: str = ""
+) -> str:
+    block = meal_breakdown(meal, day, user_key)
     if not block:
         return reply
-    words = words_without_figures(reply)
+    words = _without_portion_question(words_without_figures(reply))
     # The food is named exactly once. If Ted already named it, Ted's version
     # wins: "ooh cheela and ketchup" carries warmth that "besan/moong dal
     # cheela (2-3 pieces) and ketchup" does not. Matched on words rather than
@@ -3645,6 +3770,7 @@ def transform_response(
             cleaned if cleaned is not None else response_text,
             logged_meal,
             day_summary or {},
+            user_key,
         )
     # Last, over everything above and over the model's own reply when nothing
     # above touched it. The gates before this decide *what* Ted is allowed to
