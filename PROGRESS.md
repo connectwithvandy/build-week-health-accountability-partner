@@ -481,10 +481,9 @@ standing there then, now with more users already behind it.
 
 ### Still open after order 16
 
-1. **`main` is 11 commits behind `ship/landing-v6`** and still holds the local
-   `c2d82be` marked "do not push without a decision". Vercel's production branch
-   is the GitHub default, so pushing `main` as it stands would replace the live
-   v6 site with that older tree.
+1. ~~**`main` is 11 commits behind `ship/landing-v6`**~~ **Resolved.** As of
+   4 Sep `main` is 52 commits *ahead* of `ship/landing-v6` and 0 behind, and it
+   is in sync with `origin/main`. The held-back `c2d82be` no longer applies.
 2. **Preview deployments all fail.** `CONVEX_DEPLOY_KEY` and
    `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` are Production-only, so every git push
    dies at `npx convex deploy` and there is no preview URL to check.
@@ -493,10 +492,10 @@ standing there then, now with more users already behind it.
 
 ## Code status
 
-- The live landing page is **v6**, and it is a static file rather than JSX: `public/landing-v6.html`, served at `/` by a `beforeFiles` rewrite in `next.config.ts` so what ships is byte-for-byte the design that was reviewed. Confirmed on 3 Sep: the bytes served at `heyted.vercel.app/` are identical to the repo copy. `src/app` no longer defines a page at `/`; everything else — `/privacy`, `/robots.txt`, `/api/*` — is still Next.js. To go back to a React landing page, delete the rewrite and add `src/app/page.tsx`.
-- The v6 page carries scroll-scrubbed WhatsApp threads that replay as real conversations, the supported input formats, the nudge, reminders the user controls, the evening review, and the privacy boundary. Both `wa.me` links use the agreed opening message, "Okay Ted, let's do this 💪", and the number the rest of the product uses. 48 vitest tests, 179 Python tests, lint, `tsc --noEmit` and the production build all pass.
-- The shipping work lives on `ship/landing-v6` (`7f64fb3`), which is pushed. **`main` is 11 commits behind it** and still holds the local, unpushed `c2d82be` — "held back on purpose — do not push without a decision". Vercel's production branch is the GitHub default, so pushing `main` as it stands would replace the live v6 site with that older tree. Merge v6 into `main`, or push a branch, before anyone touches `main`.
-- `design-experiments/` holds the lineage that led here — `ted-landing-v5-editorial`, `v6`, `v7`, `v8`, `tbh`, `conversation`, `recovery-led`, `characters`. v6 is the one that shipped; the rest are not imported and not deployed.
+- The live landing page is the **v8** design, shipped under the older filename `public/landing-v6.html` — the name is the route's history, not the design's version. `design-experiments/ted-landing-v8/README.md` is the authoritative description of what is on the page. It is a static file rather than JSX, served at `/` by a `beforeFiles` rewrite in `next.config.ts` so what ships is byte-for-byte the design that was reviewed. Confirmed on 3 Sep: the bytes served at `heyted.vercel.app/` are identical to the repo copy. `src/app` no longer defines a page at `/`; everything else — `/privacy`, `/robots.txt`, `/api/*` — is still Next.js. To go back to a React landing page, delete the rewrite and add `src/app/page.tsx`.
+- The page carries the supported input formats, the nudge, reminders the user controls, the evening review, and the privacy boundary. Its WhatsApp threads now play themselves: each is a scene that runs when it arrives and rewinds once it has left. The earlier version was scrubbed by the scrollbar and froze mid-sentence whenever scrolling stopped. Both `wa.me` links use the agreed opening message, "Okay Ted, let's do this 💪", and the number the rest of the product uses. 78 vitest tests, 536 Python tests, lint, `tsc --noEmit` and the production build all pass (re-run 4 Sep).
+- The shipping work started on `ship/landing-v6` (`7f64fb3`) and has since been merged forward: `main` is now 52 commits **ahead** of that branch, 0 behind, and in sync with `origin/main`. Vercel's production branch is the GitHub default, so `main` is what ships. The old warning that `main` was 11 behind, and the held-back `c2d82be`, no longer apply.
+- `design-experiments/` holds the lineage that led here — `ted-landing-v5-editorial`, `v6`, `v7`, `v8`, `tbh`, `conversation`, `recovery-led`, `characters`. v8 is the one that shipped (as `public/landing-v6.html`); the rest are not imported and not deployed.
 - A Next.js 16 TypeScript application exists and passes lint and production builds.
 - The public GitHub repository is `connectwithvandy/build-week-health-accountability-partner`. An earlier note here named `whatsapp-accountability-partner-ted`, which is the Vercel project name, not the repo.
 - GitHub `main` is connected to Vercel, but **only production has the environment it needs**. `CONVEX_DEPLOY_KEY` and `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` are set for Production only, so every Preview build dies at `npx convex deploy` with "no Convex deployment configuration found" — every push shows a red X and there is no preview URL to check before shipping. Production is currently updated by running `vercel --prod` from this machine; the live deployment was made that way at 01:43 IST on 3 Sep.
@@ -512,9 +511,9 @@ standing there then, now with more users already behind it.
 - Verified on a live WhatsApp thread on 2 Sep 2026, not only in tests. "i'm having 2 rotis and paneer" got a meal reply instead of the under-18 refusal; the reply kept its numbers through the claim gate; `ted_log_entry` wrote the meal to production Convex; a correction to 3 rotis superseded the original rather than duplicating it, leaving the original at state `corrected` and the day at one meal, 470 calories, 27g protein; and `ted_day_summary` read those same totals back at 19:05 after a gateway restart at 19:00. Orders 03, 05 and 10 are confirmed working in production.
 - The gate guard was wrong twice on its first live runs, both fixed. `~/.hermes/gateway.pid` holds a JSON record rather than a bare integer, so the guard reported "gateway is not running" for a gateway that was live — the worst failure this script can have. It also could not tell a loaded gate from a current one, so it reported green while the running gateway served pre-edit code; it now compares the gate source mtime against the load time and reports STALE.
 - `scripts/ted-gate-guard.py` is the hard stop for an ungated Ted. Hermes swallows a plugin load failure (`hermes_cli/plugins.py`, `except Exception` in `_load_plugin`) and keeps serving WhatsApp, so the check has to come from outside: the guard imports the shim, confirms the gates registered *after* the last gateway start, and stops the gateway if they did not. Run it after every restart, rename or gate edit.
-- The redesigned mobile-first landing page is intentionally short: one promise, one clearly labelled example day centered on the 7:42 PM recovery moment, one evening review, a plain privacy/safety note, and repeated WhatsApp handoff.
+- *(Describes the pre-v8 page. Kept as the record of the design intent; for what is actually on the page now see `design-experiments/ted-landing-v8/README.md`.)* The redesigned mobile-first landing page is intentionally short: one promise, one clearly labelled example day centered on the 7:42 PM recovery moment, one evening review, a plain privacy/safety note, and repeated WhatsApp handoff.
 - The warmer, playful design experiment was rejected and removed. The previous local landing design is restored. Reduced-motion settings are respected.
-- The WhatsApp buttons pre-fill “Okay Ted, let's do this!” and read Ted's number from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER`; the number is configured locally and on Vercel.
+- The WhatsApp buttons pre-fill “Okay Ted, let's do this 💪”. The live page is static, so the number is written into its markup rather than read from `NEXT_PUBLIC_TED_WHATSAPP_NUMBER` at runtime; `__tests__/landing-page.test.ts` compares the two so they cannot drift apart. The variable is configured locally and on Vercel.
 - The website-matched Ted profile picture and cover image are saved in `docs/brand/` and have been uploaded to the WhatsApp Business profile.
 - The latest landing page is live in production at `https://heyted.vercel.app` — the URL to share and to submit. The auto-generated `whatsapp-accountability-partner-ted.vercel.app` serves the identical deployment, so it is not wrong, just not the one to hand out. It uses the shorter four-section story, the WhatsApp conversation hero, the new split `Message Ted` action, and no visible dash punctuation in user-facing copy.
 - Official OpenAI documentation confirms that `gpt-5.3-codex` accepts text and image input but not audio. Voice-note transcription therefore remains separate from the conversational model.
@@ -542,13 +541,15 @@ Ordered by what a real user hits first.
 
 ### Blocked on Vandy, not on code
 
-1. **The gateway is serving the old gate.** It started 4 Sep 12:44:53; the gate
-   source changed at 13:46:52. `python3 scripts/ted-gate-guard.py --check-only`
-   reports STALE. Nothing from order 19 is live until `hermes gateway restart`.
-   Claude Code can stop the gateway but cannot start it, so this is a human step.
-2. **Four commits are unpushed** (`aeca1c5`, `17edff6`, `80ac672`, `74b749e`).
+1. ~~**The gateway is serving the old gate.**~~ **Done.** The gateway was
+   restarted; `npm run gates:guard` reported "Gates are on" at 4 Sep 21:50:31,
+   with the gates loaded after the last start and all 8 patches applied. Order 19
+   is live.
+2. ~~**Four commits are unpushed**~~ **Done.** `main` is in sync with
+   `origin/main`; nothing is held locally.
 3. **Three of the five named users still have no reminders.** Pradosh and nagga
-   have jobs. UD, harsh, Ankie and J do not.
+   have jobs. UD, harsh, Ankie and J do not. *(Still open — the only item in this
+   list that is.)*
 
 ### Then, in order
 
@@ -571,9 +572,13 @@ Ordered by what a real user hits first.
    watchdogs use `time.monotonic()`. Still open: force-test the Codex fallback,
    and stop the raw `ArgumentValidationError` strings the Convex actions return on
    a bad payload from reaching a chat.
-8. **Order 11 is written, tested, and not deployed.** The duplicate check, date
-   confirmation, the report-a-bad-reply path and `decideReminderDelivery` all
-   exist on `fix/order-11-milestones-10-11-12` and none of it is in production.
+8. ~~**Order 11 is written, tested, and not deployed.**~~ **Merged.**
+   `fix/order-11-milestones-10-11-12` is now an ancestor of `main`, so the
+   duplicate check, date confirmation, the report-a-bad-reply path and
+   `decideReminderDelivery` are all in the shipped tree. `npm run reports` reads
+   back one reported reply, so that path has run for real.
+   Two branches are still **not** merged into `main`: `fix/orders-08-13-14`
+   (3 commits) and `design/landing-rework` (2 commits).
 
 ### Open design calls
 
@@ -591,11 +596,19 @@ Ordered by what a real user hits first.
 
 ### Stale notes now corrected
 
-- `main` is **34 commits ahead** of `ship/landing-v6` and 0 behind. The old warning
-  that main was 11 behind, and the held-back `c2d82be`, no longer apply.
-- The test suite is 464 Python tests, not 81. Run it with pytest and the root
-  `conftest.py`; `python3 -m unittest` skips conftest and writes fixture keys into
-  `~/.hermes/state`, which happened again on 4 Sep and had to be cleaned by hand.
+- `main` is **52 commits ahead** of `ship/landing-v6` and 0 behind, and in sync
+  with `origin/main`. The old warning that main was 11 behind, and the held-back
+  `c2d82be`, no longer apply.
+- The test suite is **536 Python tests** (880 subtests) and **78 vitest tests**,
+  measured 4 Sep — earlier counts of 81, 464 and 179 are all superseded. Run the
+  Python tests with pytest and the root `conftest.py`; `python3 -m unittest` skips
+  conftest and writes fixture keys into `~/.hermes/state`, which happened again on
+  4 Sep and had to be cleaned by hand.
+- The live landing page is the **v8** design, not v6. Only the filename
+  (`public/landing-v6.html`) still says v6.
+- Test counts and branch positions quoted inside the dated order entries above are
+  left as written: they record what was true when the entry was made. This section
+  is the one that tracks the current numbers.
 
 ## Local design experiment — 1 Sep 2026
 

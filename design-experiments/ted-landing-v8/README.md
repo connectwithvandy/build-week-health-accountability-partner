@@ -118,9 +118,20 @@ is the one place on the page that cannot be approximately right.
   it can actually do: the arithmetic, the one move, and moving the gym instead of
   deleting it. The section lede was corrected to match.
 
+## Shipped
+
+This is what is live. It went out in commit `35cb7fb`, and
+`public/landing-v6.html` is now this file plus one addition: the Vercel Web
+Analytics script tag, which the page needs because it is served straight from
+`/public` by the rewrite and so never passes through the App Router layout.
+Apart from that tag the two files are byte-for-byte identical.
+
+The filename kept the `v6` in it. Renaming it would mean touching the rewrite in
+`next.config.ts` and the test that reads it, for no gain — but the name is the
+route's history, not the design's version.
+
 ## Still open
 
-- Not yet shipped. `public/landing-v6.html` is untouched and still live.
-- Verified at 1512px and at 390px in a real Chrome, and against the twelve guard
+- Verified at 1512px and at 390px in a real Chrome, and against the guard
   assertions in `__tests__/landing-page.test.ts`. Not yet checked at tablet
-  widths, and not yet seen by anyone but the author.
+  widths.

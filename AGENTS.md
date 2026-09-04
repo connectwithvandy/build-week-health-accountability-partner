@@ -19,4 +19,6 @@ Read before every session, in this order:
 
 If a change does not improve the active milestone's acceptance test, put it in the `IDEA_SCOPE.md` parking lot.
 
-Never commit keys, phone numbers, tokens, or Hermes session data.
+Never commit keys, tokens, Hermes session data, or a **user's** phone number.
+Ted's own public WhatsApp number is not a secret and is committed on purpose
+in the landing page and its test.

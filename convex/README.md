@@ -1,90 +1,32 @@
-# Welcome to your Convex functions directory!
+# Convex functions for Ted
 
-Write your Convex functions here.
-See https://docs.convex.dev/functions for more.
+This is Ted's data layer. Nothing here talks to WhatsApp — the gateway does
+that, and reaches these functions over HTTP.
 
-A query function that takes two arguments looks like:
+| File | What it holds |
+| --- | --- |
+| `schema.ts` | The tables: `users`, `onboarding`, `userFacts`, `dailyEntries`, `targets`, `reminders`, `reportedReplies`. |
+| `ted.ts` | The queries and mutations. Every handler takes the user from the live turn, so a user id supplied in the model's arguments is dropped. |
+| `http.ts` | The authenticated `/ted-memory` endpoint the Hermes gateway calls. It requires the shared secret in an `Authorization: Bearer` header; the queries and mutations behind it are internal, not public. |
+| `model.ts` | Pure functions shared by the above — including `decideReminderDelivery` (quiet hours, pause, per-day cap) and `findClashingEntry` (duplicate logs). Pure so they can be tested without a deployment: see `__tests__/convex-model.test.ts`. |
 
-```ts
-// convex/myFunctions.ts
-import { query } from "./_generated/server";
-import { v } from "convex/values";
+Two rules this directory exists to enforce:
 
-export const myQueryFunction = query({
-  // Validators for arguments.
-  args: {
-    first: v.number(),
-    second: v.string(),
-  },
+- **Per-user isolation.** `userFacts` is keyed by a one-way hash of the WhatsApp
+  sender. A cross-user leak is what caused this table to exist, so the model can
+  neither supply nor select an identity.
+- **A failed write must say so.** Storage outages are tagged and surfaced as
+  "that didn't save", which is a different message from the claim gate's "I
+  haven't completed that action" — a tester could not previously tell the two
+  apart.
 
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Read the database as many times as you need here.
-    // See https://docs.convex.dev/database/reading-data.
-    const documents = await ctx.db.query("tablename").collect();
+The production deployment is `hardy-scorpion-901` (Europe, Ireland). Before
+restarting the gateway after changing anything here, run:
 
-    // Arguments passed from the client are properties of the args object.
-    console.log(args.first, args.second);
-
-    // Write arbitrary JavaScript here: filter, aggregate, build derived data,
-    // remove non-public properties, or create new objects.
-    return documents;
-  },
-});
+```bash
+npm run convex:check
 ```
 
-Using this query function in a React component looks like:
+It confirms the deployed backend still supports every action the gate calls.
 
-```ts
-const data = useQuery(api.myFunctions.myQueryFunction, {
-  first: 10,
-  second: "hello",
-});
-```
-
-A mutation function looks like:
-
-```ts
-// convex/myFunctions.ts
-import { mutation } from "./_generated/server";
-import { v } from "convex/values";
-
-export const myMutationFunction = mutation({
-  // Validators for arguments.
-  args: {
-    first: v.string(),
-    second: v.string(),
-  },
-
-  // Function implementation.
-  handler: async (ctx, args) => {
-    // Insert or modify documents in the database here.
-    // Mutations can also read from the database like queries.
-    // See https://docs.convex.dev/database/writing-data.
-    const message = { body: args.first, author: args.second };
-    const id = await ctx.db.insert("messages", message);
-
-    // Optionally, return a value from your mutation.
-    return await ctx.db.get("messages", id);
-  },
-});
-```
-
-Using this mutation function in a React component looks like:
-
-```ts
-const mutation = useMutation(api.myFunctions.myMutationFunction);
-function handleButtonPress() {
-  // fire and forget, the most common way to use mutations
-  mutation({ first: "Hello!", second: "me" });
-  // OR
-  // use the result once the mutation has completed
-  mutation({ first: "Hello!", second: "me" }).then((result) =>
-    console.log(result),
-  );
-}
-```
-
-Use the Convex CLI to push your functions to a deployment. See everything
-the Convex CLI can do by running `npx convex -h` in your project root
-directory. To learn more, launch the docs with `npx convex docs`.
+Convex docs: <https://docs.convex.dev/functions>
