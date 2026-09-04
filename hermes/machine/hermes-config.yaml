@@ -124,10 +124,10 @@ display:
   media_ack:
     image: "ooh a pic \U0001F440 taking a look, one sec\u2026"
   provider_messages:
-    auth: "something's broken on my end, not yours. give me a bit?"
+    auth: "it's not you, it's me \U0001F648 something's properly broken on my side. i'll be back, don't give up on me"
     policy: "that one didn't land. say it another way for me?"
-    rate_limit: "too many at once, i'm catching up \U0001F605 give me a minute?"
-    generic: "i'm having a rough patch on my end \U0001F648 not you. give me a bit and i'll be back"
+    rate_limit: "it's me again, not you \U0001F605 too many at once and i'm behind. give me a minute and try me?"
+    generic: "it's not you, it's me \U0001F648 rough patch on my end. don't break up with me yet, give it another go in a minute?"
     stall: ""
 tts:
   provider: openai
