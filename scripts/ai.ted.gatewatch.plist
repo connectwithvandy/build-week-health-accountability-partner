@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.gatewatch</string>
+
+  <!-- Checks every 15 minutes that Ted's safety gates are actually loaded,
+       and sends one WhatsApp message when that changes. Never stops the
+       gateway: see the header of ted-watch.py for why an unattended stop is
+       worse than an alert. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-watch.py</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-watch.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-watch.log</string>
+
+  <!-- launchd starts with a bare PATH, so `hermes send` would not resolve. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/vandana.agarwal/.hermes/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
