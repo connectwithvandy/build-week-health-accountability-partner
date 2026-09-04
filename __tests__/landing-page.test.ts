@@ -14,11 +14,27 @@ const html = readFileSync(join(process.cwd(), "public/landing-v6.html"), "utf8")
 const openingMessage = "Okay Ted, let's do this 💪";
 
 /** The page is static, so it cannot read NEXT_PUBLIC_TED_WHATSAPP_NUMBER at
- *  runtime; the number is written into the markup. This is what catches it
- *  drifting away from the env value the rest of the product uses. */
+ *  runtime; the number is written into the markup, and this constant is what
+ *  the markup is checked against.
+ *
+ *  The constant alone cannot catch the number drifting away from the env value
+ *  the rest of the product uses — it would just be two copies of the same
+ *  stale string — so where the env var is actually set (any machine with
+ *  `.env.local`, which CI does not have) the two are compared as well. */
 const whatsappNumber = "918660650986";
 
 describe("the v6 landing page", () => {
+  it("uses the same number as the rest of the product", () => {
+    const fromEnv = process.env.NEXT_PUBLIC_TED_WHATSAPP_NUMBER;
+
+    if (!fromEnv) {
+      expect(whatsappNumber).toMatch(/^\d{12}$/);
+      return;
+    }
+
+    expect(whatsappNumber).toBe(fromEnv);
+  });
+
   it("keeps the private beta out of search", () => {
     expect(html).toContain('<meta name="robots" content="noindex, nofollow">');
   });
