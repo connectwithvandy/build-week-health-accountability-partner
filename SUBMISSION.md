@@ -1,4 +1,4 @@
-# Build Week submission — generated 2026-09-04 12:45:45 IST
+# Build Week submission — generated 2026-09-04 13:00:16 IST
 
 Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/vandana.agarwal/.hermes/.env (the live gateway's backend)) with read-only `npx convex data` queries. No writes, no migrations.
 
@@ -6,13 +6,13 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 
 | Metric | Number | Source table | Exact filter |
 | --- | ---: | --- | --- |
-| Data coverage (every total below is lifetime, no date filter) | 2026-09-02 20:38:37 IST → 2026-09-04 11:03:25 IST | `dailyEntries + onboarding + reminders + reportedReplies + targets + userFacts + users` | `oldest and newest _creationTime across every table in the deployment — totals cannot reach further back than this` |
-| Total user records created | 7 | `users` | `no filter — every row in the table` |
+| Data coverage (every total below is lifetime, no date filter) | 2026-09-02 20:38:37 IST → 2026-09-04 12:53:02 IST | `dailyEntries + onboarding + reminders + reportedReplies + targets + userFacts + users` | `oldest and newest _creationTime across every table in the deployment — totals cannot reach further back than this` |
+| Total user records created | 8 | `users` | `no filter — every row in the table` |
 | Users onboarded (finished onboarding) | 1 | `onboarding` | `completedAt !== undefined` |
 | Users onboarded (cross-check on the user row) | 1 | `users` | `status === "active"` |
-| Users part-way through onboarding | 6 | `users` | `status === "onboarding"` |
-| Users active in the last 24 hours | 7 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788419745311 (2026-09-03 12:45:45 IST)` |
-| Users active in the last 7 days | 7 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1787901345311 (2026-08-28 12:45:45 IST)` |
+| Users part-way through onboarding | 7 | `users` | `status === "onboarding"` |
+| Users active in the last 24 hours | 8 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788420616956 (2026-09-03 13:00:16 IST)` |
+| Users active in the last 7 days | 8 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1787902216956 (2026-08-28 13:00:16 IST)` |
 | Total inbound messages | NOT STORED | `dailyEntries` | `distinct externalMessageId where externalMessageId !== '' → 0 rows carry one; the schema has no messages table, so inbound turns are not counted anywhere in Convex` |
 | Inbound messages — defensible floor | 18 | `dailyEntries` | `no filter — every row is one thing a user sent that Ted logged; excludes chat that produced no log, so this is a lower bound` |
 | Meals logged | 15 | `dailyEntries` | `entryType === "meal"` |
@@ -22,7 +22,7 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 | Photos received (that produced a log) | 5 | `dailyEntries` | `source === "photo"` |
 | Waitlist entries | NO SUCH TABLE | `—` | `no table matching /waitlist\|wait_list\|waiting/i exists in hardy-scorpion-901` |
 | Payment / paid-user records | NO SUCH TABLE | `—` | `no table matching /pay\|subscription\|billing\|invoice\|checkout\|order/i exists in hardy-scorpion-901` |
-| Memory facts stored about users | 12 | `userFacts` | `no filter — every row in the table` |
+| Memory facts stored about users | 13 | `userFacts` | `no filter — every row in the table` |
 | Replies users reported as wrong | 1 | `reportedReplies` | `no filter — every row in the table` |
 
 ### Caveats
@@ -40,6 +40,6 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 
 ## Checklist
 
-- [ ] Live product URL
-- [ ] Public GitHub repo URL
-- [ ] Metrics
+- [ ] Live product URL — https://heyted.vercel.app/
+- [ ] Public GitHub repo URL — https://github.com/connectwithvandy/build-week-health-accountability-partner
+- [ ] Metrics — the table above, plus the manual numbers filled in

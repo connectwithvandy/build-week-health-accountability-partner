@@ -36,6 +36,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 const ROW_LIMIT = 16000;
 
+/**
+ * The URL to submit. `whatsapp-accountability-partner-ted.vercel.app` is the
+ * project's auto-generated Vercel domain and serves the identical deployment,
+ * but this is the one to put in front of judges.
+ */
+const PRODUCT_URL = "https://heyted.vercel.app/";
+const REPO_URL =
+  "https://github.com/connectwithvandy/build-week-health-accountability-partner";
+
 /** The only convex subcommand this script may ever run. */
 const ALLOWED_CONVEX_SUBCOMMAND = "data";
 
@@ -483,9 +492,9 @@ function main(): void {
   md.push("");
   md.push("## Checklist");
   md.push("");
-  md.push("- [ ] Live product URL");
-  md.push("- [ ] Public GitHub repo URL");
-  md.push("- [ ] Metrics");
+  md.push(`- [ ] Live product URL — ${PRODUCT_URL}`);
+  md.push(`- [ ] Public GitHub repo URL — ${REPO_URL}`);
+  md.push("- [ ] Metrics — the table above, plus the manual numbers filled in");
   md.push("");
 
   const target = join(REPO, "SUBMISSION.md");
