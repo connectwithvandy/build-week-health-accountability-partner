@@ -1,26 +1,17 @@
 model:
-  provider: openrouter
-  default: anthropic/claude-sonnet-5
+  # Direct to Anthropic since 4 Sep 2026, not through OpenRouter.
+  #
+  # Same model, different road. OpenRouter caps prompt size by credit tier,
+  # and that cap fell from 16,300 to 14,156 over three hours while six people
+  # were trying to onboard. Every one of them got an error instead of a first
+  # message. A coach that stops answering when a balance dips cannot carry a
+  # beta, and no amount of trimming wins a race against a falling ceiling.
+  #
+  # OpenRouter stays as the fallback below, so a bad five minutes at Anthropic
+  # still has somewhere to go.
+  provider: anthropic
+  default: claude-sonnet-5
   max_tokens: 1024
-  # The window Ted actually gets, which is not the window the model has.
-  #
-  # OpenRouter caps prompt size by credit tier. On 4 Sep 2026 that cap was
-  # 16,300 tokens while Sonnet advertises 200,000, and Hermes sizes
-  # compression off the advertised number: it would have compacted at
-  # 149,232 tokens, so every long thread was refused with HTTP 402 "Prompt
-  # tokens limit exceeded" long before the safety net could fire. A user
-  # forty messages in simply stopped getting answers.
-  #
-  # Lowering `compression.threshold` does nothing, because
-  # `_effective_threshold_percent` raises anything under a 512K window back
-  # to 0.75. The only lever that moves is the window itself, and it is an
-  # explicit override that beats every other source.
-  #
-  # 16,000 makes compaction fire at 12,729 tokens, leaving 3,571 of headroom
-  # under the cap. Raise this when the credit tier rises, or Ted summarises
-  # more often than he needs to. It is not a limit on what he remembers:
-  # everything durable lives in Convex, not in the conversation window.
-  context_length: 16000
 agent:
   max_turns: 60
   verbose: false
@@ -136,7 +127,7 @@ display:
     auth: "something's broken on my end, not yours. give me a bit?"
     policy: "that one didn't land. say it another way for me?"
     rate_limit: "too many at once, i'm catching up \U0001F605 give me a minute?"
-    generic: "my brain hung for a sec \U0001F605 back on track. send that again?"
+    generic: "i'm having a rough patch on my end \U0001F648 not you. give me a bit and i'll be back"
     stall: ""
 tts:
   provider: openai
@@ -191,7 +182,33 @@ stt_echo_transcripts: false
 # stale conversation window.
 session_reset:
   mode: idle
-  idle_minutes: 720
+  # An hour, not twelve.
+  #
+  # On 4 Sep 2026 Vandy's session had been alive since 2 September, so "hi"
+  # carried two days of conversation and arrived as 32,148 tokens against an
+  # OpenRouter prompt cap of 14,248. Every message failed, including one
+  # word. Pritika's thread went the same way after forty minutes of steady
+  # use. Compression cannot save this: Hermes sizes it off the model's
+  # advertised 200,000 window and would compact at 149,232, a number the
+  # provider refuses to let anyone reach.
+  #
+  # A reset costs the user nothing. Their WhatsApp history is on their phone
+  # and is untouched. Ted forgets nothing either: the identity key is a hash
+  # of the phone number, not the session, so name, age, height, weight,
+  # maintenance, meals and reminders all survive in Convex. What resets is
+  # only the old chat Ted re-reads into the prompt, which is the thing
+  # making the messages fail.
+  #
+  # TEMPORARY while the credit tier is low. Restore to 720 when the cap
+  # rises, if you want the old behaviour back.
+  #
+  # Worth knowing before you do: a thread that never resets is also what
+  # pinned Ted's voice on 3 Sep. Compression protects the last 20 messages,
+  # so an 84-message conversation kept twenty verbatim examples of the wrong
+  # tone in context and they beat SOUL.md twice. That reason has nothing to
+  # do with credits and does not go away when they land. Something between
+  # 60 and 720 is probably the real answer.
+  idle_minutes: 60
   at_hour: 4
   notify: false
 group_sessions_per_user: true
