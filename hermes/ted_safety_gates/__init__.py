@@ -3833,6 +3833,7 @@ def transform_response(
     day_summary: dict[str, Any] | None = None,
     reminder_set: dict[str, Any] | None = None,
     stale_turn: bool = False,
+    context_id: str = "",
 ) -> str | None:
     history = list(history)
     # Every intent below reads this, never `user_message`. The raw string still
@@ -3911,6 +3912,12 @@ def transform_response(
     counted = setup_gate(history, user_message, user_key)
     if counted:
         return counted
+    # After the five, because the check-in time is not one of them, and above
+    # the calorie gate for the same reason the five sit there: it owns this
+    # question, so nothing below gets to ask it in different words.
+    review_time = review_time_gate(response_text, user_text, user_key, context_id)
+    if review_time:
+        return review_time
     calorie = calorie_gate(
         history, user_message, response_text, user_key,
         meal_logged=logged_meal is not None,
@@ -4335,6 +4342,177 @@ REVIEW_TIME_QUESTION = (
     "check-in? something like 9pm or 10:30pm."
 )
 
+# The model may not ask for the check-in time in its own words.
+#
+# On 4 Sep 2026 Parth got the question twice inside 60 seconds. The model asked
+# it conversationally and proposed a default, "when should i send your daily
+# check in, evening usually works best, say around 9?", he answered "okay", and
+# the model treated that as settled without calling `ted_save_onboarding`.
+# Nothing recorded `dailyReview`, so `onboarding_close_gate` did its job and
+# replaced the sign-off with REVIEW_TIME_QUESTION. Two questions, and the
+# second one opened with "one last thing before we start" to a man who had just
+# answered it.
+#
+# The hole was never the close gate. It was that the asking and the reading
+# were owned by different things: the model asked, and only the model could
+# record an answer, so an answer it failed to save was indistinguishable from
+# no answer at all. This moves both halves here. The gate asks, in its own
+# fixed words, and the gate reads the reply.
+#
+# Which also settles "okay". The gate's question offers examples rather than a
+# default, so there is nothing to agree to, and a reply carrying no time is
+# genuinely not an answer.
+_MODEL_REVIEW_TIME_ASK = re.compile(
+    r"(?:what time|when|which time).{0,80}"
+    r"(?:check[\s-]?in|daily (?:review|recap|summary)|evening (?:review|recap))"
+    r"|(?:check[\s-]?in|daily (?:review|recap|summary)|evening (?:review|recap))"
+    r".{0,80}(?:what time|when|time works|time suits)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# "9" means nine in the evening, because the question said evening. Anything
+# genuinely ambiguous is refused rather than guessed: a bare "12" is midday to
+# the parser and midnight to the person, and the whole file's rule is to ask
+# again rather than store a value nobody confirmed.
+_REVIEW_TIME_PATTERNS = (
+    # 9:30pm, 10.30 pm, 21:00
+    re.compile(r"\b(?P<h>\d{1,2})[:.](?P<m>[0-5]\d)\s*(?P<ampm>a\.?m\.?|p\.?m\.?)?", re.IGNORECASE),
+    # 9pm, 10 p.m., 9p
+    re.compile(r"\b(?P<h>\d{1,2})\s*(?P<ampm>a\.?m\.?|p\.?m\.?|a\b|p\b)", re.IGNORECASE),
+    # a bare hour, last: "9", "around 9", "9ish"
+    re.compile(r"\b(?P<h>\d{1,2})(?:ish)?\b", re.IGNORECASE),
+)
+
+
+def _find_review_time(text: str) -> str | None:
+    """A check-in time as HH:MM, or None when the reply does not carry one."""
+    written = (text or "").strip()
+    if not written:
+        return None
+    for pattern in _REVIEW_TIME_PATTERNS:
+        match = pattern.search(written)
+        if not match:
+            continue
+        hour = int(match.group("h"))
+        minute = int(match.groupdict().get("m") or 0)
+        marker = (match.groupdict().get("ampm") or "").replace(".", "").lower()
+        if marker.startswith("p"):
+            if hour == 12:
+                pass
+            elif 1 <= hour <= 11:
+                hour += 12
+            else:
+                return None
+        elif marker.startswith("a"):
+            if hour == 12:
+                hour = 0
+            elif not 1 <= hour <= 11:
+                return None
+        elif 13 <= hour <= 23:
+            pass
+        elif 1 <= hour <= 11:
+            # No marker, and the question asked for an evening time.
+            hour += 12
+        else:
+            # 0 and 12 unmarked. Midnight or midday, and no way to tell.
+            return None
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return f"{hour:02d}:{minute:02d}"
+    return None
+
+
+def _spoken_time(local_time: str) -> str:
+    """21:00 as "9pm", 21:30 as "9:30pm". What Ted says back."""
+    hour, _, minute = local_time.partition(":")
+    hour_i, minute_i = int(hour), int(minute or 0)
+    suffix = "am" if hour_i < 12 else "pm"
+    display = hour_i % 12 or 12
+    return f"{display}:{minute_i:02d}{suffix}" if minute_i else f"{display}{suffix}"
+
+
+def _review_state(user_key: str) -> str | None:
+    value = _onboarding(user_key).get("review_state")
+    return str(value) if value else None
+
+
+def _review_time_done(user_key: str) -> bool:
+    done = set(_onboarding(user_key).get("done") or ())
+    return "dailyReview" in done or "complete" in done
+
+
+def _save_review_time(user_key: str, local_time: str, context_id: str) -> bool:
+    """Write the check-in time, and put it on the actual schedule.
+
+    Marked done only when the write succeeded. A recorded step with no row
+    behind it is the failure this whole area exists to prevent: onboarding
+    would close, and the recap that is the product would never arrive.
+    """
+    payload = {"dailyReviewTime": local_time}
+    written = _convex_write("reminder", user_key, context_id, body=payload)
+    if not written.get("success"):
+        LOGGER.warning(
+            "ted_review_time_not_saved user_key=%s error=%s",
+            user_key,
+            written.get("error"),
+        )
+        return False
+    done = set(_onboarding(user_key).get("done") or ())
+    done.add("dailyReview")
+    _update_onboarding(
+        user_key,
+        done=sorted(done),
+        reminders_row=True,
+        review_state="done",
+        review_time=local_time,
+    )
+    _schedule_saved_reminders(user_key, context_id, payload, {})
+    LOGGER.info(
+        "ted_review_time_saved user_key=%s time=%s", user_key, local_time
+    )
+    return True
+
+
+REVIEW_TIME_NOT_SAVED = (
+    "that didn't save. tell me the time again in a minute and i'll get it down."
+)
+
+
+def review_time_gate(
+    response_text: str,
+    user_text: str,
+    user_key: str,
+    context_id: str = "",
+) -> str | None:
+    """Own both halves of the check-in time: the asking and the reading.
+
+    Runs only while the step is outstanding, so a user who has settled their
+    time never meets it again.
+    """
+    if not user_key or _review_time_done(user_key):
+        return None
+
+    # Reading first. A reply carrying a time is an answer whatever the model
+    # decided to do with it.
+    if _review_state(user_key) == "asking":
+        local_time = _find_review_time(user_text)
+        if local_time:
+            if not _save_review_time(user_key, local_time, context_id):
+                return REVIEW_TIME_NOT_SAVED
+            return (
+                f"{_spoken_time(local_time)} it is \u2705 that's when your day "
+                "gets added up. send me a meal whenever you like and we're running."
+            )
+
+    # Asking. The model reached for the question in its own words, so it gets
+    # the gate's words instead, once.
+    if _MODEL_REVIEW_TIME_ASK.search(response_text or ""):
+        _update_onboarding(user_key, review_state="asking")
+        LOGGER.info("ted_review_time_asked user_key=%s source=model", user_key)
+        return REVIEW_TIME_QUESTION
+    return None
+
+
 _ONBOARDING_CLOSERS = re.compile(
     r"\b("
     r"all set|you'?re all set|we'?re all set|that'?s everything|"
@@ -4357,6 +4535,11 @@ def onboarding_close_gate(response_text: str, user_key: str) -> str | None:
         return None
     if "dailyReview" in done or "complete" in done:
         return _weekly_review_offer(user_key, response_text)
+    # Record that the question went out, so `review_time_gate` reads the next
+    # reply as its answer. Without this the close gate asks and nothing
+    # listens, which is how the question came to be asked twice.
+    _update_onboarding(user_key, review_state="asking")
+    LOGGER.info("ted_review_time_asked user_key=%s source=close_gate", user_key)
     return REVIEW_TIME_QUESTION
 
 
@@ -4766,6 +4949,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         day_summary=context.get("day_summary"),
         reminder_set=context.get("reminder_set"),
         stale_turn=_turn_is_stale(user_key, int(context.get("turn_seq") or 0)),
+        context_id=session_id,
     )
     # The transcript is about to record model_text while the user receives
     # `replacement`. Keep the difference so the next turn can be told.

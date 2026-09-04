@@ -415,6 +415,49 @@ multiple choice by echoing a choice.
 464 Python tests. **Existing users are untouched** — with no `setup` key the new
 gate is inert, so only new conversations take the counted path.
 
+## Order 20 — 4 Sep 2026, night, the check-in time asked twice
+
+Caught live, in Parth Bhatia's thread, while watching the gateway during a repo
+audit. 10:16 pm Ted asked "when should i send your daily check in, evening
+usually works best, say around 9?". Parth answered "okay". 10:17 pm Ted asked
+again: "one last thing before we start. what time works for your evening
+check-in? something like 9pm or 10:30pm."
+
+The second message was `REVIEW_TIME_QUESTION`, character for character. So this
+was never the model repeating itself; it was `onboarding_close_gate` doing
+exactly its job. That gate refuses to let onboarding sign off while
+`dailyReview` is missing from the recorded steps, and `dailyReview` is written
+only when the model calls `ted_save_onboarding`. The model asked in its own
+words, offered a default, took "okay" as agreement, and saved nothing. The gate
+could not tell "answered but not saved" from "dodged", so it asked.
+
+**The asking and the reading were owned by different things.** That is the whole
+defect. The model owned the question and was also the only thing that could
+record an answer, so an answer it failed to save did not exist.
+
+Both halves now sit in the gate. `review_time_gate` replaces a model-authored
+check-in question with `REVIEW_TIME_QUESTION` (once, recording `review_state`),
+and reads the next reply itself: `_find_review_time` parses the time, and
+`_save_review_time` writes the reminder row and schedules it before marking the
+step done. A failed write returns "that didn't save" and leaves the step open,
+because a recorded step with no row behind it is the failure the close gate
+exists to prevent.
+
+"okay" is settled by design rather than by parsing it. The gate's question
+offers examples, not a default, so there is nothing to agree to.
+
+`_find_review_time` reads a bare "9" as 9pm, because the question said evening,
+and **refuses** a bare "12" or "0". Midday and midnight are indistinguishable
+there, and this file's rule is to ask again rather than store a value nobody
+confirmed.
+
+544 Python tests (8 new, including Parth's exact message as a fixture), 78
+vitest, lint, tsc and the build all pass.
+
+**Not live.** `npm run gates:guard` reports STALE: the running gateway loaded
+the gate at 21:50:31 and the source changed at 22:27:40. Needs
+`hermes gateway restart`, which is a human step.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of

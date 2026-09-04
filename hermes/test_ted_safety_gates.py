@@ -3288,12 +3288,31 @@ class GoldenPathTest(unittest.TestCase):
         self.assertEqual(gates._setup_state(self.user_key), "done")
 
         # 6. The goal, then the check-in time. Ted's own words survive again
-        #    now that the five are done.
-        self.assertEqual(
-            self.turn("eat more protein", "good one. what time should i check in?"),
-            "good one. what time should i check in?",
+        #    now that the five are done — except for the check-in time itself,
+        #    which the gate owns end to end. The model reaching for it in its
+        #    own words gets the gate's words instead, once, and the gate reads
+        #    the answer rather than trusting the model to record it. This is
+        #    what stopped the question going out twice on 4 Sep.
+        self.assertEqual(self.turn("eat more protein", "good one, noted."), "good one, noted.")
+        asked = self.turn("when do you check in?", "good one. what time should i check in?")
+        self.assertEqual(asked, gates.REVIEW_TIME_QUESTION)
+        self.assertEqual(gates._review_state(self.user_key), "asking")
+
+        # The answer is read here, not by the model, so a model that forgets to
+        # save it cannot make the question come back. Storage has to answer for
+        # the step to close: a recorded step with no reminder row behind it is
+        # the exact failure the close gate exists to prevent.
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            settled = self.turn("8pm", "locked.")
+        self.assertIn("8pm", settled)
+        self.assertIn("dailyReview", set(gates._onboarding(self.user_key).get("done") or ()))
+        self.assertEqual(gates._review_state(self.user_key), "done")
+
+        # And it is asked once. A sign-off now closes cleanly instead of being
+        # replaced by the question a second time.
+        self.assertNotEqual(
+            self.turn("great", "you're all set."), gates.REVIEW_TIME_QUESTION
         )
-        self.assertEqual(self.turn("8pm, Bangalore", "locked."), "locked.")
 
         # 4. First meal by text, with the log tool actually succeeding. A
         #    per-food estimate is not a target, so the numbers go out intact.
@@ -7561,3 +7580,119 @@ class DeficitPhrasingTest(unittest.TestCase):
                 self.assertIsNotNone(out, f"{label} passed straight through")
                 self.assertNotIn("1,650", out)
                 self.assertNotIn("1650", out)
+
+
+class TheCheckInTimeIsAskedOnceTest(unittest.TestCase):
+    """4 Sep 2026: Parth was asked for his check-in time twice in 60 seconds.
+
+    The model asked it conversationally and offered a default, he agreed with
+    "okay", and the model never called `ted_save_onboarding`. Nothing recorded
+    `dailyReview`, so `onboarding_close_gate` replaced the sign-off with its own
+    question, which opens "one last thing before we start" — to a man who had
+    just answered it.
+
+    The gate was right and the sequence was still wrong, because the asking and
+    the reading were owned by different things. These tests hold both halves
+    here.
+    """
+
+    def _user(self, name: str) -> str:
+        key = f"review-time-{name}"
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(key, None)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        return key
+
+    def test_the_model_may_not_ask_in_its_own_words(self) -> None:
+        """Parth's exact message. It gets the gate's question instead."""
+        user_key = self._user("parth")
+        parth = (
+            "bengaluru, easy one \U0001f604 last bit, when should i send your "
+            "daily check in, evening usually works best, say around 9?"
+        )
+        self.assertEqual(
+            gates.review_time_gate(parth, "bengaluru", user_key),
+            gates.REVIEW_TIME_QUESTION,
+        )
+        self.assertEqual(gates._review_state(user_key), "asking")
+
+    def test_the_gate_reads_the_answer_the_model_forgot_to_save(self) -> None:
+        """The half that was missing. No tool call, and the step still closes."""
+        user_key = self._user("reads")
+        gates._update_onboarding(user_key, review_state="asking")
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            reply = gates.review_time_gate("all set!", "9pm", user_key)
+        self.assertIsNotNone(reply)
+        self.assertIn("9pm", reply)
+        done = set(gates._onboarding(user_key).get("done") or ())
+        self.assertIn("dailyReview", done)
+        self.assertEqual(gates._onboarding(user_key).get("review_time"), "21:00")
+
+    def test_asked_once_and_then_never_again(self) -> None:
+        """The whole point. A sign-off after the answer closes cleanly."""
+        user_key = self._user("once")
+        asked = gates.review_time_gate(
+            "when should i check in?", "bengaluru", user_key
+        )
+        self.assertEqual(asked, gates.REVIEW_TIME_QUESTION)
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            gates.review_time_gate("noted", "9", user_key)
+        # The close gate is the thing that asked the second time on 4 Sep.
+        self.assertIsNone(
+            gates.onboarding_close_gate("you're all set.", user_key)
+            if "dailyReview" not in set(gates._onboarding(user_key).get("done") or ())
+            else None
+        )
+        again = gates.review_time_gate("what time works for your check-in?", "ok", user_key)
+        self.assertIsNone(again, "the question came back after it was answered")
+
+    def test_a_failed_write_does_not_close_the_step(self) -> None:
+        """A recorded step with no row behind it is worse than asking again."""
+        user_key = self._user("outage")
+        gates._update_onboarding(user_key, review_state="asking")
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            reply = gates.review_time_gate("all set!", "9pm", user_key)
+        self.assertEqual(reply, gates.REVIEW_TIME_NOT_SAVED)
+        done = set(gates._onboarding(user_key).get("done") or ())
+        self.assertNotIn("dailyReview", done)
+
+    def test_okay_is_not_a_time(self) -> None:
+        """What Parth actually sent. It carries no time, so it is not an answer."""
+        user_key = self._user("okay")
+        gates._update_onboarding(user_key, review_state="asking")
+        for reply in ("okay", "sure", "yes", "sounds good", "that works", "ok cool"):
+            with self.subTest(reply=reply):
+                self.assertIsNone(gates._find_review_time(reply))
+
+    def test_the_times_people_actually_send(self) -> None:
+        for written, expected in (
+            ("9", "21:00"),
+            ("9pm", "21:00"),
+            ("9 pm", "21:00"),
+            ("9:30pm", "21:30"),
+            ("10:30 pm", "22:30"),
+            ("21:00", "21:00"),
+            ("around 9", "21:00"),
+            ("9ish", "21:00"),
+            ("8", "20:00"),
+            ("7am", "07:00"),
+            ("6:45am", "06:45"),
+            ("11", "23:00"),
+            ("22:15", "22:15"),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_review_time(written), expected)
+
+    def test_ambiguous_and_impossible_times_are_refused(self) -> None:
+        """Be sure, or ask. A guess here is a recap that never arrives."""
+        for written in ("12", "0", "25pm", "99", "later", "whenever", "evening"):
+            with self.subTest(written=written):
+                self.assertIsNone(gates._find_review_time(written))
+
+    def test_it_stays_out_of_the_way_once_settled(self) -> None:
+        user_key = self._user("settled")
+        gates._update_onboarding(user_key, done=["dailyReview"])
+        self.assertIsNone(
+            gates.review_time_gate("what time should i check in?", "9pm", user_key)
+        )
