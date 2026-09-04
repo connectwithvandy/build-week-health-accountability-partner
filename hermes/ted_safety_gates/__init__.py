@@ -2626,6 +2626,48 @@ def _says_something_is_wrong(text: str) -> bool:
     return bool(_SOMETHING_IS_WRONG.search(text or ""))
 
 
+# Agreement to the read back, which is a wider thing than agreement to a
+# single number. `_is_measurement_confirmation` is whole string and strict on
+# purpose, because a near miss there writes a number into somebody's file that
+# they never said. Nothing is written here: the numbers are already stored and
+# this only decides whether to say them again or move on.
+#
+# It was reused anyway, and on 4 Sep a real user was shown the same four lines
+# three times running. She answered "you can go ahead", then "You can do the
+# maths", which is Ted's own closing phrase from the question she was
+# answering, and neither counted.
+_AGREES_TO_SUMMARY = re.compile(
+    r"\b(?:"
+    r"go ahead|go on|carry on|crack on|proceed|continue|do it|"
+    r"do the maths?|hit me|fire away|"
+    r"sounds (?:right|good|fine|about right)|"
+    r"looks (?:right|good|fine|about right)|"
+    r"all (?:good|set|correct|fine|right)|"
+    r"that'?s (?:right|correct|it|fine)|yes please|please do|"
+    r"you can (?:go|do|proceed|continue|carry)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _agrees_to_summary(text: str) -> bool:
+    """Did they tell Ted to get on with it, anywhere in the sentence?
+
+    Searched, not matched whole. People do not answer "anything off?" with a
+    single token: they write "yeah you can go ahead", "all good, do the
+    maths", "looks right to me". Requiring the whole reply to *be* the
+    agreement is what made a real user say it three different ways and get
+    the same four lines back each time.
+
+    Short answers still go through the whole string sets, because "no" as an
+    answer to "anything off?" means nothing is off, and "no" inside a longer
+    sentence usually does not.
+    """
+    if _is_measurement_confirmation(text) or _is_nothing_wrong(text):
+        return True
+    return bool(_AGREES_TO_SUMMARY.search(text or ""))
+
+
 def _summary_correction(written: str) -> dict[str, Any]:
     """Whatever the person just corrected, read from their own words.
 
@@ -2950,16 +2992,20 @@ def setup_gate(
             _record_setup_ask(user_key, "summary")
             return _profile_summary(profile, user_key)
 
-        agreed = _is_measurement_confirmation(written) or _is_nothing_wrong(written)
-
+        # A complaint outranks an agreement, and is checked first for that
+        # reason: "no that's wrong, go ahead and fix it" carries "go ahead"
+        # and is not a yes.
+        #
         # "its wrong" and nothing else. Amit sent exactly that on 4 Sep and
         # got the same four lines back, which answers nobody: he had already
-        # read them, that is how he knew. Ask which line, and the answer above
-        # picks it up next turn.
-        if not agreed and _says_something_is_wrong(written):
+        # read them, that is how he knew. Ask which line, and the correction
+        # above picks up his answer next turn.
+        if _says_something_is_wrong(written) and not _is_nothing_wrong(written):
             _record_setup_ask(user_key, "summary")
             LOGGER.info("ted_summary_disputed user_key=%s", user_key)
             return SUMMARY_FIX_QUESTION
+
+        agreed = _agrees_to_summary(written)
 
         # Both matchers are whole-string on purpose, so a real agreement can
         # miss: "yep that's right" is in neither set. Showing the numbers

@@ -7302,3 +7302,42 @@ class TheCountedFiveTest(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(gates._setup_answer("height_cm", text), expected)
+
+    def test_agreement_is_read_anywhere_in_the_sentence(self) -> None:
+        """A real user said it three ways and got the same four lines back.
+
+        "you can go ahead", then "You can do the maths", which is Ted's own
+        closing phrase from the question she was answering. Neither counted,
+        because agreement had to *be* the whole reply. People do not answer
+        "anything off?" with a single token.
+        """
+        for reply in (
+            "you can go ahead",
+            "You can do the maths",
+            "yeah go ahead please",
+            "all good, do the maths",
+            "sure, looks right to me",
+            "ok proceed",
+        ):
+            with self.subTest(reply=reply):
+                self.assertTrue(gates._agrees_to_summary(reply))
+
+    def test_a_complaint_outranks_an_agreement_inside_it(self) -> None:
+        """"no that's wrong, go ahead and fix it" carries "go ahead" and is
+        not a yes. The dispute is checked first for exactly this reason."""
+        self._to_summary()
+        reply = self.turn("no thats not right, go ahead and fix it")
+        self.assertEqual(reply, gates.SUMMARY_FIX_QUESTION)
+
+    def test_a_correction_still_outranks_both(self) -> None:
+        self._to_summary()
+        reply = self.turn("weight is 90 not 62, go ahead after that")
+        self.assertEqual(gates._stored_measurement(self.USER_KEY, "weight_kg"), 90.0)
+        self.assertIn("90 kg", reply)
+
+    def test_getting_on_with_it_actually_gets_on_with_it(self) -> None:
+        self._to_summary()
+        payoff = self.turn("you can go ahead")
+        self.assertIn("all five", payoff)
+        self.assertIn("1,630", payoff)
+        self.assertEqual(gates._setup_state(self.USER_KEY), "done")
