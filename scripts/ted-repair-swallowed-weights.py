@@ -50,7 +50,14 @@ STATE = Path.home() / ".hermes" / "state" / "ted-safety-gates-onboarding.json"
 def suspect(record: dict) -> str | None:
     """Why this stored weight cannot be trusted, or None if it can."""
     weight = record.get("weight_kg")
-    if weight is None or record.get("setup") != "running":
+    # "stalled" counts too. A stall means Ted asked three times and gave up,
+    # and on 4 Sep the reason he could not read the answers was ours: "5/5
+    # how active is a normal day?" was answered "Training 4-5 days a week
+    # mostly", "Training", "Training", and the parser knew only "training
+    # regularly". That user is sitting on a full profile bar one field, with
+    # a weight that is actually his height. Both halves are our bugs, so
+    # both get undone.
+    if weight is None or record.get("setup") not in ("running", "stalled"):
         return None
     if "weight_kg" in (record.get("confirm_asked") or ()):
         return None
@@ -100,6 +107,13 @@ def main() -> int:
         record.pop("weight_kg_from", None)
         # So the next turn asks question three rather than resuming mid-count.
         record["setup_asking"] = "weight_kg"
+        if record.get("setup") == "stalled":
+            # Put them back in the flow, and give back the asks that were
+            # spent on a question Ted could not read the answer to. Without
+            # this they resume already at the bound and Ted gives up again on
+            # the next message.
+            record["setup"] = "running"
+            record.pop("setup_asks", None)
 
     STATE.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
