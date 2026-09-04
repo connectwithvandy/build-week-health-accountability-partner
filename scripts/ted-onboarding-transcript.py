@@ -168,6 +168,11 @@ def case_the_counted_five() -> Thread:
     t.send("lose fat", "here we go")
     # The read-back, then the number, then the one check-in question.
     t.send("yep", "great, all set!")
+    # The target choice, then the nudges. Both are the user choosing, which is
+    # what SCOPING.md 9 asks for and what "if they say to give water reminder
+    # then only" asks for.
+    t.send("1360", "got it")
+    t.send("meals and water", "nice")
     # The last reply reads "that didn't save", and that is the right answer
     # here, not a bug: this script runs with the Convex variables removed, so
     # the write really cannot happen. A gate that claimed the time was saved

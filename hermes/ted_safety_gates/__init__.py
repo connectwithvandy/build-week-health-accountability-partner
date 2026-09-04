@@ -566,11 +566,52 @@ _NOTHING_WRONG = frozenset(
         "all correct", "correct", "thats right", "that's right",
         "sab theek", "theek hai", "thik hai", "sahi hai", "all fine",
         "fine", "good", "great", "spot on", "perfect", "yes all good",
+        # Hinglish agreement in two words, which the one-word set missed.
+        "haan sahi hai", "haan thik hai", "haan theek hai", "bilkul",
+        "haan bilkul", "sab sahi", "sab sahi hai", "done", "ho gaya",
+    }
+)
+
+# A thumbs up is an answer.
+#
+# It is the commonest reply on WhatsApp to a question like "anything off?" and
+# it read as nothing, so Ted showed the same four lines again to somebody who
+# had just agreed. Kept as its own set rather than folded into the text one,
+# because these are matched after stripping variation selectors and skin tones
+# and the text matcher has no business knowing about that.
+_AGREEMENT_EMOJI = frozenset(
+    {
+        "\U0001f44d",  # thumbs up
+        "\U0001f44c",  # ok hand
+        "\u2705",      # white heavy check
+        "\u2714",      # heavy check
+        "\U0001f64c",  # raised hands
+        "\U0001f4af",  # hundred points
+        "\U0001f918",  # horns
+        "\U0001f44f",  # clapping
     }
 )
 
 
+def _is_agreement_emoji(text: str) -> bool:
+    """A reply made only of agreement emoji, however it is decorated."""
+    stripped = "".join(
+        ch
+        for ch in (text or "")
+        # Variation selectors, skin tones and zero-width joiners: a thumbs up
+        # sent from a phone is rarely the bare code point.
+        if not ("\U0001f3fb" <= ch <= "\U0001f3ff")
+        and ch not in ("\ufe0f", "\ufe0e", "\u200d")
+        and not ch.isspace()
+    )
+    if not stripped:
+        return False
+    return all(ch in _AGREEMENT_EMOJI for ch in stripped)
+
+
 def _is_nothing_wrong(text: str) -> bool:
+    if _is_agreement_emoji(text):
+        return True
     return _normalise_reply(text) in _NOTHING_WRONG
 
 
@@ -2098,8 +2139,40 @@ _ACTIVITY_PHRASES: tuple[tuple[str, str], ...] = (
 # and on the third ask he gave up and echoed "Desk most of it" back at Ted —
 # one more and the bound would have given up on him. He is not sedentary, and
 # the phrase table could only ever have said he was.
+# The sitting side of the question, in the words people actually use.
+#
+# Measured against real answers on 4 Sep 2026: "i sit all day", "wfh",
+# "din bhar baithe rehte hain" and "ghar pe hi rehta hoon" all read as nothing
+# at all, and 5/6 has a three-ask bound, so a missed answer is a stalled
+# onboarding rather than an inconvenience. Hindi and Hinglish are in here
+# because this is an India-first beta and people answer in the language they
+# think in.
 _DESK_ANCHOR = re.compile(
-    r"\b(?:desk|sitting|seated|office|computer|laptop|screen)\b", re.IGNORECASE
+    r"\b(?:desk|sitting|sit|seated|office|computer|laptop|screen|"
+    r"wfh|work from home|chair|cubicle|"
+    # Hinglish: baithna (to sit), ghar (home), aaram (rest).
+    r"baith\w*|bethe|baitha|ghar\s+(?:pe|par|me|mein)|aaram)\b",
+    re.IGNORECASE,
+)
+
+# On your feet, the middle option, which had no anchor of its own at all:
+# "i teach, standing all day" and "driver hoon" both read as nothing.
+_ON_FEET_ANCHOR = re.compile(
+    r"\b(?:standing|stand|on my feet|on your feet|feet all|"
+    r"teacher|teach|nurse|nursing|waiter|waitress|retail|shop floor|"
+    r"driver|driving|delivery|khada|khade)\b",
+    re.IGNORECASE,
+)
+
+# "normal", "average", "moderate" and the Hinglish shrug. People answer this
+# question with a self-assessment rather than a description more often than
+# any other question in the six, and none of it landed.
+_MIDDLING_ANSWER = re.compile(
+    r"^\s*(?:pretty\s+|fairly\s+|quite\s+|kind\s+of\s+|kinda\s+)?"
+    r"(?:normal|average|moderate|medium|usual|regular|so\s*so|"
+    r"theek\s*hai|thik\s*hai|kuch\s+khaas\s+nahi|normal\s+hi)"
+    r"\s*(?:hi|hai|only|type|sa|si)?\s*[.!]?\s*$",
+    re.IGNORECASE,
 )
 _EXERCISE_CUE = re.compile(
     r"\b(?:walk|walks|walking|yoga|gym|workout|workouts|work out|exercise|"
@@ -2129,6 +2202,10 @@ def _find_activity(texts: list[str]) -> str | None:
     # larger number than their day earns.
     if _DESK_ANCHOR.search(joined):
         return "light" if _EXERCISE_CUE.search(joined) else "sedentary"
+    # On your feet, weighed the same way: a standing day that also names
+    # training is a step up, and one that does not is the middle option.
+    if _ON_FEET_ANCHOR.search(joined):
+        return "moderate" if _EXERCISE_CUE.search(joined) else "light"
     for phrase, activity in _ACTIVITY_PHRASES:
         if re.search(rf"\b{re.escape(phrase)}\b", joined):
             return activity
@@ -2142,6 +2219,13 @@ def _find_activity(texts: list[str]) -> str | None:
     # option, because an unstated frequency should not buy the larger number.
     if _EXERCISE_CUE.search(joined):
         return "active" if _TRAINS_OFTEN.search(joined) else "moderate"
+    # "normal", "average", "theek hai". A self-assessment rather than a
+    # description, and the commonest answer that used to read as nothing.
+    # Deliberately "light" and not "moderate": the same rule as everywhere
+    # else here, since guessing high hands somebody a bigger number than
+    # their day earns.
+    if _MIDDLING_ANSWER.search(joined.strip()):
+        return "light"
     return None
 
 
@@ -2888,30 +2972,49 @@ def _setup_payoff(profile: CalorieProfile) -> str:
     anybody. Maintenance is the only number that goes out.
     """
     estimate = _estimated_maintenance(profile)
-    # One line about their goal, and it is the only thing the goal changes
-    # about the number. SCOPING.md §9: Ted "does not automatically prescribe a
-    # calorie deficit. The user must provide or choose any weight-loss target."
-    # So a goal of losing gets told which direction to lean and nothing more.
-    # The one reply a user has ever reported as wrong was "eat 900 calories a
-    # day", and it is this sentence that would be the place to make that
-    # mistake again.
-    lean = {
-        "loseWeight": (
-            " you're after losing, so you'll want to sit a little under it. "
-            "no crash numbers from me, we'll find yours from what you "
-            "actually eat."
-        ),
-        "gainWeight": (
-            " you're after gaining, so you'll want to sit a little over it."
-        ),
-        "maintainWeight": " which is exactly what you're after.",
-    }.get(profile.goal or "", "")
-    return (
-        f"got it, all {SETUP_COUNT_WORD} ✅\n\n"
-        f"roughly *{estimate:,} kcal* a day for you. that's your "
-        f"*maintenance*, the number where nothing moves.{lean}\n\n"
-        f"{REVIEW_TIME_QUESTION}"
+    opener = f"got it, all {SETUP_COUNT_WORD} ✅\n\n"
+    # The word stays, with its gloss attached. It is a term worth teaching
+    # once, and every number Ted says later is measured against it.
+    anchor = (
+        f"roughly *{estimate:,} kcal* a day is your *maintenance*, the number "
+        "where your weight sits still.\n\n"
     )
+
+    # SCOPING.md §9: Ted "does not automatically prescribe a calorie deficit.
+    # The user must provide or choose any weight-loss target." It still does
+    # not prescribe. It names one bounded number and maintenance, and the user
+    # picks between them, which is the choosing §9 asks for.
+    #
+    # Naming no number at all was the previous behaviour and it was its own
+    # kind of wrong: somebody who had just answered "lose fat" was handed
+    # maintenance, the number where by definition nothing moves.
+    if profile.goal == "loseWeight":
+        target = _loss_target(profile)
+        if target >= estimate:
+            # No safe cut exists for this profile: the floors met maintenance.
+            # Say so plainly rather than inventing room that is not there.
+            return (
+                f"{opener}{anchor}"
+                "that's already a small number, so i'm not going to cut under "
+                "it. we'll work on *what* you eat instead of how little.\n\n"
+                f"{TARGET_CHOICE_MADE}"
+            )
+        return (
+            f"{opener}{anchor}"
+            f"to lose, *{target:,}* is a steady place to aim, and i won't go "
+            "lower than that.\n\n"
+            f"want me to track you against *{target:,}*, or *{estimate:,}*?"
+        )
+
+    if profile.goal == "gainWeight":
+        target = _gain_target(profile)
+        return (
+            f"{opener}{anchor}"
+            f"to gain, *{target:,}* is a steady place to aim.\n\n"
+            f"want me to track you against *{target:,}*, or *{estimate:,}*?"
+        )
+
+    return f"{opener}{anchor}which is exactly what you're after.\n\n{TARGET_CHOICE_MADE}"
 
 
 def _missing_profile_reply(profile: CalorieProfile) -> str | None:
@@ -2952,6 +3055,142 @@ def _estimated_maintenance(profile: CalorieProfile) -> int:
         "very active": 1.9,
     }
     return int(round(resting * factors[profile.activity] / 10) * 10)
+
+
+# What Ted offers to keep an eye on, and when.
+#
+# Opt-in, every one of them. Vandy's rule on 4 Sep 2026: "if they say to give
+# water reminder then only". Nothing here fires because Ted decided it would.
+#
+# These are created through `_sync_reminder_jobs` as `ted:<key>:<id>` jobs, so
+# quiet hours, the daily cap and pause all apply to them, and Ted can list and
+# change them later. That is the whole difference from the free-form jobs the
+# model used to invent, which nothing could see and which duplicated.
+REMINDER_MENU: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("meals", r"meal|food|eat|eating|khana|breakfast|lunch|dinner", ("13:00",)),
+    # Two, not three. Three plus the evening recap is four messages a day from
+    # something they met yesterday, and the fastest way to be muted.
+    ("water", r"water|hydrat|drink|pani", ("11:00", "16:00")),
+    ("supplements", r"supplement|vitamin|tablet|pill|medicine|dawa", ("09:00",)),
+    ("movement", r"move|moving|movement|walk|steps|exercise|gym|workout",
+     ("18:00",)),
+)
+_MENU_NONE = re.compile(
+    r"^\s*(?:no|none|nope|nah|nothing|skip|neither|not now|later|"
+    r"koi nahi|kuch nahi)\b", re.IGNORECASE
+)
+
+PICKS_QUESTION = (
+    "what do you want me to nudge you about? meals, water, supplements, or "
+    "moving. say any of them, or say none and i'll stay quiet till you "
+    "message me."
+)
+# Used where there is no target to choose, so the payoff runs straight on.
+TARGET_CHOICE_MADE = PICKS_QUESTION
+
+
+def _find_picks(written: str) -> tuple[str, ...] | None:
+    """Which nudges they asked for. () means they said none, None means the
+    reply did not answer the question at all."""
+    text = (written or "").strip()
+    if not text:
+        return None
+    if _MENU_NONE.match(text):
+        return ()
+    if re.match(r"^\s*(?:all|everything|sab|sab kuch|all of (?:it|them))\b",
+                text, re.IGNORECASE):
+        return tuple(name for name, _, _ in REMINDER_MENU)
+    picked = tuple(
+        name
+        for name, pattern, _ in REMINDER_MENU
+        if re.search(pattern, text, re.IGNORECASE)
+    )
+    if not picked:
+        return None
+
+    # It has to read like an answer to a menu, not merely contain one of its
+    # words. "3 rotis and dal for lunch" carries "lunch" and is a meal being
+    # logged, not a request for meal reminders; read as an answer it would
+    # quietly set up nudges nobody asked for, which is the opposite of the
+    # rule this whole menu exists under.
+    #
+    # So the menu words and the glue between them are removed, and whatever is
+    # left has to be nothing. Anchored the same way `_BARE_HOUR` is, and for
+    # the same reason.
+    remainder = text
+    for _, pattern, _ in REMINDER_MENU:
+        # Trailing word characters go with the stem, or "meals" leaves an "s"
+        # behind and "walking" leaves "ing", and a real answer reads as junk.
+        remainder = re.sub(rf"(?:{pattern})\w*", " ", remainder, flags=re.IGNORECASE)
+    remainder = re.sub(
+        r"\b(?:and|or|plus|also|aur|bhi|just|only|please|pls|thanks|thanku|"
+        r"yes|yeah|ok|okay|both|the|my|me|i|for|set|do|want|reminders?|nudges?|"
+        r"about|on|regarding|remind|nudge|track|tracking|help|with|"
+        r"karo|kar|chahiye|do\s*na)\b",
+        " ",
+        remainder,
+        flags=re.IGNORECASE,
+    )
+    remainder = re.sub(r"[\s,.&+/!\-]+", "", remainder)
+    if remainder:
+        return None
+    return picked
+
+
+def _resting_energy(profile: CalorieProfile) -> int:
+    """Mifflin-St Jeor resting energy, before any activity factor.
+
+    Split out of `_estimated_maintenance` because it is the floor a cut may
+    never go under: below your resting burn is not a diet.
+    """
+    assert profile.weight_kg is not None
+    assert profile.height_cm is not None
+    assert profile.age is not None
+    sex_adjustment = 5 if profile.sex == "male" else -161
+    return int(
+        round(
+            10 * profile.weight_kg
+            + 6.25 * profile.height_cm
+            - 5 * profile.age
+            + sex_adjustment
+        )
+    )
+
+
+# A cut, and the three things that bound it.
+#
+# SCOPING.md §9 said Ted "does not automatically prescribe a calorie deficit.
+# The user must provide or choose any weight-loss target." Ted still does not
+# prescribe: it offers one number and maintenance, and the user picks. What
+# changed on 4 Sep 2026 is that refusing to name any number at all left someone
+# who had just said "lose fat" holding maintenance, which is by definition the
+# number where nothing moves.
+#
+# 15%, not the "minus 500" every calculator on the internet uses. Pallavi's
+# maintenance is 1,600. Minus 500 is 1,100, which is below her resting burn of
+# 1,333 and below every published floor. That generic advice is unsafe for
+# exactly the people this beta has, and it is the shape of the one reply a user
+# has ever reported as wrong: "eat 900 calories a day".
+_LOSS_FRACTION = 0.85
+_LOSS_FLOOR_KCAL = {"female": 1200, "male": 1500}
+
+
+def _loss_target(profile: CalorieProfile) -> int:
+    """A losing number that is never below resting energy or the floor."""
+    maintenance = _estimated_maintenance(profile)
+    cut = int(round(maintenance * _LOSS_FRACTION / 10) * 10)
+    floor = _LOSS_FLOOR_KCAL.get(profile.sex or "female", 1200)
+    resting = _resting_energy(profile)
+    bounded = max(cut, resting, floor)
+    # Never above maintenance: for a very small profile the floors can meet it,
+    # and a "cut" above maintenance would be nonsense.
+    return min(bounded, maintenance)
+
+
+def _gain_target(profile: CalorieProfile) -> int:
+    """The mirror, and deliberately smaller: 10% over, not 15%."""
+    maintenance = _estimated_maintenance(profile)
+    return int(round(maintenance * 1.10 / 10) * 10)
 
 
 def _with_stored_profile_fields(
@@ -3220,11 +3459,26 @@ def setup_gate(
     # maintenance and only maintenance — the same value that just went out in
     # the payoff, so the card can never quietly disagree with the message that
     # introduced it.
-    _update_onboarding(user_key, maintenance_kcal=_estimated_maintenance(profile))
-    # The payoff carries the check-in question, so the next reply is its
-    # answer. Recorded here for the same reason the close gate records it:
-    # a question nothing is listening for is how it came to be asked twice.
-    _update_onboarding(user_key, review_state="asking")
+    maintenance = _estimated_maintenance(profile)
+    _update_onboarding(user_key, maintenance_kcal=maintenance)
+    # Record which question the payoff actually ended on, so the next reply is
+    # read by the gate that asked it. A question nothing is listening for is
+    # how the check-in time came to be asked twice on 4 Sep.
+    if _offers_a_target_choice(profile):
+        lower = (
+            _loss_target(profile)
+            if profile.goal == "loseWeight"
+            else _gain_target(profile)
+        )
+        _update_onboarding(
+            user_key,
+            target_state="asking",
+            target_lower=lower,
+            target_maintenance=maintenance,
+        )
+    else:
+        # No choice to make, so the payoff ran straight on to the nudges.
+        _update_onboarding(user_key, tracking_kcal=maintenance, picks_state="asking")
     LOGGER.info("ted_setup_complete user_key=%s", user_key)
     return _setup_payoff(profile)
 
@@ -4010,9 +4264,26 @@ def transform_response(
     counted = setup_gate(history, user_message, user_key)
     if counted:
         return counted
-    # After the five, because the check-in time is not one of them, and above
-    # the calorie gate for the same reason the five sit there: it owns this
-    # question, so nothing below gets to ask it in different words.
+    # The three steps that close onboarding, in the order they are asked:
+    # which number to track, which nudges to set, and when the day gets added
+    # up. Each owns both halves, the asking and the reading, which is the
+    # lesson from the check-in time being asked twice on 4 Sep.
+    # A turn belongs to one question. The target gate arms the picks question
+    # when it closes, and without this guard the same message answers both:
+    # "eat more protein" closed the target choice and was then read as asking
+    # for meal reminders, in one turn.
+    target_was_open = (
+        bool(user_key) and _onboarding(user_key).get("target_state") == "asking"
+    )
+    chosen_target = target_choice_gate(user_text, user_key)
+    if chosen_target:
+        return chosen_target
+    if not target_was_open:
+        picked = picks_gate(user_text, user_key, context_id)
+        if picked:
+            return picked
+    # Above the calorie gate for the same reason the six sit there: it owns
+    # this question, so nothing below gets to ask it in different words.
     review_time = review_time_gate(response_text, user_text, user_key, context_id)
     if review_time:
         return review_time
@@ -4439,6 +4710,141 @@ REVIEW_TIME_QUESTION = (
     "one last thing before we start. what time works for your evening "
     "check-in? something like 9pm or 10:30pm."
 )
+
+def _offers_a_target_choice(profile: CalorieProfile) -> bool:
+    """Did the payoff end with "this one or maintenance?"."""
+    if profile.goal == "gainWeight":
+        return True
+    if profile.goal != "loseWeight":
+        return False
+    return _loss_target(profile) < _estimated_maintenance(profile)
+
+
+_PICKS_MAINTENANCE = re.compile(
+    r"\b(?:maintenance|maintain|the higher|higher one|bigger|second|"
+    r"the second|no cut|don'?t cut|stay|full)\b", re.IGNORECASE
+)
+_PICKS_LOWER = re.compile(
+    r"\b(?:lower|the lower|lower one|first|the first|smaller|cut|"
+    r"the cut|deficit|lose|losing)\b", re.IGNORECASE
+)
+
+
+def target_choice_gate(user_text: str, user_key: str) -> str | None:
+    """Read which number they picked, and move on to the nudges.
+
+    The choice is the whole reason Ted is allowed to name a cut at all, so it
+    is read here rather than left to the model: SCOPING.md §9 wants the user to
+    choose, and a choice nothing records is not one.
+    """
+    if not user_key or _onboarding(user_key).get("target_state") != "asking":
+        return None
+    record = _onboarding(user_key)
+    lower = record.get("target_lower")
+    maintenance = record.get("target_maintenance")
+    if not isinstance(lower, int) or not isinstance(maintenance, int):
+        return None
+
+    written = (user_text or "").strip()
+    chosen: int | None = None
+    # A number they typed wins over anything read from words.
+    for match in re.finditer(r"\b(\d[\d,]{2,5})\b", written):
+        value = int(match.group(1).replace(",", ""))
+        if value in (lower, maintenance):
+            chosen = value
+            break
+    if chosen is None and _PICKS_MAINTENANCE.search(written):
+        chosen = maintenance
+    if chosen is None and _PICKS_LOWER.search(written):
+        chosen = lower
+    if chosen is None:
+        # The question is armed for exactly one turn, and this was it.
+        #
+        # A bare "yes" is deliberately not an answer to a two-option question,
+        # and leaving the question open until something agreed with it is
+        # worse: in the golden path the "yes" that confirmed a data deletion,
+        # nine turns later, chose a calorie target. Twice in one evening a
+        # question nobody closed caught a reply meant for something else, the
+        # other being a meal read as a check-in time.
+        #
+        # So it closes here either way. Maintenance is the safe default and
+        # the number they would have had before any of this existed, and
+        # `onboarding_close_gate` still refuses to let onboarding finish
+        # without the rest.
+        _update_onboarding(
+            user_key,
+            tracking_kcal=maintenance,
+            target_state="done",
+            picks_state="asking",
+        )
+        LOGGER.info("ted_target_unanswered user_key=%s", user_key)
+        return None
+
+    _update_onboarding(
+        user_key, tracking_kcal=chosen, target_state="done", picks_state="asking"
+    )
+    LOGGER.info("ted_target_chosen user_key=%s kcal=%s", user_key, chosen)
+    return f"*{chosen:,}* it is.\n\n{PICKS_QUESTION}"
+
+
+def picks_gate(user_text: str, user_key: str, context_id: str = "") -> str | None:
+    """Turn the nudges they asked for into real, managed reminders."""
+    if not user_key or _onboarding(user_key).get("picks_state") != "asking":
+        return None
+    picked = _find_picks(user_text)
+    if picked is None:
+        # One turn, for the same reason the target choice gets one: "3 rotis
+        # and dal for lunch" carries the word "lunch", and with this question
+        # left open a logged meal was read as asking for meal reminders.
+        _update_onboarding(user_key, picks_state="done")
+        LOGGER.info("ted_picks_unanswered user_key=%s", user_key)
+        return None
+
+    if not picked:
+        _update_onboarding(user_key, picks_state="done", review_state="asking")
+        LOGGER.info("ted_picks_none user_key=%s", user_key)
+        return (
+            "right, no nudges. i'll stay quiet until you message me.\n\n"
+            f"{REVIEW_TIME_QUESTION}"
+        )
+
+    times = {name: slots for name, _, slots in REMINDER_MENU}
+    items: list[dict[str, Any]] = []
+    for name in picked:
+        slots = times[name]
+        for index, slot in enumerate(slots):
+            items.append(
+                {
+                    # Water gets two, so they need distinct ids or the second
+                    # overwrites the first in `_sync_reminder_jobs`.
+                    "reminderId": name if len(slots) == 1 else f"{name}_{index + 1}",
+                    "commitmentId": name,
+                    "localTime": slot,
+                    "enabled": True,
+                }
+            )
+    written = _convex_write(
+        "reminder", user_key, context_id, body={"items": items}
+    )
+    if not written.get("success"):
+        LOGGER.warning("ted_picks_not_saved user_key=%s", user_key)
+        return "that didn't save. tell me again in a minute and i'll set them up."
+    _update_onboarding(
+        user_key, picks_state="done", review_state="asking", reminders_row=True,
+        picks=sorted(picked),
+    )
+    _schedule_saved_reminders(user_key, context_id, {"items": items}, {})
+    LOGGER.info("ted_picks_saved user_key=%s picks=%s", user_key, ",".join(picked))
+    spoken = _spoken_list(list(picked))
+    return f"{spoken}, done ✅\n\n{REVIEW_TIME_QUESTION}"
+
+
+def _spoken_list(names: list[str]) -> str:
+    """meals, water and supplements. Ted writes a list the way a person does."""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
 
 # The model may not ask for the check-in time in its own words.
 #

@@ -36,6 +36,12 @@ Existing tools also require her to remember to open them. They record isolated n
 
 9. If no calorie target exists, V1 can calculate estimated maintenance calories using the Mifflin–St Jeor equation. It does not automatically prescribe a calorie deficit. The user must provide or choose any weight-loss target.
 
+   Updated 4 Sep 2026. Ted now names one bounded number alongside maintenance and asks the user to pick between them, which is the choosing this clause requires. Ted still never decides the target on the user's behalf, and a reply that does not clearly pick one defaults to maintenance.
+
+   The bounds are in code, not in the prompt: 15% under maintenance, never below Mifflin–St Jeor resting energy, never below 1,200 kcal for women or 1,500 for men, and never above maintenance. Where those floors meet maintenance, Ted says there is no safe cut rather than inventing room that is not there.
+
+   15% rather than the "maintenance minus 500" every online calculator uses. For a 31-year-old woman at 163 cm and 63 kg, maintenance is 1,600 and minus 500 is 1,100, which is below her resting burn of 1,333. That generic advice is unsafe for exactly the users this beta has, and it is the shape of "eat 900 calories a day", the one reply a user has ever reported as wrong.
+
 10. During the day, the user sends meals or progress updates through WhatsApp. Text and voice notes work for meals and all progress updates; photos work for meal updates; PDFs work only for existing health plans. Ted replies in text.
 
 11. For a clear meal photo, the coach identifies the food and portions, logs it immediately, and returns estimated:

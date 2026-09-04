@@ -3286,10 +3286,19 @@ class GoldenPathTest(unittest.TestCase):
         self.assertIn("1,630", payoff)
         self.assertIn("maintenance", payoff)
         # The goal is question 6/6 now, so it is answered before here. The
-        # payoff speaks to it and closes with the check-in question instead.
+        # payoff speaks to it and offers a bounded target to choose between.
         self.assertNotIn(GOAL_QUESTION, payoff)
-        self.assertIn("losing", payoff)
-        self.assertIn(gates.REVIEW_TIME_QUESTION, payoff)
+        self.assertIn("to lose", payoff)
+        # A named cut, and it is never below resting energy or the floor.
+        profile = gates.CalorieProfile(
+            age=33, height_cm=170, weight_kg=62, sex="female",
+            activity="sedentary", goal="loseWeight",
+        )
+        target = gates._loss_target(profile)
+        self.assertIn(f"{target:,}", payoff)
+        self.assertGreaterEqual(target, gates._resting_energy(profile))
+        self.assertGreaterEqual(target, gates._LOSS_FLOOR_KCAL["female"])
+        self.assertLess(target, gates._estimated_maintenance(profile))
         self.assertEqual(gates._setup_state(self.user_key), "done")
 
         # 6. The goal, then the check-in time. Ted's own words survive again
@@ -6902,10 +6911,19 @@ class TheCountedFiveTest(unittest.TestCase):
         self.assertIn("1,630", payoff)
         self.assertIn("maintenance", payoff)
         # The goal is question 6/6 now, so it is answered before here. The
-        # payoff speaks to it and closes with the check-in question instead.
+        # payoff speaks to it and offers a bounded target to choose between.
         self.assertNotIn(GOAL_QUESTION, payoff)
-        self.assertIn("losing", payoff)
-        self.assertIn(gates.REVIEW_TIME_QUESTION, payoff)
+        self.assertIn("to lose", payoff)
+        # A named cut, and it is never below resting energy or the floor.
+        profile = gates.CalorieProfile(
+            age=33, height_cm=170, weight_kg=62, sex="female",
+            activity="sedentary", goal="loseWeight",
+        )
+        target = gates._loss_target(profile)
+        self.assertIn(f"{target:,}", payoff)
+        self.assertGreaterEqual(target, gates._resting_energy(profile))
+        self.assertGreaterEqual(target, gates._LOSS_FLOOR_KCAL["female"])
+        self.assertLess(target, gates._estimated_maintenance(profile))
 
     def test_the_number_is_maintenance_and_never_a_cut(self) -> None:
         """The one thing not to take from Rex Nutribot.
@@ -7934,3 +7952,126 @@ class AMealIsNotACheckInTimeTest(unittest.TestCase):
         """An am/pm marker is unambiguous wherever it sits."""
         self.assertEqual(gates._find_review_time("let's do 9pm please"), "21:00")
         self.assertEqual(gates._find_review_time("can we say 10:30 pm"), "22:30")
+
+
+class TheLosingNumberHasAFloorTest(unittest.TestCase):
+    """Ted may now name a cut, and these are the bounds it can never leave.
+
+    SCOPING.md §9 still holds: Ted does not prescribe. It names one bounded
+    number and maintenance, and the user picks. What changed on 4 Sep 2026 is
+    that naming nothing left someone who had just said "lose fat" holding
+    maintenance, which is by definition the number where nothing moves.
+
+    The floor is the whole safety case. "Maintenance minus 500", which is what
+    every calculator on the internet does, gives Pallavi 1,100 against a
+    resting burn of 1,333. That generic advice is unsafe for exactly the people
+    this beta has, and it is the shape of "eat 900 calories a day".
+    """
+
+    def _p(self, **kw):
+        base = dict(age=31, height_cm=163, weight_kg=63, sex="female",
+                    activity="sedentary", goal="loseWeight")
+        base.update(kw)
+        return gates.CalorieProfile(**base)
+
+    def test_never_below_resting_energy(self) -> None:
+        for kw in ({}, {"weight_kg": 45, "height_cm": 150, "age": 55},
+                   {"weight_kg": 90, "height_cm": 180, "sex": "male"},
+                   {"age": 19, "weight_kg": 50, "height_cm": 155}):
+            with self.subTest(**kw):
+                p = self._p(**kw)
+                self.assertGreaterEqual(gates._loss_target(p), gates._resting_energy(p))
+
+    def test_never_below_the_published_floor(self) -> None:
+        for sex, floor in (("female", 1200), ("male", 1500)):
+            with self.subTest(sex=sex):
+                p = self._p(sex=sex, weight_kg=45, height_cm=150, age=60)
+                self.assertGreaterEqual(gates._loss_target(p), min(floor, gates._estimated_maintenance(p)))
+
+    def test_never_above_maintenance(self) -> None:
+        """A cut above maintenance is nonsense, and the floors can meet it."""
+        for kw in ({}, {"weight_kg": 40, "height_cm": 145, "age": 65}):
+            with self.subTest(**kw):
+                p = self._p(**kw)
+                self.assertLessEqual(gates._loss_target(p), gates._estimated_maintenance(p))
+
+    def test_the_internet_formula_would_have_been_unsafe(self) -> None:
+        """Minus 500 on Pallavi is 1,100, under her resting burn of 1,333."""
+        p = self._p()
+        maintenance = gates._estimated_maintenance(p)
+        self.assertLess(maintenance - 500, gates._resting_energy(p))
+        self.assertGreater(gates._loss_target(p), maintenance - 500)
+
+    def test_no_safe_cut_is_said_out_loud_rather_than_invented(self) -> None:
+        p = self._p(weight_kg=40, height_cm=145, age=65)
+        payoff = gates._setup_payoff(p)
+        self.assertIn("not going to cut under it", payoff)
+        self.assertNotIn("steady place to aim", payoff)
+
+    def test_the_user_chooses_and_the_choice_is_recorded(self) -> None:
+        key = "target-choice"
+        gates._update_onboarding(
+            key, target_state="asking", target_lower=1360, target_maintenance=1600
+        )
+        self.addCleanup(gates._forget_user, key)
+        reply = gates.target_choice_gate("1600", key)
+        self.assertIn("1,600", reply)
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1600)
+
+    def test_a_bare_yes_does_not_choose_a_calorie_target(self) -> None:
+        """It used to, and nine turns later a deletion confirmation chose one."""
+        key = "target-bare-yes"
+        gates._update_onboarding(
+            key, target_state="asking", target_lower=1360, target_maintenance=1600
+        )
+        self.addCleanup(gates._forget_user, key)
+        self.assertIsNone(gates.target_choice_gate("yes", key))
+        # And the question closes rather than staying armed for a later reply.
+        self.assertEqual(gates._onboarding(key).get("target_state"), "done")
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1600)
+
+
+class TheNudgesAreOptInTest(unittest.TestCase):
+    """Vandy, 4 Sep 2026: "if they say to give water reminder then only"."""
+
+    def test_nothing_is_set_that_was_not_asked_for(self) -> None:
+        key = "picks-none"
+        gates._update_onboarding(key, picks_state="asking")
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_convex_request") as write:
+            reply = gates.picks_gate("no", key)
+        write.assert_not_called()
+        self.assertIn("stay quiet", reply)
+
+    def test_water_gets_two_nudges_not_three(self) -> None:
+        slots = {name: times for name, _, times in gates.REMINDER_MENU}
+        self.assertEqual(slots["water"], ("11:00", "16:00"))
+
+    def test_every_default_time_is_outside_quiet_hours(self) -> None:
+        """22:00 to 07:00. A nudge inside them is one the cap would drop."""
+        for name, _, times in gates.REMINDER_MENU:
+            for slot in times:
+                with self.subTest(name=name, slot=slot):
+                    self.assertGreaterEqual(slot, "07:00")
+                    self.assertLess(slot, "22:00")
+
+    def test_a_logged_meal_is_not_a_request_for_meal_reminders(self) -> None:
+        """"3 rotis and dal for lunch" carries "lunch"."""
+        key = "picks-meal"
+        gates._update_onboarding(key, picks_state="asking")
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_convex_request") as write:
+            self.assertIsNone(gates.picks_gate("3 rotis and dal for lunch", key))
+        # Read as an answer it would have set meal reminders. It closes instead.
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "done")
+
+    def test_the_words_people_use(self) -> None:
+        for written, expected in (
+            ("meals and water", ("meals", "water")),
+            ("pani aur khana", ("meals", "water")),
+            ("just water please", ("water",)),
+            ("everything", ("meals", "water", "supplements", "movement")),
+            ("no", ()), ("koi nahi", ()),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_picks(written), expected)
