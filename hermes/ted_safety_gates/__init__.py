@@ -10,10 +10,11 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -21,20 +22,22 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 LOGGER = logging.getLogger("ted.safety_gates")
 PRIVACY_URL = "https://heyted.vercel.app/privacy"
-# The three inputs are named here because nowhere else said so. A tester on
-# 3 Sep used Ted for forty minutes typing everything out, and only sent a
-# voice note after being told by someone else that it worked. A capability
-# nobody is told about is a capability nobody has.
-OPENING_MESSAGE = (
-    "hey! good energy, let's set this up right.\n\n"
-    "here's the deal: you tell me what you ate or what you got done, i keep "
-    "score, nudge you when it's useful, and close out the day with a quick "
-    "recap, like \"protein: on track, steps: short by 2k, one thing for "
-    "tomorrow.\"\n\n"
-    "type it, send a photo of your plate, or just talk to me — voice notes "
-    "are usually fastest.\n\n"
-    "first things first. what should i call you?"
-)
+# One greeting, one question, and nothing else.
+#
+# The four-paragraph version this replaces explained the product to people who
+# had just read the product. Everyone arrives from the landing page, which
+# already says what Ted does; on 3 Sep a tester's first reaction to the pitch
+# was "keep it short", and they were right. A first message you have to scroll
+# is a first message that gets skimmed.
+#
+# It costs something real. The old opener was the only place that told anyone
+# photos and voice notes work, and a tester spent forty minutes typing before
+# somebody else mentioned voice. That sentence does not come back here: one
+# short greeting has no room for it, and a capability list is not a greeting.
+# It belongs where a person would actually meet it, so SOUL.md keeps Ted
+# offering voice and photos at the moment they would help, and the landing
+# page names all three inputs. A deliberate trade, not an oversight.
+OPENING_MESSAGE = "hey \U0001F44B what should i call you?"
 DISCLOSURE_MESSAGE = (
     "Ted stores your profile, messages, plans, logs and uploads. "
     f"Read more: {PRIVACY_URL}. Send “delete my data” anytime to delete "
@@ -107,6 +110,10 @@ _DISCLOSURE_SENT_KEYS = _load_disclosure_state()
 _ONBOARDING_STATE_PATH = _STATE_DIR / "ted-safety-gates-onboarding.json"
 _ONBOARDING_LOCK = threading.Lock()
 _MAX_NAME_ASKS = 3
+# The opener, plus one re-ask. Past that the question stops going out even
+# when the model keeps writing it: three asks in ninety seconds is what a
+# tester saw on 3 Sep, and the third one had already been answered.
+_MAX_VISIBLE_NAME_ASKS = 2
 
 
 def _load_onboarding_state() -> dict[str, dict[str, Any]]:
@@ -238,8 +245,368 @@ def _remember_age(user_key: str, age: int | None) -> None:
     _update_onboarding(user_key, **fields)
 
 
-def _forget_user(user_key: str) -> None:
-    """Clear the gate's own durable state for a user who asked for erasure."""
+# Height and weight get the same durable treatment as the age, and for the
+# same reason: the window compacts. On 4 Sep a user gave her weight in a voice
+# note, typed one word two turns later, and the gate asked for the weight again
+# because nothing had kept it. An answer given once should not need giving
+# twice.
+_MEASUREMENT_FIELDS = ("height_cm", "weight_kg")
+
+
+def _stored_measurement(user_key: str, field: str) -> float | None:
+    value = _onboarding(user_key).get(field)
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _remember_measurement(
+    user_key: str, field: str, value: float | None, converted_from: str | None = None
+) -> None:
+    if not user_key or value is None or field not in _MEASUREMENT_FIELDS:
+        return
+    if _stored_measurement(user_key, field) == value:
+        return
+    fields: dict[str, Any] = {field: float(value)}
+    if converted_from:
+        fields[f"{field}_from"] = converted_from
+    _update_onboarding(user_key, **fields)
+    LOGGER.info(
+        "ted_measurement_recorded user_key=%s field=%s", user_key, field
+    )
+
+
+def _with_stored_measurements(
+    profile: "CalorieProfile", user_key: str
+) -> "CalorieProfile":
+    """Fill blanks from what this user already told Ted, and save what is new."""
+    if not user_key:
+        return profile
+    fields: dict[str, Any] = {}
+    for field in _MEASUREMENT_FIELDS:
+        current = getattr(profile, field)
+        if current is None:
+            stored = _stored_measurement(user_key, field)
+            if stored is not None:
+                fields[field] = stored
+        else:
+            _remember_measurement(user_key, field, current)
+    return replace(profile, **fields) if fields else profile
+
+
+# A measurement Ted has read but not accepted, waiting on a yes. Held in the
+# same durable state as everything else so a restart mid-question does not
+# lose it and silently fall back to guessing.
+def _set_pending_measurement(
+    user_key: str, field: str, value: float, converted_from: str | None = None
+) -> None:
+    if not user_key:
+        return
+    _update_onboarding(
+        user_key,
+        pending_measurement={
+            "field": field, "value": float(value), "from": converted_from
+        },
+    )
+
+
+def _pending_measurement(user_key: str) -> dict[str, Any] | None:
+    pending = _onboarding(user_key).get("pending_measurement")
+    if isinstance(pending, dict) and pending.get("field") in _MEASUREMENT_FIELDS:
+        return pending
+    return None
+
+
+def _clear_pending_measurement(user_key: str) -> None:
+    if _onboarding(user_key).get("pending_measurement") is not None:
+        _update_onboarding(user_key, pending_measurement=None)
+
+
+_MEASUREMENT_YES = frozenset(
+    {
+        "yes", "y", "yeah", "yep", "yup", "ya", "haan", "han", "ha",
+        "correct", "right", "that's right", "thats right", "exactly",
+        "confirm", "confirmed", "sure", "ok", "okay", "k", "perfect",
+        "yes please", "that's it", "thats it", "spot on", "bilkul",
+    }
+)
+
+
+def _is_measurement_confirmation(text: str) -> bool:
+    """A plain yes to "so you mean X?".
+
+    Matched whole, never fuzzily, for the same reason the deletion
+    confirmations are: a near-miss that guesses wrong writes a number into
+    somebody's file that they never said.
+    """
+    return _normalise_reply(text) in _MEASUREMENT_YES
+
+
+def _confirm_measurement_reply(
+    field: str, value: float, converted_from: str | None
+) -> str:
+    """Say the number back. Must contain the field's own word.
+
+    `_answer_after_question` anchors an answer to the question above it by
+    looking for "height" or "weight" in that question. A confirmation that
+    says only "so 60 kg?" is not anchored, so the correction underneath it —
+    "no it's 65" — is read as answering nothing and the doubted number stands.
+    """
+    if field == "height_cm":
+        said, noun = f"{value:g} cm", "height"
+    else:
+        said, noun = f"{value:g} kg", "weight"
+    if converted_from:
+        return (
+            f"that's about {said} — going with that as your {noun}. "
+            "shout if it's off, i don't want a wrong number in your file."
+        )
+    return (
+        f"so your {noun}'s {said}? just confirming, i don't want a "
+        "wrong number sitting in your file."
+    )
+
+
+# A clock time, a date, or a named day. What makes a soft promise a
+# scheduling claim is that it is pinned to a when — "150g it is" and "black it
+# is" are confirmations about food and must never read as a scheduled thing.
+# "may" is left out of the months on purpose: it is far more often the verb.
+_WHEN = (
+    r"(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    r"|\d{1,2}(?:st|nd|rd|th)"
+    r"|(?:jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec)\w*"
+    r"|monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r"|tomorrow|tonight|next\s+(?:week|month)|the\s+weekend)"
+)
+
+# Somebody putting this off. Jaya said it twice on 4 Sep — "nudge me on 15th
+# sept and then we can start the routine", then "we will discuss pos15th sept"
+# — and got four more onboarding questions, because nothing in the gate knew
+# what a deferral was. Ted acknowledged it each time and asked anyway.
+#
+# A verb about *this conversation* plus a time. Deliberately not "remind me at
+# 8pm", which is a request for a reminder, not a request to be left alone.
+_DEFER_VERB = re.compile(
+    r"\b(?:talk|speak|discuss|start|begin|resume|catch\s*up|connect|chat"
+    r"|come\s+back|get\s+(?:going|started)|do\s+(?:this|it)|pick\s+this\s+up)\b",
+    re.IGNORECASE,
+)
+_DEFER_LATER = re.compile(
+    rf"\b(?:later|afterwards|{_WHEN})\b"
+    rf"|\b(?:after|post|from)\s*(?:the\s+)?\w*{_WHEN}",
+    re.IGNORECASE,
+)
+
+
+def _asks_to_defer(text: str) -> bool:
+    """Whether they are asking to pick this up another time."""
+    text = text or ""
+    if re.search(r"\bnot\s+(?:right\s+)?now\b", text, re.IGNORECASE):
+        return True
+    return bool(_DEFER_VERB.search(text) and _DEFER_LATER.search(text))
+
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+# A pause with no date named. Long enough to be a real break, short enough
+# that "later" does not mean "never" and quietly lose somebody.
+_DEFAULT_PAUSE_DAYS = 7
+
+
+def _defer_until_date(text: str, today: date | None = None) -> date:
+    """The day they meant, as a real date.
+
+    Stored as a date and not as the words they used, because a pause held as
+    "15th sept" never ends — nothing can compare it to today, so the person is
+    silently dropped instead of paused.
+    """
+    today = today or datetime.now().date()
+    lowered = (text or "").lower()
+
+    # No \b before the digits on purpose: the real message was "we will
+    # discuss pos15th sept", where the typo glues a letter to the number and a
+    # word boundary never lands. Guarding only against another digit keeps
+    # "1500" from reading as the 15th.
+    day_month = re.search(
+        r"(?<!\d)(\d{1,2})(?:st|nd|rd|th)?\s*(?:of\s+)?"
+        r"(jan|feb|mar|apr|may|jun|jul|aug|sept|sep|oct|nov|dec)\w*",
+        lowered,
+    ) or re.search(
+        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sept|sep|oct|nov|dec)\w*\s*"
+        r"(\d{1,2})(?:st|nd|rd|th)?",
+        lowered,
+    )
+    if day_month:
+        groups = day_month.groups()
+        day, month = (groups if groups[0].isdigit() else (groups[1], groups[0]))
+        try:
+            candidate = date(today.year, _MONTHS[month[:4].rstrip("t") or month], int(day))
+        except (ValueError, KeyError):
+            candidate = None
+        if candidate:
+            if candidate < today:
+                candidate = candidate.replace(year=today.year + 1)
+            return candidate
+
+    bare_day = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)\b", lowered)
+    if bare_day:
+        day = int(bare_day.group(1))
+        month, year = today.month, today.year
+        if day <= today.day:
+            month, year = (1, year + 1) if month == 12 else (month + 1, year)
+        try:
+            return date(year, month, day)
+        except ValueError:
+            pass
+
+    if "tomorrow" in lowered:
+        return today + timedelta(days=1)
+    if "next week" in lowered:
+        return today + timedelta(days=7)
+    if "next month" in lowered:
+        return today + timedelta(days=30)
+    return today + timedelta(days=_DEFAULT_PAUSE_DAYS)
+
+
+def _paused_until(user_key: str, today: date | None = None) -> str | None:
+    """The pause, if one is still running. Expired pauses clear themselves."""
+    value = _onboarding(user_key).get("paused_until")
+    if not isinstance(value, str):
+        return None
+    try:
+        until = date.fromisoformat(value)
+    except ValueError:
+        return None
+    if until <= (today or datetime.now().date()):
+        _update_onboarding(user_key, paused_until=None)
+        LOGGER.info("ted_pause_expired user_key=%s until=%s", user_key, value)
+        return None
+    return value
+
+
+def _mark_paused(user_key: str, until: date) -> None:
+    if not user_key:
+        return
+    _update_onboarding(user_key, paused_until=until.isoformat())
+    LOGGER.info("ted_user_paused user_key=%s until=%s", user_key, until)
+
+
+def _spoken_date(when: date) -> str:
+    suffix = (
+        "th" if 11 <= when.day <= 13
+        else {1: "st", 2: "nd", 3: "rd"}.get(when.day % 10, "th")
+    )
+    return f"{when.day}{suffix} {when.strftime('%b')}"
+
+
+def _deferral_reply(until: date) -> str:
+    """Say it back, stop, and leave the door open. No follow-up question.
+
+    The absence of a question is the whole point: Jaya deferred twice and got
+    "sure, 15th it is 📅 but tell me, what's the one thing this routine is
+    actually for" and then "koi na, we'll sort the details on the 15th 🙌
+    what'd you last eat today?" Acknowledging and then asking anyway is not
+    acknowledging.
+    """
+    return (
+        f"{_spoken_date(until)}, locked 📌 i'll leave you alone till then — "
+        "message me any time before that if you need anything."
+    )
+
+
+_ACTIVITY_WORDS = {
+    "sedentary": "mostly at a desk",
+    "light": "on your feet a fair bit",
+    "moderate": "active most days",
+    "active": "training regularly",
+    "very active": "training hard most days",
+}
+
+
+def _profile_summary(profile: "CalorieProfile", user_key: str) -> str:
+    """Read the whole profile back before any number is worked out.
+
+    The per-field check only fires on doubt Ted can detect — a hedge, a range,
+    a unit. It cannot catch a confident misread, and that is the one that did
+    the damage: on 4 Sep "5 feet 4 and a half inches" parsed cleanly to 152.4
+    cm, 12 cm short, and produced a maintenance figure 100 kcal under her real
+    one inside a sentence promising it used only her numbers. She would have
+    caught it in one glance. Nothing else would have.
+    """
+    weight = f"{profile.weight_kg:g} kg"
+    origin = _onboarding(user_key).get("weight_kg_from")
+    if origin:
+        # Say where a converted number came from, so "69.9 kg" is recognisable
+        # to somebody who thinks in pounds and can be challenged if wrong.
+        weight += f" (you said {origin})"
+    return "\n".join(
+        [
+            "here's what i've got:",
+            f"{profile.age} · {profile.sex}",
+            f"{profile.height_cm:.0f} cm · {weight}",
+            _ACTIVITY_WORDS.get(profile.activity or "", profile.activity or ""),
+            "",
+            "anything off? if not i'll do the maths.",
+        ]
+    )
+
+
+# "anything off?" is answered either way round: "yes" (that's right) and "no"
+# (nothing's off) both mean carry on. Matched whole, like every other
+# confirmation in this file.
+_NOTHING_WRONG = frozenset(
+    {
+        "no", "nope", "nah", "nothing", "none", "no thats right",
+        "no that's right", "all good", "looks good", "looks right",
+        "all correct", "correct", "thats right", "that's right",
+        "sab theek", "theek hai", "thik hai", "sahi hai", "all fine",
+        "fine", "good", "great", "spot on", "perfect", "yes all good",
+    }
+)
+
+
+def _is_nothing_wrong(text: str) -> bool:
+    return _normalise_reply(text) in _NOTHING_WRONG
+
+
+def _summary_state(user_key: str) -> str | None:
+    value = _onboarding(user_key).get("profile_summary")
+    return value if isinstance(value, str) else None
+
+
+def _mark_summary_shown(user_key: str) -> None:
+    _update_onboarding(user_key, profile_summary="shown")
+
+
+def _mark_summary_agreed(user_key: str) -> None:
+    _update_onboarding(user_key, profile_summary="agreed")
+
+
+def _mark_confirm_asked(user_key: str, field: str) -> None:
+    """Once a field has been questioned, the transcript stops being a source.
+
+    Without this the doubted number is simply re-read out of the history on
+    the next turn and stored anyway, which makes the whole confirmation
+    decorative: on the first build of this, answering "no it's 65" to
+    "around 60-65" still filed 60.
+    """
+    asked = set(_onboarding(user_key).get("confirm_asked") or [])
+    if field not in asked:
+        asked.add(field)
+        _update_onboarding(user_key, confirm_asked=sorted(asked))
+
+
+def _confirm_was_asked(user_key: str, field: str) -> bool:
+    return field in set(_onboarding(user_key).get("confirm_asked") or [])
+
+
+def _forget_user(user_key: str, history_length: int | None = None) -> None:
+    """Clear the gate's own durable state for a user who asked for erasure.
+
+    `history_length` is how many messages the open thread held at the moment
+    of the wipe. It becomes the line `_given_name` will not read behind: see
+    the note on `forgotten_at_index` there.
+    """
     if not user_key:
         return
     with _ONBOARDING_LOCK:
@@ -247,6 +614,7 @@ def _forget_user(user_key: str) -> None:
             _persist_onboarding_state()
     with _TURN_LOCK:
         _LAST_GATED_REPLY.pop(user_key, None)
+        _TURN_ARRIVALS.pop(user_key, None)
         _TZ_FALLBACK_LOGGED.discard(user_key)
         if user_key in _DISCLOSURE_SENT_KEYS:
             _DISCLOSURE_SENT_KEYS.discard(user_key)
@@ -257,8 +625,15 @@ def _forget_user(user_key: str) -> None:
     # of a record, and absence loses to a transcript that still holds the old
     # disclosure. Keeping strictly less than the deletion removed is the trade
     # that makes the deletion hold.
-    _update_onboarding(user_key, forgotten_at=time.time())
-    LOGGER.info("ted_user_state_forgotten user_key=%s", user_key)
+    marks: dict[str, Any] = {"forgotten_at": time.time()}
+    if history_length is not None:
+        marks["forgotten_at_index"] = int(history_length)
+    _update_onboarding(user_key, **marks)
+    LOGGER.info(
+        "ted_user_state_forgotten user_key=%s history_index=%s",
+        user_key,
+        history_length,
+    )
 
 
 # The exact replies a person types to confirm an irreversible wipe. Matched
@@ -293,8 +668,12 @@ def _normalise_reply(text: str) -> str:
 
 
 def _is_delete_confirmation(text: str) -> bool:
-    """Whole-message match only. "Ges", "yess", "ys" are all refusals."""
-    return _normalise_reply(text) in _DELETE_CONFIRMATIONS
+    """Whole-message match only. "Ges", "yess", "ys" are all refusals.
+
+    Sanitised for the same reason as `_asks_to_delete`: a quoted reply whose
+    body is the word Ted asked for must not be able to confirm on its own.
+    """
+    return _normalise_reply(_user_written_text(text)) in _DELETE_CONFIRMATIONS
 
 
 # Ted writes the confirmation question in its own words, so this cannot demand
@@ -362,8 +741,15 @@ def _asks_to_delete(text: str) -> bool:
 
     Scope is required: "delete that meal" is an edit, not an erasure, and must
     never open a confirmation that a later "yes" can walk into.
+
+    The sanitising happens here as well as at the call site, and deliberately
+    so. This is the single most destructive question the gate asks, and the
+    3 Sep erasure happened because one caller handed it a string that had Ted's
+    own words on the front of it. `_user_written_text` is idempotent, so the
+    cost of asking twice is nothing and the cost of a future caller forgetting
+    is an account.
     """
-    return bool(_DELETE_REQUEST.search(_normalise_reply(_strip_memory_context(text))))
+    return bool(_DELETE_REQUEST.search(_normalise_reply(_user_written_text(text))))
 
 
 def _mark_delete_pending(user_key: str) -> None:
@@ -440,7 +826,7 @@ def _delete_user_data(
         # order is not obvious enough to rely on, and a stale one is exactly
         # what must not outlive the deletion it belongs to.
         _clear_delete_pending(user_key)
-        _forget_user(user_key)
+        _forget_user(user_key, history_length=len(list(history)))
         LOGGER.info(
             "ted_user_data_deleted user_key=%s removed=%s",
             user_key,
@@ -781,17 +1167,110 @@ def _strip_memory_context(text: str) -> str:
     return text[:marker].rstrip()
 
 
+# What the gateway bolts onto the front of a user's turn, and what the person
+# actually typed.
+#
+# Hermes does not hand a plugin the raw inbound message. It builds one string
+# and prepends a square-bracketed note for every piece of context it wants the
+# model to have, each separated from the next by a blank line. The person's own
+# words are whatever is left at the end.
+#
+# gateway/run.py:12037-12057 is the one that broke Ted. A WhatsApp reply gets
+#
+#     [Replying to: "<up to 500 characters of the quoted message>"]
+#
+#     <what the user typed>
+#
+# so on 3 Sep at 22:58:41 a tester replied to the privacy disclosure with
+# "i love this. this is a really good thing about security you've done" and the
+# string that reached `_asks_to_delete` began with a verbatim copy of the
+# disclosure — including the sentence 'Send "delete my data" anytime to delete
+# everything.' The regex found "delete my data" in Ted's own quoted words,
+# `ted_delete_confirmation_asked` fired, the tester typed "delete" meaning the
+# word Ted had just asked for, and at 22:59:03 their account was erased. They
+# sent "no wait" five seconds later. Praise deleted a real user's data.
+#
+# Vision descriptions (gateway/run.py:16850) and document notes (:2369) arrive
+# the same way, and both are text the user did not write: a photo of a page
+# reading "delete my data" would have done the same thing.
+#
+# So: every intent this file reads is read from the tail, never from the notes.
+# Transcripts are deliberately NOT stripped. A voice note reaches us as a bare
+# quoted line ('"i had two eggs"'), with no bracket and no opener, because a
+# transcript IS the user writing.
+_GATEWAY_NOTE_OPENERS = (
+    "replying to",
+    "the user sent",
+    "triggering message id",
+    "voice message could not be transcribed",
+    "new message",
+)
+
+
+def _strip_gateway_notes(text: str) -> str:
+    """Drop the bracketed context notes Hermes prepends to a user turn.
+
+    Bracket depth, not a regex. The notes contain quoted user prose, newlines
+    and (in a vision description) anything at all, so the only reliable end of
+    a note is its own matching bracket.
+
+    A note whose bracket never closes returns "" rather than the raw string.
+    That is the whole point of this function failing closed: the caller is
+    about to decide whether to erase somebody's account, and text we cannot
+    parse must not be able to answer that question.
+    """
+    remaining = text.lstrip()
+    while remaining.startswith("["):
+        head = remaining[1:].lstrip().lower()
+        if not any(head.startswith(opener) for opener in _GATEWAY_NOTE_OPENERS):
+            # An ordinary message that happens to start with a bracket.
+            return remaining
+        depth = 0
+        end = -1
+        for index, character in enumerate(remaining):
+            if character == "[":
+                depth += 1
+            elif character == "]":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end == -1:
+            LOGGER.warning("ted_gateway_note_unterminated len=%d", len(remaining))
+            return ""
+        remaining = remaining[end + 1 :].lstrip()
+    return remaining
+
+
+def _user_written_text(text: str) -> str:
+    """The newest words this person actually typed, and nothing else.
+
+    The single input every intent check in this file reads. Quoted replies,
+    vision descriptions, document notes and the Convex memory block are all
+    removed, in that order, because none of them was written by the user this
+    turn and none of them may trigger anything.
+    """
+    return _strip_gateway_notes(_strip_memory_context(str(text or ""))).strip()
+
+
 def _message_text(message: dict[str, Any]) -> str:
+    """One transcript turn as its author wrote it.
+
+    Gateway notes are stripped here as well as on the live turn. History is
+    where they do the quieter damage: `_given_name` reads the user turn after a
+    name question, and a reply quoting `hey \U0001F44B what should i call you?`
+    put Ted's own question into the slot where the answer belongs.
+    """
     content = message.get("content", "")
     if isinstance(content, str):
-        return _strip_memory_context(content.strip())
+        return _user_written_text(content)
     if isinstance(content, list):
         joined = " ".join(
             str(item.get("text", ""))
             for item in content
             if isinstance(item, dict) and item.get("type") == "text"
         ).strip()
-        return _strip_memory_context(joined)
+        return _user_written_text(joined)
     return ""
 
 
@@ -860,6 +1339,98 @@ _EMOJI_EDGE = re.compile(f"^[{_EMOJI_CHARS}\\s]+|[{_EMOJI_CHARS}\\s]+$")
 _MAX_NAME_LENGTH = 40
 
 
+# Sentences that are plainly about Ted rather than about who the user is.
+#
+# The old rule was "40 characters or fewer", and it is not a rule about names,
+# it is a rule about length. On 3 Sep the name question was answered twice with
+# feedback; both replies were long enough to be rejected by accident, which is
+# not the same as being rejected on purpose. "keep it short" is thirteen
+# characters and would have become this person's name, and Ted would have
+# greeted them as "keep it short" every morning after that.
+#
+# Second person is the tell. Nobody answers "what should i call you?" with a
+# sentence containing "you", "should" or "i like". A name is a noun phrase.
+_NOT_A_NAME = re.compile(
+    r"\b(?:you|your|you're|yours|should|shouldn't|could|would|instead"
+    r"|i\s+(?:like|love|think|want|feel|prefer|guess|mean)"
+    r"|this|that's|thats|its|it's|keep\s+it|make\s+it|sounds?|looks?"
+    r"|feedback|better|shorter|longer|personality|onboarding)\b",
+    re.IGNORECASE,
+)
+_MAX_NAME_WORDS = 4
+
+
+# What a name is made of: letters in any script, plus the combining marks that
+# Indic and accented scripts need — `\w` excludes those, so a regex written
+# with it rejects "जया". Joined by an apostrophe, hyphen or dot, and allowed
+# one trailing dot for "Dr.". Digits and brackets are not names.
+_NAME_LETTER_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc"})
+_NAME_JOINERS = frozenset("'’.-")
+
+
+def _is_name_word(word: str) -> bool:
+    if not word or word.strip(".") == "":
+        return False
+    letters = 0
+    for index, char in enumerate(word):
+        if unicodedata.category(char) in _NAME_LETTER_CATEGORIES:
+            letters += 1
+            continue
+        if char in _NAME_JOINERS and 0 < index:
+            continue
+        return False
+    return letters > 0
+
+
+# Grammatical glue. A name does not contain a conjunction or a preposition, so
+# their presence means the answer is a phrase: "weight and healthy lifestyle"
+# is a goal, not a person. Name particles (de, del, van, bin, al) are absent on
+# purpose — they belong in names.
+_NAME_FUNCTION_WORDS = re.compile(
+    r"\b(?:and|or|the|my|for|with|to|is|are|am|was|be|been|of|in|on|at|but"
+    r"|so|just|all|get|got|do|does|did|have|has|had|can|will|would|if|then)\b",
+    re.IGNORECASE,
+)
+
+# Answers that are letters all the way through and still are not a name. These
+# are dodges, not people: on 4 Sep "Kuch bi yaar" — "whatever, mate" — was
+# stored and used as a user's name.
+_NAME_DODGE = re.compile(
+    r"\b(?:kuch|kucch|kuchh|bhi|bi|yaar|yar|whatever|anything|nothing|none"
+    r"|idk|dunno|pata|nahi|nai|koi|guess|surprise|dont|don|doesnt"
+    r"|tu|tum|aap|hum|main|mujhe|mera|meri)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_a_name(name: str) -> bool:
+    """Whether this is a name, rather than whatever else they typed.
+
+    This asks what a name looks like, not whether the text matches a list of
+    sentences we thought of. It used to be the other way round, and a blocklist
+    cannot keep up: between 3 and 4 Sep 2026 it accepted "[image received]"
+    (an attachment placeholder), "Kuch bi yaar" (a dodge), "31" (an age) and
+    "and 20 min run" (a workout), and Ted greeted four real people by those
+    strings and stored them.
+
+    Conservative in the direction that costs least. A rejected name means one
+    more short question, capped by `_MAX_NAME_ASKS`. An accepted sentence means
+    Ted calls somebody "keep it short" until they ask it to stop.
+    """
+    if len(name) > _MAX_NAME_LENGTH:
+        return False
+    words = name.split()
+    if not 1 <= len(words) <= _MAX_NAME_WORDS:
+        return False
+    if not all(_is_name_word(word) for word in words):
+        return False
+    if _NAME_DODGE.search(name) or _NAME_FUNCTION_WORDS.search(name):
+        return False
+    # The old sentence blocklist stays as a second guard: "i like this" is all
+    # letters and short enough to pass everything above.
+    return not _NOT_A_NAME.search(name)
+
+
 def _clean_name(text: str) -> str | None:
     """The name the user gave, or None when there is not a usable one.
 
@@ -869,7 +1440,8 @@ def _clean_name(text: str) -> str | None:
     characters mid-word without ever saying so.
     """
     name = re.sub(
-        r"^(?:i(?:'m| am)|my name is|call me)\s+",
+        r"^(?:just\s+|you\s+can\s+|u\s+can\s+|pls\s+|please\s+)*"
+        r"(?:i(?:'m| am)|my name is|name(?:'s| is)|call me|its|it's)\s+",
         "",
         text.strip(),
         flags=re.IGNORECASE,
@@ -879,9 +1451,9 @@ def _clean_name(text: str) -> str | None:
     if not name:
         # Emoji-only, or nothing but punctuation. Ask again.
         return None
-    if len(name) > _MAX_NAME_LENGTH:
-        # Too long to be a name someone wants to be called. Ask again rather
-        # than silently keeping the first 40 characters.
+    if not _looks_like_a_name(name):
+        # Too long, too many words, or a sentence about Ted rather than an
+        # answer about them. Ask again rather than keeping it.
         return None
     return name
 
@@ -893,8 +1465,34 @@ def _given_name(
     stored = _known_name(user_key)
     if stored:
         return stored
+    # An erased user's old transcript is not a fallback, it is the thing that
+    # was erased. On 3 Sep at 22:59:03 a wipe cleared this user's name, and
+    # three seconds later, in the same turn, this scan found "UD" further up
+    # the still-open thread and `consent_gate` wrote it straight back:
+    # `ted_onboarding_name_recorded` at 22:59:06, after `ted_user_state_
+    # forgotten` at 22:59:03. A deletion that the scrollback undoes is not a
+    # deletion.
+    #
+    # Refusing the whole transcript was tried before this and reverted, for a
+    # good reason recorded in the tests: the name they give *after* the wipe is
+    # read back out of the same transcript, so blocking all of it loops
+    # "what should i call you?" forever and the disclosure never goes out. The
+    # note there names the right fix — scan only the part of the thread after
+    # the erasure — and says it needs a marker the history does not carry.
+    #
+    # `_forget_user` now writes that marker: how long the thread was when the
+    # wipe happened. Everything at or before that index belongs to the deleted
+    # account and is not read; everything after it is this person starting
+    # again, and is. A record written before the marker existed has no index,
+    # and keeps the old permissive behaviour rather than silently locking
+    # somebody out of onboarding.
+    turns = _messages(history)
+    if user_key and _onboarding(user_key).get("forgotten_at"):
+        cut = _onboarding(user_key).get("forgotten_at_index")
+        if isinstance(cut, int):
+            turns = turns[cut:]
     waiting_for_name = False
-    for role, text in _messages(history):
+    for role, text in turns:
         if role == "assistant" and _asks_for_name(text):
             waiting_for_name = True
             continue
@@ -941,6 +1539,39 @@ def _is_prepared_start(history: Iterable[dict[str, Any]], user_message: str) -> 
         and "okay ted" in user_message.lower()
         and len(user_message) <= 80
     )
+
+
+def _is_first_contact(history: Iterable[dict[str, Any]], user_key: str) -> bool:
+    """The very first thing Ted ever says to this person.
+
+    Wider than `_is_prepared_start`, which only recognised the prepared
+    "Okay Ted, let's do this" button. People arrive from the landing page and
+    open with whatever they like, and every one of them should get the same
+    first message back: one greeting, one question.
+
+    Three separate reasons an existing user cannot land here, because a
+    returning user greeted as a stranger is the worst outcome this function
+    has:
+
+      * a transcript that already contains a reply from Ted,
+      * a name on file, from this gate's own state or from Convex `userFacts`
+        (`_remember_name_from_facts` puts it there before this runs),
+      * a disclosure already recorded against their key.
+
+    Anyone with none of the three has, by every record Ted keeps, never been
+    spoken to. Missing optional state defaults to "not started", which is the
+    safe direction: it costs one short question, and the disclosure check
+    above it means consent is never re-collected from someone who has it.
+    """
+    if any(role == "assistant" for role, _ in _messages(history)):
+        return False
+    if _known_name(user_key) or _disclosure_was_sent(history, user_key):
+        return False
+    # Onboarding steps recorded against this key mean they have been here,
+    # even if the transcript in front of us is empty after a session reset.
+    if _onboarding(user_key).get("done"):
+        return False
+    return True
 
 
 def _awaiting_name(history: Iterable[dict[str, Any]], user_key: str) -> bool:
@@ -991,10 +1622,131 @@ def consent_gate(
     # We have already asked and are still waiting. Asking again is the loop,
     # so stop after a bounded number of attempts rather than never stopping.
     if _name_asks(user_key) >= _MAX_NAME_ASKS:
-        return None
+        # Giving up on the name must not mean giving up on the disclosure.
+        # This used to `return None`, which left the notice waiting on a name
+        # that was never coming: on 3 Sep a user sent one message, never
+        # answered, and has no consent record to this day, and Vinit had a
+        # meal and a run logged behind the same silence. The name was only
+        # ever how the disclosure was addressed, never the reason it is owed.
+        return _personalized_disclosure(None)
 
     _record_name_ask(user_key)
     return "What should I call you?"
+
+
+# One name question at a time.
+#
+# On 3 Sep Ted asked "hey \U0001f44b what should i call you?" at 22:57:45, the
+# tester answered with feedback rather than a name, and at 22:57:52 Ted asked
+# again: "cool, glad it landed \U0001f642 so, what should i call you?" Then "UD"
+# arrived and the third ask was already in the thread. From where the tester
+# sat, Ted asked their name three times and asked once more after they had
+# answered.
+#
+# `consent_gate` was not the culprit. Neither ask was a gate replacement (no
+# `ted_reply_replaced` in the log for either turn): the model wrote both,
+# because SOUL.md tells it to keep asking until the name arrives and nothing
+# told it that it had just asked. Compression protects the last twenty
+# messages, so the model could see its own question sitting one turn back and
+# asked it again anyway.
+#
+# So this is a counter and a state read, in the same shape as
+# `repeat_target_ask_gate` above: the question is removed from the outgoing
+# reply when the answer is already in, or when the previous message Ted sent
+# was the same question. Whatever else Ted wrote survives. If the question was
+# the entire message there is nothing to salvage, so the reply is dropped
+# rather than sent as an empty string, and the model gets another turn.
+def _last_assistant_asked_for_name(history: Iterable[dict[str, Any]]) -> bool:
+    """Whether the message Ted sent immediately before this one asked."""
+    for role, text in reversed(_messages(history)):
+        if role == "assistant":
+            return _asks_for_name(text)
+    return False
+
+
+# Trailing joins left behind once the question is cut off the end of a clause.
+_DANGLING_JOIN = re.compile(
+    r"[\s,;:]*\b(?:so|and|but|then|now|anyway|also|ok|okay)\b[\s,;:]*$",
+    re.IGNORECASE,
+)
+
+
+def _without_name_question(text: str) -> str:
+    """The reply with the name question taken out, and the rest kept.
+
+    Sentence granularity is not enough. The second ask on 3 Sep was
+    "cool, glad it landed \U0001f642 so, what should i call you?" \u2014 one sentence,
+    with a real reaction welded to the front of it by a comma. Dropping the
+    sentence would have thrown away the only part worth keeping, so a clause
+    that ends in the question is cut at its last comma instead.
+    """
+    kept: list[str] = []
+    for sentence in _sentences(text):
+        if not _asks_for_name(sentence):
+            kept.append(sentence.strip())
+            continue
+        head = sentence.rsplit(",", 1)[0] if "," in sentence else ""
+        head = _DANGLING_JOIN.sub("", head).strip(" ,;:")
+        # Two words or fewer is not a salvaged reaction, it is a fragment.
+        if len(head.split()) >= 3 and not _asks_for_name(head):
+            kept.append(head)
+    return " ".join(part for part in kept if part).strip()
+
+
+def repeat_name_ask_gate(
+    history: Iterable[dict[str, Any]],
+    response_text: str,
+    user_key: str,
+    stale_turn: bool = False,
+) -> str | None:
+    """Strip a name question that is already answered, or was just asked.
+
+    `stale_turn` means another message from this person arrived while this
+    reply was being written, so this reply cannot have seen it. A question
+    written before the answer landed must not be delivered after it.
+    """
+    if not _asks_for_name(response_text or ""):
+        return None
+    name = _known_name(user_key)
+    # `_last_assistant_asked_for_name` reads the transcript, and the transcript
+    # records what the *model* wrote, not what the gate delivered. So it misses
+    # the case where Ted's question was a gate replacement: the opener, most of
+    # all. `_name_asks` is the record that does not have that hole, because it
+    # is written at the moment a question goes out, by whoever sent it. One
+    # opener plus one re-ask is the whole allowance; after that Ted can still
+    # talk, it just stops asking the same thing.
+    asked_enough = _name_asks(user_key) > _MAX_VISIBLE_NAME_ASKS
+    if (
+        not name
+        and not stale_turn
+        and not asked_enough
+        and not _last_assistant_asked_for_name(history)
+    ):
+        # First ask, and still unanswered. This is the question doing its job.
+        return None
+    kept = _without_name_question(response_text)
+    # "sorry!" on its own is not a reply. When the name is already known,
+    # answering the question is better than the fragment in front of it.
+    if name and len(kept.split()) < 3:
+        kept = ""
+    if kept:
+        LOGGER.info(
+            "ted_repeat_name_ask_stripped user_key=%s answered=%s",
+            user_key,
+            bool(name),
+        )
+        return kept
+    if name:
+        # The whole message was a question Ted already has the answer to.
+        # Never send it, and never send an empty string either: Hermes treats
+        # "" as "leave the model's text alone", which would deliver the exact
+        # question this gate exists to remove.
+        LOGGER.info("ted_repeat_name_ask_answered user_key=%s", user_key)
+        return f"you\u2019re {name} \U0001f642"
+    # Unanswered, and the question was the entire message. Asking a second
+    # time is worse than silence but better than a blank reply, and
+    # `_MAX_NAME_ASKS` still caps how far it can go.
+    return None
 
 
 def _user_turns(history: Iterable[dict[str, Any]]) -> list[str]:
@@ -1045,26 +1797,119 @@ def _find_age(texts: list[str]) -> int | None:
     return None
 
 
+# Feet, then inches. People very often say the inches with no unit at all
+# ("5 foot 4"), or split by a fraction ("5 feet 4 and a half inches"). The
+# unit used to be mandatory, so both of those parsed as a flat 5'0": on
+# 4 Sep 2026 a user who said "5 feet 4 and a half inches tall" was measured
+# at 152.4 cm — 12 cm short — and handed a maintenance figure 100 kcal under
+# her real one, inside the sentence that promises it used only her numbers.
+_FEET_INCHES = re.compile(
+    r"\b([4-7])\s*(?:ft|feet|foot|')"
+    # 0-11 only, and closed by a word break, so "5 feet 63 kg" cannot read a
+    # weight as inches and "5 feet 63" cannot read a leading 6 as inches.
+    r"(?:\s*(1[01]|\d)\b)?"
+    r"(?:\s*(?:and\s+)?a\s+(half)\b)?"
+    r"\s*(?:in\b|inch\w*|\")?",
+    re.IGNORECASE,
+)
+
+
 def _find_height_cm(texts: list[str]) -> float | None:
     joined = "\n".join(texts)
     cm = re.search(r"\b(1\d{2}(?:\.\d+)?)\s*cm\b", joined, re.IGNORECASE)
     if cm:
         return float(cm.group(1))
-    feet = re.search(
-        r"\b([4-7])\s*(?:ft|feet|foot|')\s*(?:(\d{1,2})\s*(?:in|inches|\"))?",
-        joined,
-        re.IGNORECASE,
-    )
+    feet = _FEET_INCHES.search(joined)
     if feet:
         inches = int(feet.group(1)) * 12 + int(feet.group(2) or 0)
+        if feet.group(3):
+            inches += 0.5
         return round(inches * 2.54, 2)
     return None
 
 
+# Pounds and stone. Nothing used to read these, so "154 lbs" fell through to
+# the bare-number path, passed a 30-250 range check as if it were kilos, and
+# was stored as 154 kg — a maintenance figure roughly double the real one.
+_WEIGHT_LBS = re.compile(
+    r"\b(\d{2,3}(?:\.\d+)?)\s*(?:lbs?|pounds?)\b", re.IGNORECASE
+)
+_WEIGHT_STONE = re.compile(
+    r"\b(\d{1,2}(?:\.\d+)?)\s*(?:st|stone)\b", re.IGNORECASE
+)
+
+
 def _find_weight_kg(texts: list[str]) -> float | None:
     joined = "\n".join(texts)
-    match = re.search(r"\b(\d{2,3}(?:\.\d+)?)\s*kg\b", joined, re.IGNORECASE)
-    return float(match.group(1)) if match else None
+    # "kg" used to be closed by \b, which the very common "63.5kgs" fails on:
+    # the s is a word character, so the boundary never lands and the whole
+    # weight went unseen.
+    match = re.search(
+        r"\b(\d{2,3}(?:\.\d+)?)\s*(?:kgs?|kilos?|kilograms?)\b",
+        joined,
+        re.IGNORECASE,
+    )
+    if match:
+        return float(match.group(1))
+    pounds = _WEIGHT_LBS.search(joined)
+    if pounds:
+        return round(float(pounds.group(1)) * 0.453592, 1)
+    stone = _WEIGHT_STONE.search(joined)
+    if stone:
+        return round(float(stone.group(1)) * 6.35029, 1)
+    return None
+
+
+# Words that mean the number beside them is not a settled fact about right
+# now. A range, a hedge, a number from the past, or a number they are aiming
+# at rather than standing on. Each of these was stored silently as a current
+# measurement on 4 Sep 2026: "around 60-65" became 60, "63 or 64, not sure"
+# became 63, "i was 70 last year" became 70, and "goal is 59" became 59.
+_UNCERTAIN_RANGE = re.compile(r"\d\s*(?:-|–|—|\bto\b|\bor\b)\s*\d")
+_UNCERTAIN_WORD = re.compile(
+    r"\b(?:about|around|roughly|approx\w*|maybe|probably|nearly|almost"
+    r"|ish|somewhere|close\s+to|not\s+sure|unsure|think|guess|i'd\s+say"
+    r"|was|were|used\s+to|last\s+(?:year|month|week|time)|before|earlier"
+    r"|goal|target|aiming|hoping|want\s+to\s+(?:get|be|reach)|get\s+to"
+    r"|after\s+lunch|after\s+dinner|before\s+lunch|in\s+the\s+morning)\b",
+    re.IGNORECASE,
+)
+# How close a hedging word has to sit to a number before it is hedging *that
+# number*. Without this the check reads the whole message, and "what should my
+# calorie target be?" counts as an uncertain answer because it contains the
+# word "target" — the gate then confirms a height nobody just said.
+_HEDGE_PROXIMITY = 12
+
+
+def _answer_is_uncertain(text: str) -> bool:
+    """Whether a measurement in this answer is a guess rather than a fact."""
+    text = text or ""
+    if _UNCERTAIN_RANGE.search(text):
+        return True
+    digits = [match.start() for match in re.finditer(r"\d", text)]
+    if not digits:
+        return False
+    for hedge in _UNCERTAIN_WORD.finditer(text):
+        for position in digits:
+            if hedge.start() - _HEDGE_PROXIMITY <= position <= (
+                hedge.end() + _HEDGE_PROXIMITY
+            ):
+                return True
+    return False
+
+
+def _converted_from(text: str) -> str | None:
+    """What they actually typed, when it had to be converted to reach kg.
+
+    The whole phrase, not the bare unit: "69.9 kg (you said 154 lbs)" is
+    recognisable to someone who thinks in pounds and can be challenged.
+    "(you said lbs)" is not.
+    """
+    for pattern in (_WEIGHT_LBS, _WEIGHT_STONE):
+        match = pattern.search(text or "")
+        if match:
+            return " ".join(match.group(0).split())
+    return None
 
 
 def _find_sex(texts: list[str]) -> str | None:
@@ -1193,6 +2038,15 @@ def _age_from_answer_context(
     return None
 
 
+# A number answering a question Ted just asked, with the unit left off or
+# jammed on. The trailing boundary used to be \b, which does not land between
+# a digit and a letter: "63.5kgs" backtracked to the shorter "63" — closed by
+# the decimal point — and silently dropped the half kilo. Refusing only a
+# following digit keeps "63.5kgs" whole while still declining to read 123 out
+# of 1234.
+_BARE_MEASUREMENT = re.compile(r"\b(\d{2,3}(?:\.\d+)?)(?!\d)")
+
+
 def _height_from_answer_context(
     history: Iterable[dict[str, Any]], current_user_message: str = ""
 ) -> float | None:
@@ -1204,7 +2058,7 @@ def _height_from_answer_context(
     explicit = _find_height_cm([answer])
     if explicit is not None:
         return explicit
-    bare = re.search(r"\b(\d{2,3}(?:\.\d+)?)\b", answer)
+    bare = _BARE_MEASUREMENT.search(answer)
     if bare:
         value = float(bare.group(1))
         if _HEIGHT_RANGE_CM[0] <= value <= _HEIGHT_RANGE_CM[1]:
@@ -1223,7 +2077,7 @@ def _weight_from_answer_context(
     explicit = _find_weight_kg([answer])
     if explicit is not None:
         return explicit
-    bare = re.search(r"\b(\d{2,3}(?:\.\d+)?)\b", answer)
+    bare = _BARE_MEASUREMENT.search(answer)
     if bare:
         value = float(bare.group(1))
         if _WEIGHT_RANGE_KG[0] <= value <= _WEIGHT_RANGE_KG[1]:
@@ -1481,9 +2335,96 @@ def calorie_gate(
         return AGE_QUESTION
     profile = replace(profile, age=age)
 
+    # Be sure, or ask. A number arrives wrapped in a hedge ("around 60-65"),
+    # pointed at the past ("i was 70 last year"), pointed at a goal ("goal is
+    # 59"), or in a unit that had to be converted — and until 4 Sep 2026 every
+    # one of those was stored as a settled fact about right now. The model's
+    # reading of the sentence is not what gets stored; this parse is. So this
+    # is where the doubt has to surface.
+    written = _user_written_text(user_message)
+    readers = {
+        "height_cm": _height_from_answer_context,
+        "weight_kg": _weight_from_answer_context,
+    }
+
+    # A field already put in doubt is answered only by what the user says now,
+    # never by the transcript. Otherwise the doubted number is re-read next
+    # turn and kept regardless of the reply.
+    for field in _MEASUREMENT_FIELDS:
+        if _confirm_was_asked(user_key, field):
+            profile = replace(
+                profile, **{field: _stored_measurement(user_key, field)}
+            )
+
+    pending = _pending_measurement(user_key)
+    if pending is not None:
+        field = pending["field"]
+        if _is_measurement_confirmation(written):
+            _remember_measurement(
+                user_key, field, pending["value"], pending.get("from")
+            )
+            _clear_pending_measurement(user_key)
+            profile = replace(profile, **{field: pending["value"]})
+        else:
+            fresh = readers[field](history, written)
+            _clear_pending_measurement(user_key)
+            if (
+                fresh is not None
+                and not _answer_is_uncertain(written)
+                and not _converted_from(written)
+            ):
+                # They corrected it. The correction is a plain answer, so it
+                # stands without another round of asking.
+                _remember_measurement(user_key, field, fresh)
+                profile = replace(profile, **{field: fresh})
+            else:
+                # Neither a yes nor a usable number. The doubted value does not
+                # become a fact by default — the plain question comes back
+                # below instead.
+                profile = replace(profile, **{field: None})
+
+    for field, read_answer in readers.items():
+        if getattr(profile, field) is None:
+            continue
+        if _stored_measurement(user_key, field) is not None:
+            continue
+        value = read_answer(history, written)
+        if value is None:
+            continue
+        converted = _converted_from(written)
+        if not (_answer_is_uncertain(written) or converted):
+            continue
+        _set_pending_measurement(user_key, field, value, converted)
+        _mark_confirm_asked(user_key, field)
+        profile = replace(profile, **{field: None})
+        LOGGER.info(
+            "ted_measurement_unconfirmed user_key=%s field=%s", user_key, field
+        )
+        return _confirm_measurement_reply(field, value, converted)
+
+    profile = _with_stored_measurements(profile, user_key)
+
     missing_reply = _missing_profile_reply(profile)
     if missing_reply:
         return missing_reply
+
+    # Everything is in. Say it back once, and let them correct it, before a
+    # single calorie number goes out. A wrong number here is not a typo — it
+    # is what somebody eats to for weeks.
+    if user_key:
+        state = _summary_state(user_key)
+        if state is None:
+            _mark_summary_shown(user_key)
+            LOGGER.info("ted_profile_summary_shown user_key=%s", user_key)
+            return _profile_summary(profile, user_key)
+        if state == "shown":
+            if _is_measurement_confirmation(written) or _is_nothing_wrong(written):
+                _mark_summary_agreed(user_key)
+            else:
+                # They said something else. If it changed a number, the change
+                # is already in `profile` above and is worth showing again;
+                # if it did not, the summary stands and repeats once.
+                return _profile_summary(profile, user_key)
 
     estimate = _estimated_maintenance(profile)
     return (
@@ -1544,6 +2485,17 @@ _CRON_CLAIM = re.compile(
     # "I'll ping you at 8", "I will check in tomorrow"
     r"\bI(?:'ll| will|'m going to| am going to)\s+(?:\w+\s+){0,3}?"
     r"(?:ping|remind|message|text|nudge|check\s*in|check\s+on|send|call|buzz)\b"
+    # "9am morning check-in it is", "sure, 15th it is" — a confirmation with a
+    # time in it is a promise. Pradosh was told "got it, 9am morning check-in
+    # it is" on 3 Sep and Jaya "sure, 15th it is" on 4 Sep; no tool ran for
+    # either, and neither sentence had a verb for the old patterns to find.
+    rf"|{_WHEN}[^.!?]{{0,28}}?\bit\s+is\b"
+    # "I'll catch you on the 15th", "we'll sort the details on the 15th" — the
+    # softer verbs only count when pinned to a when, so a bare "catch you
+    # later" stays the sign-off it is.
+    r"|\b(?:I|we)(?:'ll| will)\s+(?:\w+\s+){0,4}?"
+    r"(?:catch|see|get|hit|reach|follow|sort|pick|circle)\b"
+    rf"[^.!?]{{0,30}}?\b(?:on|at|in|by|from)\s+(?:the\s+)?{_WHEN}"
     # "your 8pm check-in is set", "the reminder's on"
     r"|\b(?:reminder|alarm|check-?\s?in|nudge|ping|follow-?up)s?\b"
     r"[^.!?]{0,40}?\b(?:is|are|'s|were|have\s+been)\s+"
@@ -1603,6 +2555,38 @@ def _claim_types(text: str) -> set[str]:
 # saved and ask them to send it again.
 CLAIM_NOT_DONE = "i couldn’t get that done just now — try me again in a minute?"
 STORAGE_NOT_SAVED = "that didn’t save, send it again in a minute."
+# The same stripped reply, to somebody who never asked for anything to happen.
+#
+# On 3 Sep at 22:58:30 a tester said "i think you should really really look at
+# how poke.com does onboarding it's really good". The model answered with a
+# promise to remember it, no tool ran because there is no tool for a product
+# suggestion, every sentence was a claim, and what came back was
+# CLAIM_NOT_DONE: "i couldn't get that done just now, try me again in a
+# minute?" A remark about a website was answered with what reads as an outage.
+#
+# The gate was right that nothing was saved and right to remove the claim. It
+# was wrong about which sentence to put there, because it assumed the user had
+# asked for an action. When they have not, the honest line is that Ted read it
+# and cannot file it, which is both true and not an error.
+CLAIM_NOTHING_TO_SAVE = (
+    "heard you. that’s not one i can file away, but it’s landed 🙂"
+)
+
+
+# Did this turn actually ask Ted to do something a tool would have to perform?
+# Narrow on purpose: a false negative costs a slightly softer line, a false
+# positive puts an outage notice in front of somebody making conversation.
+_ACTION_REQUEST = re.compile(
+    r"\b(?:remember|save|store|note\s+(?:this|that|it|down)|log|logged"
+    r"|track|record|add|update|set|change|delete|erase|wipe|remove"
+    r"|remind|ping|nudge|schedule|check\s*in|target|goal)\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_for_an_action(user_text: str) -> bool:
+    """Whether the user asked for something a tool has to carry out."""
+    return bool(_ACTION_REQUEST.search(user_text or ""))
 
 
 def action_claim_gate(
@@ -1610,6 +2594,7 @@ def action_claim_gate(
     action_succeeded: bool = False,
     successful_actions: set[str] | None = None,
     storage_failed: bool = False,
+    user_asked_for_action: bool = True,
 ) -> str | None:
     """Remove action claims unless a tool succeeded in the same turn."""
     claims = _claim_types(response_text)
@@ -1636,7 +2621,12 @@ def action_claim_gate(
         # Keep the readings Ted gave (orders 03 and 05), but do not let them
         # stand alone implying the write landed.
         return f"{cleaned} {STORAGE_NOT_SAVED}" if storage_failed else cleaned
-    return STORAGE_NOT_SAVED if storage_failed else CLAIM_NOT_DONE
+    if storage_failed:
+        return STORAGE_NOT_SAVED
+    # Nothing survived the strip. What replaces it depends on whether they
+    # asked for anything: a failure notice to somebody who did, and a plain
+    # "i can't file that" to somebody who was only talking.
+    return CLAIM_NOT_DONE if user_asked_for_action else CLAIM_NOTHING_TO_SAVE
 
 
 # A PDF or a Word file arrives as a pointer, not as text.
@@ -1928,44 +2918,73 @@ def transform_response(
     logged_meal: dict[str, Any] | None = None,
     day_summary: dict[str, Any] | None = None,
     reminder_set: dict[str, Any] | None = None,
+    stale_turn: bool = False,
 ) -> str | None:
     history = list(history)
-    if _is_prepared_start(history, user_message):
-        # OPENING_MESSAGE ends with the name question, so it counts as asking.
-        _record_name_ask(user_key)
-        return OPENING_MESSAGE
-    if _is_repeat_prepared_start(history, user_message, user_key):
-        return ALREADY_STARTED_MESSAGE
-    # An empty or media-only message while the name is still outstanding. A
-    # photo or a voice note cannot be a name, and _message_text renders both
-    # as "" — which the name parser would otherwise take at face value. Only
-    # during onboarding: after that, media is the product, not an error.
-    if not user_message.strip() and _awaiting_name(history, user_key):
-        return NAME_NOT_USABLE_MESSAGE
+    # Every intent below reads this, never `user_message`. The raw string still
+    # carries whatever the gateway prepended: a quoted reply, a vision
+    # description, a document note. None of that was typed by this person this
+    # turn, and none of it is allowed to decide anything. `user_message` itself
+    # is used exactly once more, by `unreadable_document_gate`, which is the
+    # one gate whose whole job is to read a gateway note.
+    user_text = _user_written_text(user_message)
+
     # Milestone 11, before anything else reads the model's reply: a user
     # reporting a bad answer must get the same confirmation every time,
     # whatever the model decided to say about it.
     if report_saved is not None:
         return REPORT_CONFIRMATION if report_saved else REPORT_NOT_SAVED
-    # Erasure, before the consent gate: someone asking to be forgotten is
-    # owed that whatever stage of onboarding they are in, and a disclosure is
-    # not an answer to it. The question is fixed so the check on the way back
-    # is a stored fact rather than a reading of Ted's prose.
+    # Erasure next, above the opener and above consent. Someone asking to be
+    # forgotten is owed that at any stage, and neither a greeting nor a
+    # disclosure is an answer to it.
     if user_key:
         if _delete_is_pending(user_key):
-            if not _is_delete_confirmation(user_message):
+            if not _is_delete_confirmation(user_text):
                 # They said something else, so the question is no longer live.
                 # A "yes" three turns from now must not land on it.
                 _clear_delete_pending(user_key)
-        elif _asks_to_delete(user_message):
+        elif _asks_to_delete(user_text):
             _mark_delete_pending(user_key)
             LOGGER.info("ted_delete_confirmation_asked user_key=%s", user_key)
             return DELETE_CONFIRMATION_QUESTION
+    # The first message of a first conversation. Not only the prepared WhatsApp
+    # button any more: everybody arrives from the landing page, so whatever
+    # they open with, the first thing back is one greeting and the name
+    # question. Existing users cannot reach this — it needs an empty assistant
+    # history AND no recorded name AND no disclosure on file.
+    if _is_first_contact(history, user_key):
+        # OPENING_MESSAGE ends with the name question, so it counts as asking.
+        _record_name_ask(user_key)
+        return OPENING_MESSAGE
+    if _is_repeat_prepared_start(history, user_text, user_key):
+        return ALREADY_STARTED_MESSAGE
+    # An empty or media-only message while the name is still outstanding. A
+    # photo or a voice note cannot be a name, and _message_text renders both
+    # as "" — which the name parser would otherwise take at face value. Only
+    # during onboarding: after that, media is the product, not an error.
+    if not user_text and _awaiting_name(history, user_key):
+        return NAME_NOT_USABLE_MESSAGE
     disclosure = consent_gate(history, response_text, user_key)
     if disclosure:
         return disclosure
+    # Somebody asking to pick this up another time gets that, and nothing
+    # else. Below the disclosure because consent is owed either way; above
+    # every question below, because the questions are the problem.
+    if user_key and _asks_to_defer(user_text):
+        until = _defer_until_date(user_text)
+        _mark_paused(user_key, until)
+        return _deferral_reply(until)
+    # The name question, when Ted has already asked it or already has the
+    # answer. It sits above the early return rather than beside the other
+    # output gates because the turn it matters most on is a turn that never
+    # reaches them: onboarding, before the disclosure has gone out.
+    no_repeat_name = repeat_name_ask_gate(
+        history, response_text, user_key, stale_turn=stale_turn
+    )
     if not _disclosure_was_sent(history, user_key):
-        return None
+        return no_repeat_name
+    if no_repeat_name is not None:
+        response_text = no_repeat_name
     # Before the calorie gate on purpose: a health-plan PDF is exactly the
     # input that ends in a calorie target, and an unread one must never get
     # that far.
@@ -1983,7 +3002,13 @@ def transform_response(
         action_succeeded=action_succeeded,
         successful_actions=successful_actions,
         storage_failed=storage_failed,
+        user_asked_for_action=_asks_for_an_action(user_text),
     )
+    # A trimmed name question is a real edit, so it has to survive a claim gate
+    # that found nothing of its own to change. Without this the function
+    # returns None, and None means "send what the model wrote".
+    if cleaned is None and no_repeat_name is not None:
+        cleaned = response_text
     # After the claim gate so it reads the text the user is actually going to
     # get, and before the meal block so a stripped reply still carries its
     # numbers underneath.
@@ -2608,6 +3633,43 @@ def _voice_card(user_key: str) -> str:
     )
 
 
+# Arrival order, per phone number.
+#
+# Hermes serialises a session's turns as long as `display.busy_input_mode` is
+# `queue`; on `interrupt`, which is what Ted was running on 3 Sep, a second
+# message aborts the turn already in flight and the reply that was half
+# written can still reach the thread after the newer message has been
+# answered. The real fix for that is the config, and it has been changed
+# (`hermes/machine/hermes-config.yaml`).
+#
+# This counter is the part that does not depend on a machine-level setting
+# staying where somebody put it. Every inbound message takes the next number
+# for its user; a turn whose number is no longer the newest is answering a
+# message that has since been overtaken, and `_turn_is_stale` says so. Only
+# one thing acts on it today, which is enough: a stale turn must not put a
+# question into the thread, because by definition it cannot have seen the
+# answer.
+_TURN_ARRIVALS: dict[str, int] = {}
+
+
+def _record_turn_arrival(user_key: str) -> int:
+    """Take the next arrival number for this user."""
+    if not user_key:
+        return 0
+    with _TURN_LOCK:
+        nextval = _TURN_ARRIVALS.get(user_key, 0) + 1
+        _TURN_ARRIVALS[user_key] = nextval
+        return nextval
+
+
+def _turn_is_stale(user_key: str, turn_seq: int) -> bool:
+    """Whether a newer message from this user has arrived since this turn."""
+    if not user_key or not turn_seq:
+        return False
+    with _TURN_LOCK:
+        return _TURN_ARRIVALS.get(user_key, 0) > turn_seq
+
+
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     # A cron run writes into a real WhatsApp thread but arrives with platform
     # "cron", so it fell through this guard and the voice card never reached
@@ -2659,12 +3721,22 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     if disclosure_sent and user_key not in _DISCLOSURE_SENT_KEYS:
         _mark_disclosure_sent(user_key)
 
+    raw_message = _strip_memory_context(str(kwargs.get("user_message") or ""))
+    # Taken before the lock below. `_record_turn_arrival` acquires _TURN_LOCK
+    # itself, and _TURN_LOCK is not reentrant, so calling it inside the dict
+    # literal deadlocks the gateway thread on its own lock.
+    turn_seq = _record_turn_arrival(user_key)
     with _TURN_LOCK:
         _TURN_CONTEXT[session_id] = {
             "history": history,
-            "user_message": _strip_memory_context(
-                str(kwargs.get("user_message") or "")
-            ),
+            # The whole inbound string, gateway notes and all. Read by exactly
+            # one gate, `unreadable_document_gate`, whose job is that note.
+            "user_message": raw_message,
+            # What this person actually typed. Everything else reads this.
+            "user_text": _user_written_text(raw_message),
+            # Where this message sits in the arrival order for this phone
+            # number. `_turn_is_stale` compares it against the newest one.
+            "turn_seq": turn_seq,
             "successful_actions": set(),
             "disclosure_sent": disclosure_sent,
             "user_key": user_key,
@@ -2683,9 +3755,7 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     result = _cached_user_memory(user_key)
     _note_user_replied(user_key, result)
     _remember_name_from_facts(user_key, result)
-    _capture_name_answer(
-        user_key, _strip_memory_context(str(kwargs.get("user_message") or ""))
-    )
+    _capture_name_answer(user_key, _user_written_text(raw_message))
     memory_context = _format_user_memory(result)
     # What Ted actually said last turn, when a gate replaced it. First, because
     # it is the thing the user's current message is answering. The voice card
@@ -2717,6 +3787,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     if context.get("disclosure_sent") and not _disclosure_was_sent(history):
         history.insert(0, {"role": "assistant", "content": DISCLOSURE_MESSAGE})
     user_message = str(context.get("user_message", ""))
+    user_text = str(context.get("user_text", "")) or _user_written_text(user_message)
     user_key = str(context.get("user_key", ""))
 
     # Only once the disclosure is behind us — before that the consent gate owns
@@ -2725,12 +3796,12 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     if (
         user_key
         and _disclosure_was_sent(history)
-        and _asks_to_report(user_message)
+        and _asks_to_report(user_text)
         # No model answer yet means there is nothing to complain about, so this
         # is ordinary conversation rather than a report.
         and _last_assistant_turn(history)
     ):
-        report_saved = _record_bad_reply(user_key, history, user_message)
+        report_saved = _record_bad_reply(user_key, history, user_text)
 
     model_text = str(kwargs.get("response_text") or "")
     replacement = transform_response(
@@ -2744,6 +3815,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         logged_meal=context.get("logged_meal"),
         day_summary=context.get("day_summary"),
         reminder_set=context.get("reminder_set"),
+        stale_turn=_turn_is_stale(user_key, int(context.get("turn_seq") or 0)),
     )
     # The transcript is about to record model_text while the user receives
     # `replacement`. Keep the difference so the next turn can be told.
@@ -3439,6 +4511,19 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
     if not recipient:
         return None
     user_key = _user_state_key("whatsapp", recipient, session_id)
+
+    # Somebody who asked to be left until a date must actually be left. A
+    # deferral that only quiets the chat and lets the scheduler carry on is
+    # not a deferral — and the scheduler is the half that arrives uninvited.
+    paused = _paused_until(user_key)
+    if paused is not None:
+        LOGGER.info(
+            "ted_reminder_suppressed user_key=%s reason=paused_until:%s session=%s",
+            user_key,
+            paused,
+            session_id,
+        )
+        return CRON_SILENT
 
     allowed, reason, offer_break = _reminder_allowed(user_key)
     if not allowed:
