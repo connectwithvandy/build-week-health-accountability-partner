@@ -1,0 +1,44 @@
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+index c59570700..a9239abfd 100644
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -87,6 +87,11 @@ def _set_cron_session_title(session_db, session_id, base_title):
+         return deduped
+ 
+ 
++_TED_CRON_CHAT_SURFACES = frozenset(
++    {"whatsapp", "telegram", "slack", "discord", "imessage", "signal"}
++)
++
++
+ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
+     """Return a compact one-line failure message for chat delivery.
+ 
+@@ -98,6 +103,27 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
+     text = (error or "unknown error").strip()
+     lower = text.lower()
+ 
++    # Ted patch 08. The docstring above says chat "should show the operator
++    # what broke". On Ted that reader is not an operator, it is somebody in a
++    # health beta, and on 4 Sep 2026 three of them were sent a raw Python
++    # RuntimeError about provider drift and unintended spend, signed as Ted.
++    # Nothing in it was true of them, actionable by them, or theirs to fix.
++    #
++    # Returning "" makes `should_deliver` false at the call site, so the run
++    # still records its failure, still writes the full error to the cron output
++    # directory, and still logs here. Only the chat message goes away. This is
++    # the same call patches 06 and 07 made for shutdown and fallback notices.
++    _ted_origin = job.get("origin") or {}
++    _ted_platform = str(_ted_origin.get("platform") or "").lower()
++    if _ted_platform in _TED_CRON_CHAT_SURFACES:
++        logger.warning(
++            "Ted: suppressing cron failure notice to %s job=%s: %s",
++            _ted_platform,
++            job.get("id"),
++            text[:300],
++        )
++        return ""
++
+     # Provider/API failures are the common noisy path. Keep these short.
+     if "429" in text or "rate limit" in lower or "usage limit" in lower:
+         reason = "rate limit"

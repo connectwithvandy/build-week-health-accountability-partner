@@ -27,7 +27,7 @@
     },
     {
       "file": "03-voice-listening-ack.patch",
-      "what": "the voice-note 'Listening…' acknowledgement",
+      "what": "the voice-note 'Listening\u2026' acknowledgement",
       "checks": [
         {
           "path": "gateway/run.py",
@@ -62,7 +62,7 @@
             "one sec, finishing the last one first"
           ],
           "absent": [
-            "⚡ Interrupting current task"
+            "\u26a1 Interrupting current task"
           ]
         }
       ]
@@ -91,7 +91,7 @@
             "_gateway_provider_message"
           ],
           "absent": [
-            "    return \"⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.\""
+            "    return \"\u23f1\ufe0f The model provider is rate-limiting requests. Please wait a moment and try again.\""
           ]
         }
       ]
@@ -104,6 +104,19 @@
           "path": "run_agent.py",
           "present": [
             "_TED_CHAT_SURFACES"
+          ],
+          "absent": []
+        }
+      ]
+    },
+    {
+      "file": "08-no-cron-failure-notices-to-users.patch",
+      "what": "cron failure text staying out of a real user's chat",
+      "checks": [
+        {
+          "path": "cron/scheduler.py",
+          "present": [
+            "_TED_CRON_CHAT_SURFACES"
           ],
           "absent": []
         }
