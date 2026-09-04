@@ -2058,8 +2058,34 @@ _ACTIVITY_PHRASES: tuple[tuple[str, str], ...] = (
 )
 
 
+# A desk, and something that is not the desk. People describe a normal day as
+# a shape, not as one of five labels: on 4 Sep a real user answered 5/5 twice
+# with "Mostly desk with 1 hr walking/yoga/exercise", neither answer parsed,
+# and on the third ask he gave up and echoed "Desk most of it" back at Ted —
+# one more and the bound would have given up on him. He is not sedentary, and
+# the phrase table could only ever have said he was.
+_DESK_ANCHOR = re.compile(
+    r"\b(?:desk|sitting|seated|office|computer|laptop|screen)\b", re.IGNORECASE
+)
+_EXERCISE_CUE = re.compile(
+    r"\b(?:walk|walks|walking|yoga|gym|workout|workouts|work out|exercise|"
+    r"exercises|exercising|run|runs|running|jog|jogging|cycling|cycle|swim|"
+    r"swimming|training|sports?|pilates|lifting|weights)\b",
+    re.IGNORECASE,
+)
+
+
 def _find_activity(texts: list[str]) -> str | None:
     joined = "\n".join(texts).lower()
+    # Read the shape before the labels. A desk answer that also names exercise
+    # is a different day from a desk answer that does not, and the phrase
+    # table cannot see the difference because it matches one phrase and stops.
+    #
+    # Deliberately conservative: "light" rather than "moderate". The factor is
+    # what the calorie number is built from, and guessing high hands somebody a
+    # larger number than their day earns.
+    if _DESK_ANCHOR.search(joined):
+        return "light" if _EXERCISE_CUE.search(joined) else "sedentary"
     for phrase, activity in _ACTIVITY_PHRASES:
         if re.search(rf"\b{re.escape(phrase)}\b", joined):
             return activity

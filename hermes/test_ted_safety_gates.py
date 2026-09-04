@@ -7116,3 +7116,28 @@ class TheCountedFiveTest(unittest.TestCase):
             ),
             gates.UNDER_18_REFUSAL,
         )
+
+    def test_a_desk_day_with_exercise_in_it_is_not_sedentary(self) -> None:
+        """Harshal's answer, twice, on 4 Sep, and it parsed neither time.
+
+        He wrote "Mostly desk with 1 hr walking/yoga/exercise" and Ted asked
+        again. On the third ask he gave up and echoed the option back — one
+        more and the bound would have given up on him. He is not sedentary,
+        and a table that matches one phrase and stops could never say so.
+        """
+        self.assertEqual(
+            gates._find_activity(["Mostly desk with 1 hr walking/yoga/exercise"]),
+            "light",
+        )
+        self.assertEqual(gates._find_activity(["desk job but i run 3x a week"]), "light")
+        # A desk and nothing else is still a desk.
+        for plain in ("Desk most of it", "desk all day", "sitting all day"):
+            with self.subTest(plain=plain):
+                self.assertEqual(gates._find_activity([plain]), "sedentary")
+
+    def test_the_guess_is_conservative(self) -> None:
+        """Light, not moderate. The factor is what the number is built from,
+        and guessing high hands somebody more than their day earns."""
+        self.assertEqual(
+            gates._find_activity(["desk, plus the gym every single day"]), "light"
+        )
