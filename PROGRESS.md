@@ -415,6 +415,38 @@ multiple choice by echoing a choice.
 464 Python tests. **Existing users are untouched** — with no `setup` key the new
 gate is inert, so only new conversations take the counted path.
 
+## Order 21 — 4 Sep 2026, night, the evening review could not read the day
+
+Found in the same log sweep as order 20. At 21:30 a real user's daily review
+fired and the tool behind it refused:
+
+    WARNING [cron_6f50de92d4b6_20260904_213033] agent.tool_executor:
+    Tool ted_day_summary returned error (0.01s):
+    {"success": false, "error": "No WhatsApp user is active"}
+
+Every `ted_*` handler takes the user from `_TURN_CONTEXT`, deliberately, so a
+user id in the model's arguments can never redirect a read or a write. The cron
+branch of `_capture_turn` returned a voice card and never wrote a context. So
+`_cron_reminder_gate` could work out whose evening it was, because it resolves
+the recipient itself, and the tools could not.
+
+The user received an evening review with no day in it. That is the product
+failing at the one moment nobody is watching, and it fails quietly: the recap
+still arrives, so from outside it looks like Ted had nothing to say.
+
+`_remember_cron_turn` now gives a cron run the same turn context a live message
+gets. The key comes from the job's own WhatsApp origin, exactly as the output
+gate resolves it, so this widens nothing: a cron run reaches the user whose job
+fired and nobody else. `_record_turn_arrival` is deliberately not called, since
+advancing the live thread's arrival counter could mark a real in-flight turn
+stale.
+
+A cron session id is unique per run, and nothing prunes `_TURN_CONTEXT`, so the
+registration is bounded at 64 entries. Without that every fired job would leak
+one entry for the life of the gateway.
+
+549 Python tests (5 new), 78 vitest, lint, tsc and the build pass.
+
 ## Order 20 — 4 Sep 2026, night, the check-in time asked twice
 
 Caught live, in Parth Bhatia's thread, while watching the gateway during a repo

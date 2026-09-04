@@ -4803,6 +4803,36 @@ def _turn_is_stale(user_key: str, turn_seq: int) -> bool:
         return _TURN_ARRIVALS.get(user_key, 0) > turn_seq
 
 
+# A cron session id is unique per run ("cron_<job>_<timestamp>"), so unlike a
+# WhatsApp thread it never reuses its key. Nothing prunes `_TURN_CONTEXT`, so
+# registering cron turns without a bound would leak one entry per fired job for
+# the life of the gateway. Keeping the most recent handful is plenty: the entry
+# is read during the run that created it and never again.
+_MAX_CRON_CONTEXTS = 64
+
+
+def _remember_cron_turn(session_id: str, user_key: str, recipient: str) -> None:
+    """Give a cron run the same turn context a live message gets."""
+    with _TURN_LOCK:
+        _TURN_CONTEXT[session_id] = {
+            "history": [],
+            "user_message": "",
+            "user_text": "",
+            # Nothing on the cron path reads this, and `_record_turn_arrival`
+            # is deliberately not called: it would advance the live thread's
+            # arrival counter and could mark a real in-flight turn stale.
+            "turn_seq": 0,
+            "successful_actions": set(),
+            "disclosure_sent": user_key in _DISCLOSURE_SENT_KEYS,
+            "user_key": user_key,
+            "chat_id": recipient,
+            "message_id": "",
+        }
+        overflow = [key for key in _TURN_CONTEXT if key.startswith("cron_")]
+        for key in overflow[:-_MAX_CRON_CONTEXTS]:
+            _TURN_CONTEXT.pop(key, None)
+
+
 def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     # A cron run writes into a real WhatsApp thread but arrives with platform
     # "cron", so it fell through this guard and the voice card never reached
@@ -4819,11 +4849,23 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
         recipient = _cron_whatsapp_recipient(cron_session)
         if not recipient:
             return None
-        return {
-            "context": _voice_card(
-                _user_state_key("whatsapp", recipient, cron_session)
-            )
-        }
+        cron_key = _user_state_key("whatsapp", recipient, cron_session)
+        # Register the turn, or the recap has nothing to report.
+        #
+        # On 4 Sep 2026 the 21:30 review fired and `ted_day_summary` came back
+        # `{"success": false, "error": "No WhatsApp user is active"}`. Every
+        # ted_* handler takes the user from `_TURN_CONTEXT` — deliberately, so
+        # a user id in the model's arguments can never redirect a write — and
+        # this branch returned a voice card without ever writing one. So the
+        # gate could work out whose evening it was, and the tools could not.
+        # The user got an evening review with no day in it, which is the
+        # product failing quietly at the one moment it is unattended.
+        #
+        # The key comes from the job's own WhatsApp origin, exactly as the
+        # output gate resolves it, so this widens nothing: a cron run reaches
+        # the user whose job fired and no one else.
+        _remember_cron_turn(cron_session, cron_key, recipient)
+        return {"context": _voice_card(cron_key)}
     if kwargs.get("platform") != "whatsapp":
         return None
     platform = str(kwargs.get("platform") or "")

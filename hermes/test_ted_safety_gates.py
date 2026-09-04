@@ -7696,3 +7696,79 @@ class TheCheckInTimeIsAskedOnceTest(unittest.TestCase):
         self.assertIsNone(
             gates.review_time_gate("what time should i check in?", "9pm", user_key)
         )
+
+
+class TheEveningReviewCanReadTheDayTest(unittest.TestCase):
+    """4 Sep 2026, 21:30: the review fired and the day was unreachable.
+
+        WARNING [cron_6f50de92d4b6_20260904_213033] agent.tool_executor:
+        Tool ted_day_summary returned error (0.01s):
+        {"success": false, "error": "No WhatsApp user is active"}
+
+    Every ted_* handler takes the user from `_TURN_CONTEXT`, which is what
+    stops a user id in the model's arguments redirecting a write. The cron
+    branch of `_capture_turn` returned a voice card and never wrote a context,
+    so the output gate could work out whose evening it was and the tools could
+    not. The user got an evening review with no day in it.
+    """
+
+    JOB = "cron_6f50de92d4b6_20260904_213033"
+    CHAT = "917014564886@lid"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.JOB, None)
+        self.addCleanup(self._clear)
+
+    def _clear(self) -> None:
+        with gates._TURN_LOCK:
+            for key in [k for k in gates._TURN_CONTEXT if k.startswith("cron_")]:
+                gates._TURN_CONTEXT.pop(key, None)
+
+    def test_the_tools_can_resolve_the_user_the_job_belongs_to(self) -> None:
+        with patch.object(gates, "_cron_whatsapp_recipient", return_value=self.CHAT):
+            gates._capture_turn(platform="cron", session_id=self.JOB)
+        expected = gates._user_state_key("whatsapp", self.CHAT, self.JOB)
+        self.assertEqual(gates._active_user_key(self.JOB, ""), expected)
+        self.assertNotEqual(gates._active_user_key(self.JOB, ""), "")
+
+    def test_a_job_with_no_whatsapp_origin_still_registers_nothing(self) -> None:
+        """No recipient means no user, and guessing one would be worse."""
+        with patch.object(gates, "_cron_whatsapp_recipient", return_value=None):
+            self.assertIsNone(gates._capture_turn(platform="cron", session_id=self.JOB))
+        self.assertEqual(gates._active_user_key(self.JOB, ""), "")
+
+    def test_the_key_comes_from_the_job_not_the_model(self) -> None:
+        """The whole safety property. A cron run reaches one user: its own."""
+        with patch.object(gates, "_cron_whatsapp_recipient", return_value=self.CHAT):
+            gates._capture_turn(platform="cron", session_id=self.JOB)
+        mine = gates._active_user_key(self.JOB, "")
+        someone_else = gates._user_state_key("whatsapp", "919999999999@lid", "")
+        self.assertNotEqual(mine, someone_else)
+        self.assertEqual(mine, gates._user_state_key("whatsapp", self.CHAT, self.JOB))
+
+    def test_cron_turns_do_not_leak_forever(self) -> None:
+        """A cron session id is unique per run, so an unbounded dict grows."""
+        with patch.object(gates, "_cron_whatsapp_recipient", return_value=self.CHAT):
+            for n in range(gates._MAX_CRON_CONTEXTS + 25):
+                gates._capture_turn(
+                    platform="cron", session_id=f"cron_job{n:04d}_20260904_213033"
+                )
+        with gates._TURN_LOCK:
+            held = [k for k in gates._TURN_CONTEXT if k.startswith("cron_")]
+        self.assertLessEqual(len(held), gates._MAX_CRON_CONTEXTS)
+        # The newest run is the one still needed, so it must be the survivor.
+        self.assertIn(
+            f"cron_job{gates._MAX_CRON_CONTEXTS + 24:04d}_20260904_213033", held
+        )
+
+    def test_a_cron_run_does_not_age_a_live_turn(self) -> None:
+        """_record_turn_arrival is deliberately not called on this path."""
+        live = gates._user_state_key("whatsapp", self.CHAT, "")
+        before = gates._record_turn_arrival(live)
+        with patch.object(gates, "_cron_whatsapp_recipient", return_value=self.CHAT):
+            gates._capture_turn(platform="cron", session_id=self.JOB)
+        after = gates._record_turn_arrival(live)
+        self.assertEqual(
+            after, before + 1, "the cron run advanced the live arrival counter"
+        )
