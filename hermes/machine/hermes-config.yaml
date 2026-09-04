@@ -80,7 +80,16 @@ prompt_caching:
   cache_ttl: 5m
 display:
   compact: false
-  busy_input_mode: interrupt
+  # One phone number, one turn at a time, in the order the messages arrived.
+  #
+  # `interrupt` aborts the turn already in flight when a second message lands,
+  # which is what Ted ran on 3 Sep while a tester sent five messages in eighty
+  # seconds. `queue` leaves the running turn alone and cascades the follow-up
+  # after it, so a reply written before an answer arrived can never be
+  # delivered after it. Rapid follow-ups inside 0.35s merge into one turn,
+  # which is also the right answer: somebody typing in bursts is making one
+  # point, and Ted should read all of it before replying once.
+  busy_input_mode: queue
   bell_on_complete: false
   show_reasoning: false
   memory_notifications: false
