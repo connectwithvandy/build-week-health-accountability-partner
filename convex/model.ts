@@ -217,6 +217,13 @@ export type DaySummary = {
   meals: number;
   calories: number;
   proteinGrams: number;
+  // Summed from 4 Sep 2026. They were stored per meal from the start and
+  // thrown away at the day boundary, so the Daily Overview could say what
+  // the plate held and then go quiet on what the day held. Nothing about
+  // storage changed here; the totals simply stopped being discarded.
+  carbohydrateGrams: number;
+  fatGrams: number;
+  fiberGrams: number;
   waterMl: number;
   steps: number;
   workoutMinutes: number;
@@ -252,6 +259,9 @@ export function summariseDay(
     meals: 0,
     calories: 0,
     proteinGrams: 0,
+    carbohydrateGrams: 0,
+    fatGrams: 0,
+    fiberGrams: 0,
     waterMl: 0,
     steps: 0,
     workoutMinutes: 0,
@@ -266,6 +276,9 @@ export function summariseDay(
       summary.meals += 1;
       summary.calories += entry.meal.calories;
       summary.proteinGrams += entry.meal.proteinGrams;
+      summary.carbohydrateGrams += entry.meal.carbohydrateGrams ?? 0;
+      summary.fatGrams += entry.meal.fatGrams ?? 0;
+      summary.fiberGrams += entry.meal.fiberGrams ?? 0;
     }
     if (entry.entryType === "water" && typeof entry.waterMl === "number") {
       summary.waterMl += entry.waterMl;

@@ -151,6 +151,46 @@ describe("Day summary", () => {
     fiberGrams: 0,
   });
 
+  it("sums carbs, fat and fibre for the day, not only calories and protein", () => {
+    // Stored per meal from the start and thrown away at the day boundary, so
+    // the Daily Overview could say what one plate held and then go quiet on
+    // what the day held. Nothing about storage changed; the totals simply
+    // stopped being discarded.
+    const plate = (
+      calories: number,
+      proteinGrams: number,
+      carbohydrateGrams: number,
+      fatGrams: number,
+      fiberGrams: number,
+    ) => ({
+      items: ["something"],
+      calories,
+      proteinGrams,
+      carbohydrateGrams,
+      fatGrams,
+      fiberGrams,
+    });
+    const summary = summariseDay("2026-09-02", [
+      entry({ meal: plate(380, 19, 40, 12, 6) }),
+      entry({ meal: plate(450, 22, 55, 14, 8) }),
+    ]);
+    expect(summary.calories).toBe(830);
+    expect(summary.proteinGrams).toBe(41);
+    expect(summary.carbohydrateGrams).toBe(95);
+    expect(summary.fatGrams).toBe(26);
+    expect(summary.fiberGrams).toBe(14);
+  });
+
+  it("leaves a corrected meal's macros out of the day as well", () => {
+    const summary = summariseDay("2026-09-02", [
+      entry({ state: "corrected", meal: meal(520, 31) }),
+      entry({ meal: meal(380, 19) }),
+    ]);
+    expect(summary.carbohydrateGrams).toBe(0);
+    expect(summary.fatGrams).toBe(0);
+    expect(summary.fiberGrams).toBe(0);
+  });
+
   it("adds up the day the way Ted reads it back", () => {
     const summary = summariseDay("2026-09-02", [
       entry({ meal: meal(380, 19) }),
