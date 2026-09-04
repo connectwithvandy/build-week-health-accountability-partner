@@ -49,9 +49,9 @@ def reset_user(user_key: str) -> None:
 # gets after giving their name, and it should be readable as one here.
 VANDY_DISCLOSURE = (
     f"{DISCLOSURE_MESSAGE}\n\n"
-    "right Vandy, before i’m any use to you, quick five questions to get "
+    "right Vandy, before i’m any use to you, quick six questions to get "
     "your calorie number. one minute tops, pakka promise \U0001f91e\n\n"
-    "*1/5* how old are you? beta's 18+"
+    "*1/6* how old are you? beta's 18+"
 )
 
 
@@ -3270,7 +3270,8 @@ class GoldenPathTest(unittest.TestCase):
 
         # 4. All five in, and the read-back comes before the number. This is
         #    the step that would have caught Pallavi's height.
-        summary = self.turn("desk most of the day", "great, here's your target")
+        self.turn("desk most of the day", "great, here's your target")
+        summary = self.turn("lose fat", "noted")
         self.assertIn("here's what i've got:", summary)
         self.assertIn("33", summary)
         self.assertIn("170 cm", summary)
@@ -3281,10 +3282,14 @@ class GoldenPathTest(unittest.TestCase):
         # 5. She agrees, and the number lands — maintenance, never a cut, and
         #    the goal question follows it now rather than preceding it.
         payoff = self.turn("yep", "here you go")
-        self.assertIn("all five", payoff)
+        self.assertIn("all six", payoff)
         self.assertIn("1,630", payoff)
         self.assertIn("maintenance", payoff)
-        self.assertIn(GOAL_QUESTION, payoff)
+        # The goal is question 6/6 now, so it is answered before here. The
+        # payoff speaks to it and closes with the check-in question instead.
+        self.assertNotIn(GOAL_QUESTION, payoff)
+        self.assertIn("losing", payoff)
+        self.assertIn(gates.REVIEW_TIME_QUESTION, payoff)
         self.assertEqual(gates._setup_state(self.user_key), "done")
 
         # 6. The goal, then the check-in time. Ted's own words survive again
@@ -3480,7 +3485,7 @@ class ProseMatchingHardeningTest(unittest.TestCase):
             ]
             reply = consent_gate(history, "nice to meet you", user_key)
             self.assertIn(gates.DISCLOSURE_MESSAGE, reply or "")
-            self.assertIn("1/5", reply or "")
+            self.assertIn("1/6", reply or "")
         finally:
             gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
@@ -6675,7 +6680,7 @@ class OnboardingAdvancesOnceTest(unittest.TestCase):
             f"{gates._setup_question(0)}",
         )
         self.assertEqual(second.count(gates.PRIVACY_URL), 1)
-        self.assertEqual(second.count("1/5"), 1)
+        self.assertEqual(second.count("1/6"), 1)
         gates._mark_disclosure_sent(self.USER_KEY)
         third = self.turn("more energy", "good one, what time suits for a check in?")
         self.assertNotIn(gates.PRIVACY_URL, third)
@@ -6807,9 +6812,15 @@ class TheCountedFiveTest(unittest.TestCase):
         return reply
 
     def start(self) -> str:
-        """Through the opener and the name, to the message carrying 1/5."""
+        """Through the opener and the name, to the message carrying 1/6."""
         self.turn("hey", "hello!")
         return self.turn("Vandy", "nice to meet you")
+
+    def through_setup(self, activity: str = "desk most of it",
+                      goal: str = "lose fat") -> str:
+        """Answer 5/6 and 6/6, and return the read-back that follows them."""
+        self.turn(activity)
+        return self.turn(goal)
 
     def test_five_questions_means_five(self) -> None:
         """The count is a promise, and these are the five that keep it.
@@ -6819,15 +6830,15 @@ class TheCountedFiveTest(unittest.TestCase):
         would be a lie, so the city and the check-in time are asked later,
         when the first reminder is actually being set.
         """
-        self.assertEqual(len(gates.SETUP_QUESTIONS), 5)
+        self.assertEqual(len(gates.SETUP_QUESTIONS), 6)
         self.assertEqual(
             [field for field, _ in gates.SETUP_QUESTIONS],
-            ["age", "height_cm", "weight_kg", "sex", "activity"],
+            ["age", "height_cm", "weight_kg", "sex", "activity", "goal"],
         )
-        for index in range(5):
+        for index in range(6):
             with self.subTest(index=index):
                 self.assertTrue(
-                    gates._setup_question(index).startswith(f"*{index + 1}/5*")
+                    gates._setup_question(index).startswith(f"*{index + 1}/6*")
                 )
 
     def test_the_name_leads_straight_into_question_one(self) -> None:
@@ -6883,14 +6894,18 @@ class TheCountedFiveTest(unittest.TestCase):
         self.turn("170cm")
         self.turn("62kg")
         self.turn("female")
-        summary = self.turn("desk most of it")
+        summary = self.through_setup()
         self.assertIn("here's what i've got:", summary)
         self.assertIn("170 cm", summary)
         self.assertNotIn("1,630", summary)
         payoff = self.turn("yep")
         self.assertIn("1,630", payoff)
         self.assertIn("maintenance", payoff)
-        self.assertIn(GOAL_QUESTION, payoff)
+        # The goal is question 6/6 now, so it is answered before here. The
+        # payoff speaks to it and closes with the check-in question instead.
+        self.assertNotIn(GOAL_QUESTION, payoff)
+        self.assertIn("losing", payoff)
+        self.assertIn(gates.REVIEW_TIME_QUESTION, payoff)
 
     def test_the_number_is_maintenance_and_never_a_cut(self) -> None:
         """The one thing not to take from Rex Nutribot.
@@ -6953,7 +6968,7 @@ class TheCountedFiveTest(unittest.TestCase):
         # recognisable to somebody who thinks in pounds.
         self.turn("yes")
         self.turn("female")
-        summary = self.turn("desk most of it")
+        summary = self.through_setup()
         self.assertIn("you said 154 lbs", summary)
 
     def test_ted_stops_asking_after_three_tries(self) -> None:
@@ -6997,7 +7012,7 @@ class TheCountedFiveTest(unittest.TestCase):
         self.turn("170cm")
         self.turn("62kg")
         self.turn("female")
-        self.turn("desk most of it")  # summary, first showing
+        self.through_setup()  # summary, first showing
         # Neither a recognised yes nor a correction, three times over.
         seen = [self.turn("hmm") for _ in range(3)]
         self.assertIn("here's what i've got:", seen[0])
@@ -7011,6 +7026,7 @@ class TheCountedFiveTest(unittest.TestCase):
         self.turn("62kg")
         self.turn("female")
         self.turn("desk most of it")
+        self.turn("lose fat")
         self.turn("yep")
         self.assertEqual(gates._setup_state(self.USER_KEY), "done")
         # Ted's own words survive again now the five are done.
@@ -7081,7 +7097,7 @@ class TheCountedFiveTest(unittest.TestCase):
     def test_an_answer_belongs_to_the_question_ted_asked(self) -> None:
         """Found live, on a real user, twelve minutes after going live.
 
-        Ted asked "*1/5* how old are you?". Hermes wrote the *model's* text to
+        Ted asked "*1/6* how old are you?". Hermes wrote the *model's* text to
         the transcript instead — and the model, which has not been told the
         gate is asking anything, ran its own onboarding underneath: "and your
         weight?". He answered "33". The bare number anchored to the model's
@@ -7175,7 +7191,7 @@ class TheCountedFiveTest(unittest.TestCase):
         self.turn("170cm")
         self.turn("62kg")
         self.turn("female")
-        return self.turn("desk most of it")
+        return self.through_setup()
 
     def test_saying_it_is_wrong_asks_which_bit(self) -> None:
         """Amit sent exactly "its wrong" on 4 Sep and got the same four lines
@@ -7295,7 +7311,7 @@ class TheCountedFiveTest(unittest.TestCase):
         """"5 11" and "5 2”" are heights once Ted knows he asked for one.
 
         Refused everywhere else, and rightly: two numbers side by side could
-        be a date, a weight, a time. Under "*2/5* how tall are you?" they are
+        be a date, a weight, a time. Under "*2/6* how tall are you?" they are
         nothing else. Two real users typed exactly these on 4 Sep and were
         asked again; one of them ran out of asks over it.
         """
@@ -7358,7 +7374,7 @@ class TheCountedFiveTest(unittest.TestCase):
     def test_getting_on_with_it_actually_gets_on_with_it(self) -> None:
         self._to_summary()
         payoff = self.turn("you can go ahead")
-        self.assertIn("all five", payoff)
+        self.assertIn("all six", payoff)
         self.assertIn("1,630", payoff)
         self.assertEqual(gates._setup_state(self.USER_KEY), "done")
 
@@ -7772,3 +7788,149 @@ class TheEveningReviewCanReadTheDayTest(unittest.TestCase):
         self.assertEqual(
             after, before + 1, "the cron run advanced the live arrival counter"
         )
+
+
+class TheSameReminderTwiceTest(unittest.TestCase):
+    """4 Sep 2026: Vandy got the omega 3 ping twice.
+
+    `Omega3 reminder` and `omega3 reminder` were two separate jobs. So were
+    CoQ10, B12, iron and vitamin D. Five supplements, ten jobs, four pairs
+    firing at exactly the same minute; the run log has one pair 6ms apart.
+
+    The model was not misbehaving. `ted_set_reminder` carries a time and
+    nothing else, so a weekday-only reminder can only be built as a free-form
+    job. What was missing was any check that it had already been built.
+    """
+
+    CHAT = "202258616737857@lid"
+    SESSION = "session-dupe"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "user_key": "dupe-user", "chat_id": self.CHAT,
+            }
+        self.addCleanup(self._clear)
+
+    def _clear(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def _guard(self, name: str, existing: list[dict]):
+        with patch.object(gates, "_load_cron_jobs", return_value=existing):
+            return gates._cron_scope_guard(
+                tool_name="cronjob",
+                session_id=self.SESSION,
+                args={"action": "create", "name": name, "schedule": "45 8 * * 1-5"},
+            )
+
+    def _job(self, name: str) -> dict:
+        return {"id": "abc123", "name": name, "deliver": f"whatsapp:{self.CHAT}"}
+
+    def test_the_exact_pair_that_double_pinged(self) -> None:
+        blocked = self._guard("omega3 reminder", [self._job("Omega3 reminder")])
+        self.assertIsNotNone(blocked, "the second omega3 job was allowed again")
+        self.assertEqual(blocked["action"], "block")
+        self.assertEqual(blocked["message"], gates.CRON_ALREADY_SET)
+
+    def test_every_supplement_pair_from_that_night(self) -> None:
+        for existing, attempted in (
+            ("CoQ10 reminder", "coq10 reminder"),
+            ("B12 reminder", "b12 reminder"),
+            ("Iron reminder", "iron reminder"),
+            ("Vitamin D reminder", "vitamin d reminder"),
+        ):
+            with self.subTest(attempted=attempted):
+                self.assertIsNotNone(self._guard(attempted, [self._job(existing)]))
+
+    def test_spacing_does_not_make_a_new_reminder(self) -> None:
+        self.assertIsNotNone(self._guard("  omega3   reminder ", [self._job("Omega3 reminder")]))
+
+    def test_a_genuinely_different_reminder_still_gets_through(self) -> None:
+        """The check must stay dumb. These are not the same thing."""
+        for existing, attempted in (
+            ("vitamin d reminder", "vitamin d3 reminder"),
+            ("omega3 reminder", "omega 3 evening reminder"),
+            ("iron reminder", "creatine reminder"),
+        ):
+            with self.subTest(attempted=attempted):
+                self.assertIsNone(
+                    self._guard(attempted, [self._job(existing)]),
+                    f"{attempted!r} was wrongly treated as {existing!r}",
+                )
+
+    def test_someone_elses_identical_reminder_is_not_mine(self) -> None:
+        """Two users may both take omega 3. Only this chat's jobs count."""
+        theirs = {"id": "z", "name": "omega3 reminder", "deliver": "whatsapp:999@lid"}
+        self.assertIsNone(self._guard("omega3 reminder", [theirs]))
+
+    def test_the_first_one_is_always_allowed(self) -> None:
+        self.assertIsNone(self._guard("omega3 reminder", []))
+
+
+class TheCountIsAPromiseTest(unittest.TestCase):
+    """Ted says a number out loud before asking that many questions.
+
+    The intro is written out ("quick six questions") because SETUP_QUESTIONS is
+    defined lower in the module than SETUP_INTRO, so it cannot interpolate the
+    real count. That makes this test the only thing holding the promise to the
+    questions. Add a seventh question without touching the intro and Ted starts
+    lying in his first message.
+    """
+
+    def test_the_promise_and_the_count_agree(self) -> None:
+        self.assertIn(gates.SETUP_COUNT_WORD, gates.SETUP_INTRO)
+        self.assertEqual(gates.SETUP_COUNT, len(gates.SETUP_QUESTIONS))
+
+    def test_every_question_carries_the_same_denominator(self) -> None:
+        for index in range(gates.SETUP_COUNT):
+            with self.subTest(index=index):
+                self.assertIn(
+                    f"/{gates.SETUP_COUNT}*", gates._setup_question(index)
+                )
+
+    def test_no_other_count_is_left_lying_around(self) -> None:
+        """The old "five" must not survive anywhere a user can read it."""
+        for label, text in (
+            ("intro", gates.SETUP_INTRO),
+            ("1/6", gates._setup_question(0)),
+        ):
+            with self.subTest(label):
+                self.assertNotIn("five", text.lower())
+                self.assertNotIn("/5", text)
+
+
+class AMealIsNotACheckInTimeTest(unittest.TestCase):
+    """A bare number is only a time when it is the whole answer.
+
+    Caught by an existing test, not by a new one. With the check-in question
+    outstanding, "3 rotis and dal" was read as 3pm: a meal would have silently
+    become someone's review time and nothing would ever have said so. The
+    reply that carries a time says so, with a colon or an am/pm marker, or it
+    is the number and nothing else.
+    """
+
+    def test_the_meal_that_became_a_time(self) -> None:
+        self.assertIsNone(gates._find_review_time("3 rotis and dal"))
+
+    def test_things_people_send_that_are_not_times(self) -> None:
+        for written in (
+            "3 rotis and dal", "i ate 2 eggs", "walked 5 km", "2 glasses of water",
+            "60 kg today", "did 20 pushups", "okay", "sounds good",
+        ):
+            with self.subTest(written=written):
+                self.assertIsNone(gates._find_review_time(written))
+
+    def test_things_people_send_that_are_times(self) -> None:
+        for written, expected in (
+            ("9", "21:00"), ("9pm", "21:00"), ("7 pm", "19:00"),
+            ("around 9", "21:00"), ("9ish", "21:00"), ("at 8", "20:00"),
+            ("10:30 pm", "22:30"), ("21:00", "21:00"), ("9 please", "21:00"),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_review_time(written), expected)
+
+    def test_a_time_inside_a_sentence_still_counts_when_it_says_so(self) -> None:
+        """An am/pm marker is unambiguous wherever it sits."""
+        self.assertEqual(gates._find_review_time("let's do 9pm please"), "21:00")
+        self.assertEqual(gates._find_review_time("can we say 10:30 pm"), "22:30")

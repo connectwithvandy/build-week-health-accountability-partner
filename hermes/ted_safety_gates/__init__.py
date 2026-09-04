@@ -549,6 +549,7 @@ def _profile_summary(profile: "CalorieProfile", user_key: str) -> str:
             f"{profile.age} · {profile.sex}",
             f"{profile.height_cm:.0f} cm · {weight}",
             _ACTIVITY_WORDS.get(profile.activity or "", profile.activity or ""),
+            _GOAL_WORDS_BACK.get(profile.goal or "", ""),
             "",
             "anything off? if not i'll do the maths.",
         ]
@@ -1225,6 +1226,9 @@ class CalorieProfile:
     weight_kg: float | None = None
     sex: str | None = None
     activity: str | None = None
+    # Not a Mifflin-St Jeor input. It shapes what Ted says about the number
+    # rather than the number itself, which stays maintenance either way.
+    goal: str | None = None
 
 
 def _strip_memory_context(text: str) -> str:
@@ -1578,8 +1582,12 @@ def _given_name(
     return None
 
 
+# The count here and the count on every question have to agree, and both have
+# to be true. Written out rather than derived because SETUP_QUESTIONS is
+# defined further down this file; `test_the_promise_and_the_count_agree`
+# is what actually holds the two together.
 SETUP_INTRO = (
-    "before i’m any use to you, quick five questions to get your calorie "
+    "before i’m any use to you, quick six questions to get your calorie "
     "number. one minute tops, pakka promise \U0001f91e"
 )
 
@@ -2535,12 +2543,22 @@ UNDER_18_REFUSAL = (
 )
 
 
-# The counted five. Order is fixed and the count is a promise: these are
-# exactly the five Mifflin–St Jeor inputs, which is what makes "five
-# questions" literally true. A sixth would be a lie, so the city and the
-# check-in time wait until the first reminder is actually being set.
+# The counted six. Order is fixed and the count is a promise, so the promise
+# is six and the sixth is real: five Mifflin–St Jeor inputs and the goal.
 #
-# 1/5 stays plain and unfunny while everything around it is cheeky. The age
+# The goal used to be asked after the number, in Ted's own open words, and it
+# was the single biggest place people stopped: six of the fifteen unfinished
+# onboardings on 4 Sep 2026 sat on "what's one thing you want to change?", and
+# four of those six never sent another message. It was asked after they had
+# already been handed the thing they came for, it carried no count, and what it
+# stored was read by nothing. Counted and asked before the number, it is a step
+# on the way to the payoff instead of an afterthought behind it.
+#
+# The city and the check-in time still wait until a reminder is actually being
+# set. Those are settings, not the profile, and adding them here would make the
+# count a lie again.
+#
+# 1/6 stays plain and unfunny while everything around it is cheeky. The age
 # answer is the only thing that makes the under-18 refusal reachable, so a
 # joke inviting someone to lie there is the one joke that costs something.
 SETUP_QUESTIONS: tuple[tuple[str, str], ...] = (
@@ -2553,17 +2571,22 @@ SETUP_QUESTIONS: tuple[tuple[str, str], ...] = (
         "how active is a normal day? desk most of it, on your feet, or "
         "training regularly?",
     ),
+    ("goal", "last one. are we losing, gaining, or holding steady?"),
 )
+SETUP_COUNT = len(SETUP_QUESTIONS)
+# Ted writes the number out. Derived from the count so the two can never
+# disagree, which is the whole reason the count is worth promising.
+SETUP_COUNT_WORD = {5: "five", 6: "six", 7: "seven"}[SETUP_COUNT]
 
 
 def _setup_question(index: int) -> str:
-    """Question `index` of five, carrying its own count."""
+    """Question `index` of six, carrying its own count."""
     _, question = SETUP_QUESTIONS[index]
-    return f"*{index + 1}/5* {question}"
+    return f"*{index + 1}/{SETUP_COUNT}* {question}"
 
 
 def _next_setup_field(profile: CalorieProfile) -> tuple[int, str] | None:
-    """The first of the five still outstanding, or None when all are in."""
+    """The first of the six still outstanding, or None when all are in."""
     for index, (field, _) in enumerate(SETUP_QUESTIONS):
         if getattr(profile, field) is None:
             return index, field
@@ -2589,6 +2612,56 @@ def _bare_feet_inches(written: str) -> float | None:
         return None
     inches = int(match.group(1)) * 12 + int(match.group(2))
     return round(inches * 2.54, 2)
+
+
+# What people say when asked "losing, gaining, or holding steady?".
+#
+# Read as a shape, not matched against the three offered words. On 4 Sep a real
+# user answered 5/6 with a word that was not one of the three labels, and the
+# same will happen here: "lose fat", "cut", "reduce", "slim down", "get lean"
+# are all the same answer. Ordered deliberately, loss before gain, because
+# "lose fat and gain muscle" is a loss answer in every practical sense and the
+# first match wins.
+_GOAL_WORDS: tuple[tuple[str, str], ...] = (
+    (
+        "loseWeight",
+        r"lose|losing|loss|cut(?:ting)?|reduce|reducing|slim|lean(?:er)?|"
+        r"drop|shed|trim|burn|deficit|thinner|smaller",
+    ),
+    (
+        "gainWeight",
+        r"gain|gaining|bulk|put\s+on|putting\s+on|build|heavier|bigger|"
+        r"mass|grow",
+    ),
+    (
+        "maintainWeight",
+        r"maintain|maintaining|hold|holding|steady|stay|same|keep|"
+        r"where\s+i\s+am|as\s+i\s+am|nothing|neither",
+    ),
+)
+_GOAL_PATTERNS = tuple(
+    (goal, re.compile(rf"\b(?:{words})", re.IGNORECASE)) for goal, words in _GOAL_WORDS
+)
+
+
+def _find_goal(written: str) -> str | None:
+    """One of the stored goals, or None when the reply does not carry one."""
+    text = (written or "").strip()
+    if not text:
+        return None
+    for goal, pattern in _GOAL_PATTERNS:
+        if pattern.search(text):
+            return goal
+    return None
+
+
+# What Ted calls each goal back. Never "deficit" and never a target: the number
+# that follows is maintenance whichever of these it is.
+_GOAL_WORDS_BACK = {
+    "loseWeight": "losing",
+    "gainWeight": "gaining",
+    "maintainWeight": "holding steady",
+}
 
 
 def _setup_answer(field: str, written: str) -> Any:
@@ -2623,6 +2696,8 @@ def _setup_answer(field: str, written: str) -> Any:
         return _correction_value(field, written)
     if field == "sex":
         return _find_sex([written])
+    if field == "goal":
+        return _find_goal(written)
     return _find_activity([written])
 
 
@@ -2651,19 +2726,21 @@ def _setup_profile(
     record = _onboarding(user_key)
     sex = record.get("sex")
     activity = record.get("activity")
+    goal = record.get("goal")
     profile = CalorieProfile(
         age=_stored_age(user_key) or transcript_age,
         height_cm=_stored_measurement(user_key, "height_cm"),
         weight_kg=_stored_measurement(user_key, "weight_kg"),
         sex=sex if isinstance(sex, str) else None,
         activity=activity if isinstance(activity, str) else None,
+        goal=goal if isinstance(goal, str) else None,
     )
     if asked is None or getattr(profile, asked) is not None:
         return profile
     answer = _setup_answer(asked, written)
     if answer is None:
         return profile
-    if asked in ("sex", "activity"):
+    if asked in ("sex", "activity", "goal"):
         # Not measurements, so they have no pending/confirm machinery. They
         # still have to persist, or the next turn re-reads them from a
         # transcript this function has just stopped trusting.
@@ -2811,12 +2888,29 @@ def _setup_payoff(profile: CalorieProfile) -> str:
     anybody. Maintenance is the only number that goes out.
     """
     estimate = _estimated_maintenance(profile)
+    # One line about their goal, and it is the only thing the goal changes
+    # about the number. SCOPING.md §9: Ted "does not automatically prescribe a
+    # calorie deficit. The user must provide or choose any weight-loss target."
+    # So a goal of losing gets told which direction to lean and nothing more.
+    # The one reply a user has ever reported as wrong was "eat 900 calories a
+    # day", and it is this sentence that would be the place to make that
+    # mistake again.
+    lean = {
+        "loseWeight": (
+            " you're after losing, so you'll want to sit a little under it. "
+            "no crash numbers from me, we'll find yours from what you "
+            "actually eat."
+        ),
+        "gainWeight": (
+            " you're after gaining, so you'll want to sit a little over it."
+        ),
+        "maintainWeight": " which is exactly what you're after.",
+    }.get(profile.goal or "", "")
     return (
-        "got it, all five ✅\n\n"
+        f"got it, all {SETUP_COUNT_WORD} ✅\n\n"
         f"roughly *{estimate:,} kcal* a day for you. that's your "
-        "*maintenance*, the number where nothing moves. it's saved now, and "
-        "it's a safe one for us both to track against.\n\n"
-        f"{GOAL_QUESTION}"
+        f"*maintenance*, the number where nothing moves.{lean}\n\n"
+        f"{REVIEW_TIME_QUESTION}"
     )
 
 
@@ -3127,6 +3221,10 @@ def setup_gate(
     # the payoff, so the card can never quietly disagree with the message that
     # introduced it.
     _update_onboarding(user_key, maintenance_kcal=_estimated_maintenance(profile))
+    # The payoff carries the check-in question, so the next reply is its
+    # answer. Recorded here for the same reason the close gate records it:
+    # a question nothing is listening for is how it came to be asked twice.
+    _update_onboarding(user_key, review_state="asking")
     LOGGER.info("ted_setup_complete user_key=%s", user_key)
     return _setup_payoff(profile)
 
@@ -4374,13 +4472,30 @@ _MODEL_REVIEW_TIME_ASK = re.compile(
 # genuinely ambiguous is refused rather than guessed: a bare "12" is midday to
 # the parser and midnight to the person, and the whole file's rule is to ask
 # again rather than store a value nobody confirmed.
+# A number that says "time" on its own can be found anywhere in the reply. A
+# bare number cannot, and the difference is not fussiness.
+#
+# "3 rotis and dal" arrived while the check-in question was outstanding and was
+# read as 3pm: a meal would have silently become someone's review time, and
+# nothing would ever have said so. So a bare hour has to be the whole message,
+# give or take a hedge, exactly the way `_BARE_FEET_INCHES` is anchored.
 _REVIEW_TIME_PATTERNS = (
-    # 9:30pm, 10.30 pm, 21:00
-    re.compile(r"\b(?P<h>\d{1,2})[:.](?P<m>[0-5]\d)\s*(?P<ampm>a\.?m\.?|p\.?m\.?)?", re.IGNORECASE),
-    # 9pm, 10 p.m., 9p
-    re.compile(r"\b(?P<h>\d{1,2})\s*(?P<ampm>a\.?m\.?|p\.?m\.?|a\b|p\b)", re.IGNORECASE),
-    # a bare hour, last: "9", "around 9", "9ish"
-    re.compile(r"\b(?P<h>\d{1,2})(?:ish)?\b", re.IGNORECASE),
+    # 9:30pm, 10.30 pm, 21:00 — a colon is unambiguous, so search anywhere.
+    re.compile(
+        r"\b(?P<h>\d{1,2})[:.](?P<m>[0-5]\d)\s*(?P<ampm>a\.?m\.?|p\.?m\.?)?",
+        re.IGNORECASE,
+    ),
+    # 9pm, 10 p.m. — an am/pm marker is unambiguous too.
+    re.compile(
+        r"\b(?P<h>\d{1,2})\s*(?P<ampm>a\.?m\.?|p\.?m\.?)", re.IGNORECASE
+    ),
+)
+
+# A bare hour, and only when it is the entire answer: "9", "around 9", "9ish".
+_BARE_HOUR = re.compile(
+    r"^\s*(?:at\s+|around\s+|about\s+|approx\.?\s*|~\s*|maybe\s+)?"
+    r"(?P<h>\d{1,2})(?:ish)?\s*(?:please|pls|thanks|ok|okay)?\s*[.!]?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -4389,8 +4504,12 @@ def _find_review_time(text: str) -> str | None:
     written = (text or "").strip()
     if not written:
         return None
-    for pattern in _REVIEW_TIME_PATTERNS:
-        match = pattern.search(written)
+    for pattern in (*_REVIEW_TIME_PATTERNS, _BARE_HOUR):
+        match = (
+            pattern.match(written)
+            if pattern is _BARE_HOUR
+            else pattern.search(written)
+        )
         if not match:
             continue
         hour = int(match.group("h"))
@@ -5769,6 +5888,9 @@ BREAK_OFFER = (
 
 CRON_NOT_YOURS = "that reminder isn't one of yours, so i can't touch it."
 CRON_DELIVER_ELSEWHERE = "i can only set reminders that come back to this chat."
+CRON_ALREADY_SET = (
+    "you've already got that one. want me to change the time instead?"
+)
 
 # Actions that name an existing job. `create` is handled separately and `list`
 # is filtered after the fact, because a blocked list would break Ted's own
@@ -5783,6 +5905,15 @@ def _whatsapp_chat_for_session(session_id: str) -> str | None:
     if not isinstance(context, dict):
         return None
     return str(context.get("chat_id") or "") or None
+
+
+def _reminder_name_key(name: str) -> str:
+    """A reminder name reduced to what a person would call the same thing.
+
+    Case and spacing only. Nothing cleverer: "vitamin d" and "vitamin d3" are
+    genuinely different reminders and must stay that way.
+    """
+    return " ".join((name or "").lower().split())
 
 
 def _cron_scope_guard(**kwargs: Any) -> dict[str, str] | None:
@@ -5807,6 +5938,39 @@ def _cron_scope_guard(**kwargs: Any) -> dict[str, str] | None:
                 "ted_cron_deliver_blocked session=%s deliver=%s", session_id, deliver
             )
             return {"action": "block", "message": CRON_DELIVER_ELSEWHERE}
+
+        # The same reminder, twice, because the name was capitalised differently.
+        #
+        # On 4 Sep 2026 Vandy was pinged twice for omega 3. `Omega3 reminder`
+        # and `omega3 reminder` were two separate jobs, and so were CoQ10, B12,
+        # iron and vitamin D: five supplements, ten jobs, four of the pairs
+        # firing at exactly the same minute. The run log has the pair 6ms apart.
+        #
+        # The model is not misbehaving by creating these. `ted_set_reminder`
+        # carries a time and nothing else, so a weekday-only or day-of-month
+        # reminder can only be built as a free-form job — this tool is the only
+        # route to the thing the user asked for. What it lacks is any memory of
+        # having already done it, and a model that cannot see its own past job
+        # names will happily make a second one. Nothing downstream dedupes:
+        # `_sync_reminder_jobs` only manages `ted:<key>:<id>` names, so a
+        # free-form pair is invisible to it.
+        #
+        # So this compares names the way a person would, ignoring case and
+        # spacing, and only within this chat's own jobs.
+        wanted_name = _reminder_name_key(str(args.get("name") or ""))
+        if wanted_name:
+            for job in _load_cron_jobs():
+                if _cron_job_chat_id(job) != caller:
+                    continue
+                if _reminder_name_key(str(job.get("name") or "")) != wanted_name:
+                    continue
+                LOGGER.info(
+                    "ted_cron_duplicate_blocked session=%s name=%s existing=%s",
+                    session_id,
+                    args.get("name"),
+                    job.get("id"),
+                )
+                return {"action": "block", "message": CRON_ALREADY_SET}
         return None
 
     if action not in _CRON_JOB_ACTIONS:
