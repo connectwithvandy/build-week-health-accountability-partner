@@ -2457,6 +2457,75 @@ def _maintenance_or_target_flow(user_message: str, response_text: str) -> bool:
     return any(term in joined for term in _TARGET_FLOW_TERMS)
 
 
+# _TARGET_FLOW_TERMS above is a closed vocabulary, and on 4 Sep 2026 it cost a
+# real user a deficit. Ted wrote "something like 1300 to 1400 kcal a day is a
+# sensible target". "kcal a day" is not the listed "calories a day", "sensible
+# target" is not the listed "calorie target", and no weight loss word is in the
+# list at all. So target_flow was False, calorie_gate returned None before any
+# rule could look at the sentence, and the model's own number went out intact.
+#
+# The lesson is the one this file keeps relearning: a gate that reads the
+# model's prose for a phrase it knows will always be one phrasing behind. These
+# two read shape instead. A daily calorie figure, or any figure offered as
+# something to aim at, is the gate's business whatever words wrapped it.
+# Proximity is the whole point. A first attempt matched a calorie figure
+# anywhere and the word "target" anywhere, and it broke a real logged-meal
+# reply: "420 cal and 20g protein logged, no target set yet" reports a plate
+# and offers to set a target, states neither. The framing has to attach to the
+# number, the way it does when somebody is actually being handed one.
+_TARGET_FIGURE = re.compile(
+    # "1300 kcal a day", "1,400 calories per day", "1800 a day"
+    r"\b\d[\d,.]*\s*(?:k?cals?|calories?)?\s*(?:a|per|each)\s+day\b"
+    # "aim for 1300", "stick to 1,400 kcal", "eat around 1300", "cap of 1500"
+    r"|\b(?:aim(?:ing)?\s+for|stick\s+to|keep\s+it\s+(?:to|under|below)"
+    r"|eat\s+(?:around|about|roughly|only|just)|budget\s+of|allowance\s+of"
+    r"|cap\s+of|target\s+of)\W{0,12}\d[\d,.]*"
+    # "1300 kcal target", "1500 calorie budget"
+    r"|\b\d[\d,.]*\s*(?:k?cals?|calories?|calorie)\s+(?:target|budget|allowance|cap)\b",
+    re.IGNORECASE,
+)
+
+
+# Ted writes in WhatsApp bold, and the emphasis lands between the number and
+# the words that qualify it. Live at 21:37 on 4 Sep, to a user who had just
+# finished the five questions: "knocked it down to *1,650 kcal* a day for you,
+# decent steady deficit". The asterisk sits exactly where the pattern below
+# wanted whitespace, so the shape check missed it, and the only reason it was
+# caught at all is that the model also happened to type "deficit", which is in
+# the old phrase list. That is luck. `_setup_payoff` writes "*1,630 kcal*"
+# itself, so bold around a calorie figure is the normal case, not the exotic
+# one. Markup is stripped before matching rather than threaded through every
+# branch of the pattern.
+_MARKUP_CHARS = str.maketrans("", "", "*_~`")
+
+
+def _without_markup(text: str) -> str:
+    return (text or "").translate(_MARKUP_CHARS)
+
+
+def _looks_like_calorie_target(response_text: str) -> bool:
+    """A daily calorie number in Ted's own words, whatever words it chose."""
+    return bool(_TARGET_FIGURE.search(_without_markup(response_text)))
+
+
+# A range is the tell that nobody did the arithmetic. _estimated_maintenance
+# returns one integer, so every calorie figure this file produces is a single
+# number. "1300 to 1400" can only have come from the model guessing, which is
+# exactly what it was doing: that user had no height, no sex and no activity on
+# file, so there was no formula to run. Vandy read it off the screen before the
+# code could: "we can't see a range, and it did not even understand whether I'm
+# active or not".
+_CALORIE_RANGE = re.compile(
+    r"\b\d[\d,.]*\s*(?:k?cals?|calories?)?\s*(?:to|or|\u2013|\u2014|-)\s*"
+    r"\d[\d,.]*\s*(?:k?cals?|calories?)\b",
+    re.IGNORECASE,
+)
+
+
+def _states_a_calorie_range(response_text: str) -> bool:
+    return bool(_CALORIE_RANGE.search(_without_markup(response_text)))
+
+
 # Every gate reply is Ted talking, not a form validator. SOUL.md: casual,
 # lowercase, and it says why it is asking.
 AGE_QUESTION = "quick one before i do calorie maths. how old are you? beta's 18+"
@@ -3067,11 +3136,24 @@ def calorie_gate(
     user_message: str,
     response_text: str,
     user_key: str = "",
+    meal_logged: bool = False,
 ) -> str | None:
     """Block or replace calorie output using only user-supplied values."""
-    target_flow = _calorie_flow_active(
-        history, user_message
-    ) or _maintenance_or_target_flow(user_message, response_text)
+    # `meal_logged` is structural, not another phrase list: when Ted is
+    # replying about a plate the gate is about to render, "615 kcal" is a
+    # description of that plate and none of the target rules apply. Every
+    # other turn, a daily figure is a target no matter how it was worded.
+    target_flow = (
+        _calorie_flow_active(history, user_message)
+        or _maintenance_or_target_flow(user_message, response_text)
+        or (
+            not meal_logged
+            and (
+                _looks_like_calorie_target(response_text)
+                or _states_a_calorie_range(response_text)
+            )
+        )
+    )
     has_number = _response_has_calorie_number(response_text)
 
     # The age is read before the early return on purpose. It used to be read
@@ -3829,7 +3911,10 @@ def transform_response(
     counted = setup_gate(history, user_message, user_key)
     if counted:
         return counted
-    calorie = calorie_gate(history, user_message, response_text, user_key)
+    calorie = calorie_gate(
+        history, user_message, response_text, user_key,
+        meal_logged=logged_meal is not None,
+    )
     if calorie:
         return calorie
     unfinished = onboarding_close_gate(response_text, user_key)

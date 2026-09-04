@@ -7413,3 +7413,151 @@ class TheAgeIsSettledOnceTest(TheCountedFiveTest):
             ),
             gates.UNDER_18_REFUSAL,
         )
+
+
+class DeficitPhrasingTest(unittest.TestCase):
+    """The no-deficit rule must not depend on how the model worded it.
+
+    Live, 4 Sep 2026 at 20:43:25, to a real user with no height, no sex and
+    no activity on file:
+
+        "for weight loss at your stats, something like 1300 to 1400 kcal a
+        day is a sensible target, keeps it sustainable. want me to lock that
+        in?"
+
+    That went out intact. `_TARGET_FLOW_TERMS` listed "calories a day" but
+    not "kcal a day", and "calorie target" but not a bare "target", so
+    `calorie_gate` decided no target conversation was happening and returned
+    None before any rule could read the sentence. Nothing had been
+    calculated: with three of the five inputs missing there was no formula to
+    run, and the range is the proof. Every figure the gate produces is a
+    single integer out of `_estimated_maintenance`.
+    """
+
+    LIVE = (
+        "for weight loss at your stats, something like 1300 to 1400 kcal a "
+        "day is a sensible target, keeps it sustainable. want me to lock "
+        "that in?"
+    )
+
+    def _user(self, name: str) -> str:
+        user_key = f"{name}-{id(self)}"
+        self.addCleanup(reset_user, user_key)
+        gates._mark_disclosure_sent(user_key)
+        gates._update_onboarding(user_key, name="P")
+        return user_key
+
+    def test_the_live_deficit_never_reaches_the_user(self):
+        user_key = self._user("live-deficit")
+        out = transform_response(
+            history=[message("user", "i want to lose weight")],
+            user_message="i want to lose weight",
+            response_text=self.LIVE,
+            user_key=user_key,
+        )
+        self.assertIsNotNone(out)
+        self.assertNotIn("1300", out)
+        self.assertNotIn("1400", out)
+
+    def test_every_phrasing_of_a_deficit_is_caught(self):
+        """The point of the fix: shape, not vocabulary."""
+        for label, reply in (
+            ("kcal a day", "something like 1300 kcal a day is sensible."),
+            ("calories a day", "for weight loss, about 1300 calories a day."),
+            ("the word deficit", "i'd put you in a small deficit, 1300 a day."),
+            ("aim for", "aim for 1300 kcal and the weight comes off."),
+            ("eat around", "eat around 1300 and you'll drop steadily."),
+            ("keep it under", "keep it under 1400 calories and you're set."),
+            ("a range", "somewhere between 1300 to 1400 kcal works."),
+        ):
+            with self.subTest(label):
+                user_key = self._user(f"phrasing-{label}")
+                out = transform_response(
+                    history=[message("user", "i want to lose weight")],
+                    user_message="i want to lose weight",
+                    response_text=reply,
+                    user_key=user_key,
+                )
+                self.assertIsNotNone(out, f"{label} passed straight through")
+                self.assertNotIn("1300", out)
+                self.assertNotIn("1400", out)
+
+    def test_a_per_food_estimate_still_passes_through(self):
+        """The gate must not swallow ordinary nutrition answers."""
+        user_key = self._user("per-food")
+        gates._update_onboarding(user_key, age=30)
+        out = transform_response(
+            history=[message("user", "how many calories in a roti")],
+            user_message="how many calories in a roti",
+            response_text="that roti is about 120 kcal, and the dal maybe 180.",
+            user_key=user_key,
+        )
+        self.assertIsNone(out)
+
+    def test_a_logged_meal_reply_is_not_hijacked(self):
+        """"615 kcal for the day so far" describes a plate, it sets nothing."""
+        user_key = self._user("meal-reply")
+        gates._update_onboarding(user_key, age=30)
+        out = transform_response(
+            history=[message("user", "logged my lunch")],
+            user_message="logged my lunch",
+            response_text="nice, that's 615 kcal for the day so far.",
+            user_key=user_key,
+            logged_meal={"items": ["dal", "rice"]},
+            day_summary={"calories": 615},
+        )
+        self.assertNotIn("how old are you", out or "")
+
+    def test_offering_to_set_a_target_is_not_setting_one(self):
+        """The regression the first version of this fix caused.
+
+        Real, 3 Sep: a day summary that reports a plate and offers a target
+        states neither, and must not be replaced.
+        """
+        user_key = self._user("offer-target")
+        gates._update_onboarding(user_key, age=30)
+        out = transform_response(
+            history=[message("user", "how am i doing")],
+            user_message="how am i doing",
+            response_text=(
+                "420 cal and 20g protein logged, no target set yet so "
+                "nothing to measure against. wanna set a calorie target?"
+            ),
+            user_key=user_key,
+        )
+        self.assertNotIn("how old are you", out or "")
+
+    def test_whatsapp_bold_does_not_hide_a_deficit(self):
+        """Live, 4 Sep 2026 21:37, to a user who had just finished the five.
+
+        "fat loss, solid choice 🔥 knocked it down to *1,650 kcal* a day for
+        you, decent steady deficit without starving yourself."
+
+        The gate replaced it, but only because "deficit" is in the old phrase
+        list. The shape check missed it: the asterisk sits between the unit and
+        "a day", exactly where the pattern wanted whitespace. `_setup_payoff`
+        writes "*1,630 kcal*" itself, so bold around a calorie figure is the
+        normal case. Stripped of its giveaway word, the sentence must still be
+        caught on shape alone.
+        """
+        for label, reply in (
+            ("bold, giveaway word removed",
+             "knocked it down to *1,650 kcal* a day for you, steady and kind"),
+            ("italic", "aim for _1,650 kcal_ a day"),
+            ("strikethrough", "stick to ~1650~ kcal"),
+        ):
+            with self.subTest(label):
+                self.assertTrue(
+                    gates._looks_like_calorie_target(reply),
+                    f"{label}: markup hid the figure from the shape check",
+                )
+                user_key = self._user(f"markup-{label}")
+                out = transform_response(
+                    history=[message("user", "i want fat loss")],
+                    user_message="i want fat loss",
+                    response_text=reply,
+                    user_key=user_key,
+                )
+                self.assertIsNotNone(out, f"{label} passed straight through")
+                self.assertNotIn("1,650", out)
+                self.assertNotIn("1650", out)
