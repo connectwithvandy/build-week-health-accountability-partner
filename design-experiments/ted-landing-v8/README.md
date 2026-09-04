@@ -127,7 +127,7 @@ Analytics script tag, which the page needs because it is served straight from
 Apart from that tag the two files are byte-for-byte identical.
 
 The filename kept the `v6` in it. Renaming it would mean touching the rewrite in
-`next.config.ts` and the test that reads it, for no gain — but the name is the
+`next.config.ts` and the test that reads it, for no gain. The name is the
 route's history, not the design's version.
 
 ## Still open

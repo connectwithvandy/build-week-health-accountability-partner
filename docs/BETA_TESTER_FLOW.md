@@ -23,7 +23,7 @@ Why exactly five: these are exactly the five Mifflin–St Jeor inputs, which is
 what makes "five questions" literally true. A sixth would make the count a lie,
 so the city and the check-in time wait until a reminder is actually being set.
 
-1/5 is deliberately plain while the rest of Ted is cheeky — the age answer is
+1/5 is deliberately plain while the rest of Ted is cheeky. The age answer is
 the only thing that makes the under-18 refusal reachable, and a joke inviting
 someone to lie there is the one joke that costs something.
 
