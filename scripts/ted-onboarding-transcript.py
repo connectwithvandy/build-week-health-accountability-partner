@@ -147,6 +147,37 @@ def case_normal_onboarding() -> Thread:
     return t
 
 
+def case_the_counted_five() -> Thread:
+    """Name to number, the whole way, with a hedge in the middle.
+
+    The point of running this one is that the model is writing something
+    different every turn and none of it goes out: while the five are running
+    the count belongs to Ted, not to whatever the model decided to ask.
+    """
+    t = Thread("the counted five, name to number")
+    t.send("hey", "hi! what brings you here?")
+    t.send("Pallavi", "lovely to meet you, what are your goals?")
+    t.send("31", "got it, and your height?")
+    t.send("5 foot 4", "thanks! weight next?")
+    t.send("around 60-65", "ok, noting 60kg")
+    t.send("63 actually", "great, and are you male or female?")
+    t.send("female", "last one, activity level?")
+    t.send("desk most of it", "perfect, here's your target")
+    t.send("yep", "here we go")
+    return t
+
+
+def case_five_questions_abandoned() -> Thread:
+    """Three tries and Ted stops, which is the bound the name question has."""
+    t = Thread("the five, never answered")
+    t.send("hey", "hi!")
+    t.send("Ankie", "nice to meet you")
+    t.send("what do you even do", "i'm a health coach on whatsapp!")
+    t.send("i dont get it", "happy to explain anything you like")
+    t.send("hmm", "ask me anything at all")
+    return t
+
+
 def case_quoted_bot_text() -> Thread:
     t = Thread("a WhatsApp reply quoting Ted's own message")
     t.send("hey", "hi there")
@@ -220,6 +251,8 @@ def case_delete_then_cancel() -> Thread:
 def main() -> int:
     cases = [
         case_normal_onboarding,
+        case_the_counted_five,
+        case_five_questions_abandoned,
         case_quoted_bot_text,
         case_feedback_instead_of_an_answer,
         case_praise_with_privacy_words,

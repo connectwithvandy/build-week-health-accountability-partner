@@ -44,7 +44,15 @@ def reset_user(user_key: str) -> None:
         gates._ONBOARDING_STATE.pop(user_key, None)
 
 
-VANDY_DISCLOSURE = f"hey Vandy 🙂\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
+# The notice first and nameless, then why, then question one. Spelled out
+# rather than built from the constants: this is the message a real person
+# gets after giving their name, and it should be readable as one here.
+VANDY_DISCLOSURE = (
+    f"{DISCLOSURE_MESSAGE}\n\n"
+    "right, Vandy — before i’m any use to you, quick five questions to get "
+    "your calorie number. a minute tops.\n\n"
+    "*1/5* how old are you? beta's 18+"
+)
 
 
 class TedSafetyGatesTest(unittest.TestCase):
@@ -178,21 +186,21 @@ class TedSafetyGatesTest(unittest.TestCase):
         ]
         self.assertEqual(consent_gate(history, GOAL_QUESTION), VANDY_DISCLOSURE)
 
-    def test_disclosure_and_goal_go_out_as_one_message(self) -> None:
-        """SCOPING.md §3.4: both in the same message, so neither can be lost."""
-        self.assertEqual(
-            DISCLOSURE_MESSAGE,
-            "Ted stores your profile, messages, plans, logs and uploads. Read "
-            "more: https://heyted.vercel.app/privacy. Send “delete my data” "
-            "anytime to delete everything.",
-        )
-        # The constant stays the disclosure alone; the two are joined at
-        # send time so the privacy text has exactly one definition.
+    def test_the_notice_and_question_one_go_out_as_one_message(self) -> None:
+        """SCOPING.md §3.4: one send, so nothing in it can be half-delivered."""
+        # The constant stays the notice alone; the rest is joined at send
+        # time so the privacy text has exactly one definition.
+        self.assertNotIn("1/5", DISCLOSURE_MESSAGE)
         self.assertNotIn(GOAL_QUESTION, DISCLOSURE_MESSAGE)
         delivered = gates._personalized_disclosure("Vandy")
         self.assertIn(DISCLOSURE_MESSAGE, delivered)
-        self.assertIn(GOAL_QUESTION, delivered)
-        self.assertTrue(delivered.endswith(GOAL_QUESTION))
+        self.assertTrue(delivered.endswith(gates._setup_question(0)))
+        # The notice comes first and carries no name. A mis-parsed name used
+        # to land inside it — "hey Can I send you voice notes 🙂" is a real one.
+        self.assertTrue(delivered.startswith(DISCLOSURE_MESSAGE))
+        self.assertNotIn("Vandy", DISCLOSURE_MESSAGE)
+        # The open goal question moved to the far side of the number.
+        self.assertNotIn(GOAL_QUESTION, delivered)
         # No background sender left to stall.
         self.assertFalse(hasattr(gates, "_schedule_goal_question"))
         self.assertFalse(hasattr(gates, "_send_goal_question"))
@@ -398,13 +406,16 @@ class TedSafetyGatesTest(unittest.TestCase):
             conversation_history=history_without_transformed_reply,
             user_message="Routine",
         )
-        self.assertIsNone(
-            _transform_live_response(
-                platform="whatsapp",
-                session_id=session_id,
-                response_text="routine is broad—what should look different?",
-            )
+        reply = _transform_live_response(
+            platform="whatsapp",
+            session_id=session_id,
+            response_text="routine is broad—what should look different?",
         )
+        # The point of this test: the disclosure does not go out twice.
+        self.assertNotIn(DISCLOSURE_MESSAGE, reply or "")
+        # It is not left alone either. The five are running, so the
+        # outstanding one comes back rather than the model's own question.
+        self.assertEqual(reply, gates._setup_question(0))
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_disclosure_flag_follows_the_user_across_sessions(self) -> None:
@@ -447,13 +458,15 @@ class TedSafetyGatesTest(unittest.TestCase):
                 conversation_history=[],
                 user_message="Routine",
             )
-            self.assertIsNone(
-                _transform_live_response(
-                    platform="whatsapp",
-                    session_id=second_session,
-                    response_text="routine is broad—what should look different?",
-                )
+            reply = _transform_live_response(
+                platform="whatsapp",
+                session_id=second_session,
+                response_text="routine is broad—what should look different?",
             )
+            # A new session, and the disclosure still does not repeat: the
+            # durable record follows the user, not the transcript.
+            self.assertNotIn(DISCLOSURE_MESSAGE, reply or "")
+            self.assertEqual(reply, gates._setup_question(0))
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_replays_the_four_message_onboarding_loop_once(self) -> None:
@@ -500,18 +513,26 @@ class TedSafetyGatesTest(unittest.TestCase):
                 history.append(message("assistant", model_reply))
 
         self.assertEqual(visible_replies.count(VANDY_DISCLOSURE), 1)
-        # The goal question rides inside the disclosure now, so it is asked
-        # exactly once and never as a second bubble that can fail alone.
-        self.assertEqual(sum(GOAL_QUESTION in reply for reply in visible_replies), 1)
+        # None of "Routine", "routine" or "okay understood" is an age, so the
+        # question comes back — but a bounded number of times. Three asks, the
+        # first of them riding inside the disclosure, and then Ted stops. This
+        # is the same loop that pestered J for a name, and it is bounded the
+        # same way.
+        self.assertEqual(
+            sum(gates._setup_question(0) in reply for reply in visible_replies),
+            gates._MAX_SETUP_ASKS,
+        )
         self.assertEqual(
             visible_replies,
             [
                 VANDY_DISCLOSURE,
-                model_replies[1],
-                model_replies[2],
+                gates._setup_question(0),
+                gates._setup_question(0),
+                # Given up on, so the model's own reply goes out untouched.
                 model_replies[3],
             ],
         )
+        self.assertEqual(gates._setup_state(user_key), "stalled")
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_disclosure_state_recovers_existing_sends_from_agent_log(self) -> None:
@@ -3178,10 +3199,11 @@ class GoalQuestionDeliveryTest(unittest.TestCase):
             message("user", "Vandy"),
         ]
         delivered = consent_gate(history, "anything at all", user_key)
-        # One message carries both, so there is no window in which the
-        # disclosure has landed and the goal question is still owed.
+        # One message carries the notice and question one, so there is no
+        # window in which the disclosure has landed and the next step is
+        # still owed by a thread that may not run.
         self.assertIn(gates.PRIVACY_URL, delivered)
-        self.assertIn(GOAL_QUESTION, delivered)
+        self.assertIn(gates._setup_question(0), delivered)
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
 
@@ -3224,13 +3246,49 @@ class GoldenPathTest(unittest.TestCase):
             OPENING_MESSAGE,
         )
 
-        # 2. The name. Disclosure and goal question arrive as ONE message.
+        # 2. The name. Notice, why, and question one arrive as ONE message.
         disclosure = self.turn("Vandy", "nice to meet you")
         self.assertEqual(disclosure, VANDY_DISCLOSURE)
         self.assertIn(gates.PRIVACY_URL, disclosure)
-        self.assertIn(GOAL_QUESTION, disclosure)
+        self.assertIn(gates._setup_question(0), disclosure)
+        # The open goal question is not here any more. It comes after the
+        # number, where it follows from something.
+        self.assertNotIn(GOAL_QUESTION, disclosure)
 
-        # 3. The goal, then the check-in time. Ted's own words survive.
+        # 3. The counted five. Question one came inside the disclosure, so
+        #    four answers walk the rest of the count. The model is writing
+        #    something else every turn and none of it goes out: while the five
+        #    are running, the count is Ted's, not the model's.
+        for answer, expected in (
+            ("33", gates._setup_question(1)),
+            ("170cm", gates._setup_question(2)),
+            ("62kg", gates._setup_question(3)),
+            ("female", gates._setup_question(4)),
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(self.turn(answer, "noted!"), expected)
+
+        # 4. All five in, and the read-back comes before the number. This is
+        #    the step that would have caught Pallavi's height.
+        summary = self.turn("desk most of the day", "great, here's your target")
+        self.assertIn("here's what i've got:", summary)
+        self.assertIn("33", summary)
+        self.assertIn("170 cm", summary)
+        self.assertIn("62 kg", summary)
+        # Not a single calorie number until she has agreed to the inputs.
+        self.assertNotIn("1,630", summary)
+
+        # 5. She agrees, and the number lands — maintenance, never a cut, and
+        #    the goal question follows it now rather than preceding it.
+        payoff = self.turn("yep", "here you go")
+        self.assertIn("all five", payoff)
+        self.assertIn("1,630", payoff)
+        self.assertIn("maintenance", payoff)
+        self.assertIn(GOAL_QUESTION, payoff)
+        self.assertEqual(gates._setup_state(self.user_key), "done")
+
+        # 6. The goal, then the check-in time. Ted's own words survive again
+        #    now that the five are done.
         self.assertEqual(
             self.turn("eat more protein", "good one. what time should i check in?"),
             "good one. what time should i check in?",
@@ -3402,8 +3460,8 @@ class ProseMatchingHardeningTest(unittest.TestCase):
                 message("assistant", f"btw our policy is at {gates.PRIVACY_URL}"),
             ]
             reply = consent_gate(history, "nice to meet you", user_key)
-            self.assertIn(gates._DISCLOSURE_MARKER, reply or "")
-            self.assertIn(GOAL_QUESTION, reply or "")
+            self.assertIn(gates.DISCLOSURE_MESSAGE, reply or "")
+            self.assertIn("1/5", reply or "")
         finally:
             gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
@@ -4548,7 +4606,9 @@ class ErasureSurvivesTheOpenThreadTest(unittest.TestCase):
         ]
         reply = consent_gate(history, "ok", user_key=self.USER_KEY)
         self.assertIn(gates.PRIVACY_URL, reply or "")
-        self.assertIn(gates.GOAL_QUESTION, reply or "")
+        # And the five start over with them, because everything Ted knew
+        # about them went with the wipe.
+        self.assertIn(gates._setup_question(0), reply or "")
 
     def test_the_name_still_comes_from_the_thread_after_a_wipe(self) -> None:
         """Deliberately not guarded, and the reason is written down.
@@ -5568,11 +5628,36 @@ class EveryLineTedSaysSoundsLikeTedTest(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertIn(word, gates.DELETE_CONFIRMATION_QUESTION.lower())
 
-    def test_the_disclosure_is_left_exactly_as_it_is(self) -> None:
-        """Consent records since 1 Sep were written against this text and
-        _DISCLOSURE_MARKER matches its opening words."""
-        self.assertTrue(gates.DISCLOSURE_MESSAGE.startswith(gates._DISCLOSURE_MARKER))
-        self.assertIn(gates.PRIVACY_URL, gates.DISCLOSURE_MESSAGE)
+    def test_the_disclosure_says_the_three_things_it_has_to_say(self) -> None:
+        """Rewritten in Ted's voice on 4 Sep; the content is what is fixed.
+
+        What is kept, where the detail is, and how to make it all go. The
+        wording moved from terms-of-service English into Ted's own, which is
+        why this asserts the substance rather than the sentence.
+        """
+        text = gates.DISCLOSURE_MESSAGE
+        self.assertIn(gates.PRIVACY_URL, text)
+        for kept in ("profile", "messages", "plans", "logs", "uploads"):
+            with self.subTest(kept=kept):
+                self.assertIn(kept, text)
+        self.assertIn("delete my data", text)
+
+    def test_the_scan_still_recognises_the_old_disclosure(self) -> None:
+        """Every transcript before 4 Sep carries the old sentence.
+
+        The durable record answers this for anyone who has one. For anyone
+        who does not, losing the old wording would re-disclose them forever.
+        """
+        old_wording = (
+            "Ted stores your profile, messages, plans, logs and uploads. "
+            f"Read more: {gates.PRIVACY_URL}. Send \u201cdelete my data\u201d "
+            "anytime to delete everything."
+        )
+        for text in (old_wording, gates.DISCLOSURE_MESSAGE):
+            with self.subTest(text=text[:30]):
+                self.assertTrue(
+                    gates._disclosure_was_sent([message("assistant", text)])
+                )
 
 
 class NoAssistantSpeakTest(unittest.TestCase):
@@ -6554,14 +6639,16 @@ class OnboardingAdvancesOnceTest(unittest.TestCase):
                     OPENING_MESSAGE,
                 )
 
-    def test_the_name_brings_the_disclosure_and_the_goal_question_once(self) -> None:
+    def test_the_name_brings_the_disclosure_and_question_one_once(self) -> None:
         self.turn("hi", "whatever")
         second = self.turn("UD", "nice to meet you")
         self.assertEqual(
-            second, f"hey UD \U0001f642\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
+            second,
+            f"{DISCLOSURE_MESSAGE}\n\nright, UD — {gates.SETUP_INTRO}\n\n"
+            f"{gates._setup_question(0)}",
         )
         self.assertEqual(second.count(gates.PRIVACY_URL), 1)
-        self.assertEqual(second.count(GOAL_QUESTION), 1)
+        self.assertEqual(second.count("1/5"), 1)
         gates._mark_disclosure_sent(self.USER_KEY)
         third = self.turn("more energy", "good one, what time suits for a check in?")
         self.assertNotIn(gates.PRIVACY_URL, third)
@@ -6653,3 +6740,313 @@ class DeleteThenChangeYourMindTest(unittest.TestCase):
             gates._delete_user_data({"confirmed": True}, session_id="no-such-session")
         )
         self.assertFalse(result["success"])
+
+
+class TheCountedFiveTest(unittest.TestCase):
+    """The 4 Sep onboarding rebuild: name, then five questions, then a number.
+
+    The old flow was reactive. It asked for height only once the model was
+    already about to say a calorie number, so somebody could talk to Ted for
+    days with an empty profile and then be handed four questions in a row at
+    the worst possible moment. Vandy's words for the result were "people are
+    a little bit in the mix".
+    """
+
+    USER_KEY = "counted-five"
+
+    def setUp(self) -> None:
+        self.reset()
+
+    def tearDown(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        gates._DISCLOSURE_SENT_KEYS.discard(self.USER_KEY)
+        gates._forget_user(self.USER_KEY)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(self.USER_KEY, None)
+        self.history: list[dict[str, str]] = []
+
+    def turn(self, user_text: str, model_reply: str = "sure thing") -> str:
+        self.history.append(message("user", user_text))
+        gated = transform_response(
+            history=list(self.history),
+            user_message=user_text,
+            response_text=model_reply,
+            user_key=self.USER_KEY,
+        )
+        reply = model_reply if gated is None else gated
+        self.history.append(message("assistant", reply))
+        return reply
+
+    def start(self) -> str:
+        """Through the opener and the name, to the message carrying 1/5."""
+        self.turn("hey", "hello!")
+        return self.turn("Vandy", "nice to meet you")
+
+    def test_five_questions_means_five(self) -> None:
+        """The count is a promise, and these are the five that keep it.
+
+        Exactly the Mifflin-St Jeor inputs, which is what makes "five
+        questions" literally true rather than a rounded-down guess. A sixth
+        would be a lie, so the city and the check-in time are asked later,
+        when the first reminder is actually being set.
+        """
+        self.assertEqual(len(gates.SETUP_QUESTIONS), 5)
+        self.assertEqual(
+            [field for field, _ in gates.SETUP_QUESTIONS],
+            ["age", "height_cm", "weight_kg", "sex", "activity"],
+        )
+        for index in range(5):
+            with self.subTest(index=index):
+                self.assertTrue(
+                    gates._setup_question(index).startswith(f"*{index + 1}/5*")
+                )
+
+    def test_the_name_leads_straight_into_question_one(self) -> None:
+        delivered = self.start()
+        self.assertTrue(delivered.startswith(DISCLOSURE_MESSAGE))
+        self.assertIn("right, Vandy", delivered)
+        self.assertTrue(delivered.endswith(gates._setup_question(0)))
+        # The old open goal question is gone from here.
+        self.assertNotIn(GOAL_QUESTION, delivered)
+
+    def test_the_notice_never_carries_the_name(self) -> None:
+        """A mis-parsed name used to land inside the privacy notice.
+
+        "hey Can I send you voice notes 🙂" is a real one. `_clean_name` is an
+        allowlist now, but the notice keeping its own message is what makes
+        that structural rather than a thing the parser has to get right.
+        """
+        self.assertNotIn("{", DISCLOSURE_MESSAGE)
+        self.assertNotIn("Vandy", DISCLOSURE_MESSAGE)
+        delivered = self.start()
+        notice, _, rest = delivered.partition("\n\n")
+        self.assertEqual(notice, DISCLOSURE_MESSAGE)
+        self.assertIn("Vandy", rest)
+
+    def test_the_count_walks_from_one_to_five(self) -> None:
+        self.start()
+        for answer, expected_index in (
+            ("33", 1),
+            ("170cm", 2),
+            ("62kg", 3),
+            ("female", 4),
+        ):
+            with self.subTest(answer=answer):
+                self.assertEqual(
+                    self.turn(answer), gates._setup_question(expected_index)
+                )
+
+    def test_every_offered_answer_to_question_five_parses(self) -> None:
+        """5/5 offers three choices, so all three have to be readable.
+
+        People answer a multiple choice by echoing one of the choices. Until
+        4 Sep none of the three parsed, which is the same mistake as asking
+        for a birthday the parser cannot use.
+        """
+        for phrase in ("desk most of it", "on your feet", "training regularly"):
+            with self.subTest(phrase=phrase):
+                self.assertIsNotNone(gates._find_activity([phrase]))
+
+    def test_the_read_back_comes_before_the_number(self) -> None:
+        """The step that would have caught Pallavi's height."""
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        self.turn("62kg")
+        self.turn("female")
+        summary = self.turn("desk most of it")
+        self.assertIn("here's what i've got:", summary)
+        self.assertIn("170 cm", summary)
+        self.assertNotIn("1,630", summary)
+        payoff = self.turn("yep")
+        self.assertIn("1,630", payoff)
+        self.assertIn("maintenance", payoff)
+        self.assertIn(GOAL_QUESTION, payoff)
+
+    def test_the_number_is_maintenance_and_never_a_cut(self) -> None:
+        """The one thing not to take from Rex Nutribot.
+
+        Rex drops to 80% of TDEE against a goal weight and a date. A deficit
+        is the exact thing Ted must never hand anybody, so the payoff says
+        what the number is and that nothing moves at it.
+        """
+        profile = gates.CalorieProfile(
+            age=33, height_cm=170.0, weight_kg=62.0, sex="female",
+            activity="sedentary",
+        )
+        payoff = gates._setup_payoff(profile)
+        self.assertIn(f"{gates._estimated_maintenance(profile):,}", payoff)
+        self.assertIn("maintenance", payoff)
+        for cut in ("deficit", "lose", "target weight", "goal weight"):
+            with self.subTest(cut=cut):
+                self.assertNotIn(cut, payoff.lower())
+
+    def test_a_minor_never_finishes_the_five(self) -> None:
+        """The five end in a calorie number, so the refusal has to be here."""
+        self.start()
+        self.assertEqual(self.turn("i'm 15"), gates.UNDER_18_REFUSAL)
+        self.assertNotEqual(gates._setup_state(self.USER_KEY), "running")
+        # And it stays refused on the next turn.
+        self.assertEqual(
+            transform_response(
+                history=list(self.history),
+                user_message="but what's my calorie number",
+                response_text="about 1,800 a day",
+                user_key=self.USER_KEY,
+            ),
+            gates.UNDER_18_REFUSAL,
+        )
+
+    def test_a_hedged_answer_is_read_back_inside_the_flow(self) -> None:
+        """Certainty is decided in one place, not twice.
+
+        `setup_gate` and `calorie_gate` share `_resolve_measurements`, so a
+        hedge during the counted five gets the same read-back it would get in
+        a target conversation three weeks later.
+        """
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        reply = self.turn("around 60-65")
+        self.assertIn("60", reply)
+        self.assertIn("weight", reply.lower())
+        # Nothing was stored on the strength of a range.
+        self.assertIsNone(gates._stored_measurement(self.USER_KEY, "weight_kg"))
+
+    def test_pounds_are_converted_and_declared_inside_the_flow(self) -> None:
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        reply = self.turn("154 lbs")
+        self.assertIn("69.9", reply)
+        self.assertIn("weight", reply.lower())
+        # The original words survive to the read-back, so "69.9 kg" is
+        # recognisable to somebody who thinks in pounds.
+        self.turn("yes")
+        self.turn("female")
+        summary = self.turn("desk most of it")
+        self.assertIn("you said 154 lbs", summary)
+
+    def test_ted_stops_asking_after_three_tries(self) -> None:
+        """The same bound the name question has, for the same reason.
+
+        On 3 Sep Ted asked J for a name over and over because nothing counted
+        the asking. A counted question repeats just as badly.
+        """
+        self.start()  # asks 1/5 once
+        self.assertEqual(self.turn("what do you do?"), gates._setup_question(0))
+        self.assertEqual(self.turn("i dont get it"), gates._setup_question(0))
+        # Given up on. The model's own reply goes out untouched.
+        self.assertEqual(self.turn("hmm", "ask me anything!"), "ask me anything!")
+        self.assertEqual(gates._setup_state(self.USER_KEY), "stalled")
+
+    def test_giving_up_on_the_five_does_not_give_up_on_the_age_rule(self) -> None:
+        """Nothing unsafe follows from a stalled setup.
+
+        The estimate is lost, which is a thing this person has now declined
+        three times. The refusal is not: `calorie_gate` still has no age.
+        """
+        self.start()
+        self.turn("what do you do?")
+        self.turn("i dont get it")
+        self.turn("hmm", "ask me anything!")
+        self.assertEqual(gates._setup_state(self.USER_KEY), "stalled")
+        self.assertEqual(
+            transform_response(
+                history=list(self.history),
+                user_message="what's my daily calorie target?",
+                response_text="you're looking at about 1,900 a day.",
+                user_key=self.USER_KEY,
+            ),
+            gates.AGE_QUESTION,
+        )
+
+    def test_the_read_back_does_not_repeat_forever(self) -> None:
+        """An unbounded re-ask is the pestering loop with a friendlier face."""
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        self.turn("62kg")
+        self.turn("female")
+        self.turn("desk most of it")  # summary, first showing
+        # Neither a recognised yes nor a correction, three times over.
+        seen = [self.turn("hmm") for _ in range(3)]
+        self.assertIn("here's what i've got:", seen[0])
+        self.assertIn("1,630", seen[-1])
+        self.assertEqual(gates._setup_state(self.USER_KEY), "done")
+
+    def test_the_five_do_not_run_for_someone_who_finished_them(self) -> None:
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        self.turn("62kg")
+        self.turn("female")
+        self.turn("desk most of it")
+        self.turn("yep")
+        self.assertEqual(gates._setup_state(self.USER_KEY), "done")
+        # Ted's own words survive again now the five are done.
+        self.assertEqual(self.turn("3 rotis and dal", "nice one."), "nice one.")
+
+    def test_a_correction_wins_over_the_model_repeating_the_wrong_number(
+        self,
+    ) -> None:
+        """The transcript is not where the correction lives.
+
+        Found by replaying the flow through `_transform_live_response` rather
+        than calling the gate directly, which is the difference that matters:
+        Hermes writes the *model's* text to the transcript, never the gate's.
+        So Ted's confirmation ("so your weight's 60 kg?") is not in the
+        history at all — what is there is whatever the model wrote instead.
+
+        On 4 Sep that was "ok, noting 60kg". The old reader anchored to a
+        question it could not find, fell back to scanning, and read 60 back
+        out of the model's own sentence. "63 actually" was discarded and the
+        doubted number stood, inside the one mechanism built to stop exactly
+        that.
+        """
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        # Ted asks for confirmation; the model, meanwhile, writes the number
+        # it wrongly believes — and that is the line the history keeps.
+        self.history.append(message("user", "around 60-65"))
+        transform_response(
+            history=list(self.history),
+            user_message="around 60-65",
+            response_text="ok, noting 60kg",
+            user_key=self.USER_KEY,
+        )
+        self.history.append(message("assistant", "ok, noting 60kg"))
+        self.assertEqual(
+            gates._pending_measurement(self.USER_KEY)["value"], 60.0
+        )
+
+        self.history.append(message("user", "63 actually"))
+        transform_response(
+            history=list(self.history),
+            user_message="63 actually",
+            response_text="great, and are you male or female?",
+            user_key=self.USER_KEY,
+        )
+        self.assertEqual(gates._stored_measurement(self.USER_KEY, "weight_kg"), 63.0)
+
+    def test_a_bare_correction_is_read_without_an_anchor(self) -> None:
+        """A pending measurement already names its field.
+
+        So the number does not need a question above it to be unambiguous,
+        which is what lets the correction be read from the user's own words.
+        """
+        for reply, expected in (
+            ("63 actually", 63.0),
+            ("no, 63", 63.0),
+            ("actually 63", 63.0),
+            ("63 kg", 63.0),
+            ("154 lbs", 69.9),
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(gates._correction_value("weight_kg", reply), expected)
+        # A number that is not a weight is not a correction.
+        self.assertIsNone(gates._correction_value("weight_kg", "i had 2 rotis"))
+        self.assertIsNone(gates._correction_value("weight_kg", "nope"))

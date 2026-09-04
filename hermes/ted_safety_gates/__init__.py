@@ -37,11 +37,15 @@ PRIVACY_URL = "https://heyted.vercel.app/privacy"
 # It belongs where a person would actually meet it, so SOUL.md keeps Ted
 # offering voice and photos at the moment they would help, and the landing
 # page names all three inputs. A deliberate trade, not an oversight.
-OPENING_MESSAGE = "hey \U0001F44B what should i call you?"
+OPENING_MESSAGE = "hey \U0001F44B i’m ted. what should i call you?"
+# The notice, in Ted's voice rather than a terms-of-service voice. It says the
+# same three things the old one did — what is kept, where the detail is, how to
+# make it all go — and "uploads" stays in the list because photos, voice notes
+# and PDFs are stored and the privacy page says so.
 DISCLOSURE_MESSAGE = (
-    "Ted stores your profile, messages, plans, logs and uploads. "
-    f"Read more: {PRIVACY_URL}. Send “delete my data” anytime to delete "
-    "everything."
+    "quick note: i keep your profile, messages, plans, logs and uploads so i "
+    f"can actually be useful. details at {PRIVACY_URL}. say “delete my data” "
+    "whenever and it all goes."
 )
 GOAL_QUESTION = "what’s one thing you want to change?"
 ALREADY_STARTED_MESSAGE = (
@@ -580,6 +584,58 @@ def _mark_summary_shown(user_key: str) -> None:
 
 def _mark_summary_agreed(user_key: str) -> None:
     _update_onboarding(user_key, profile_summary="agreed")
+
+
+def _setup_state(user_key: str) -> str | None:
+    """Where this person is in the counted five questions."""
+    if not user_key:
+        return None
+    value = _onboarding(user_key).get("setup")
+    return value if isinstance(value, str) else None
+
+
+def _mark_setup_running(user_key: str) -> None:
+    _update_onboarding(user_key, setup="running")
+
+
+def _mark_setup_done(user_key: str) -> None:
+    _update_onboarding(user_key, setup="done")
+
+
+# The same bound the name question has, for the same reason. On 3 Sep Ted
+# asked J for a name over and over because nothing counted the asking, and a
+# counted question repeats just as badly — worse, because it repeats a number
+# that is supposed to be going up.
+_MAX_SETUP_ASKS = 3
+
+
+def _setup_asks(user_key: str, field: str) -> int:
+    if not user_key:
+        return 0
+    asks = _onboarding(user_key).get("setup_asks")
+    if not isinstance(asks, dict):
+        return 0
+    value = asks.get(field)
+    return value if isinstance(value, int) else 0
+
+
+def _record_setup_ask(user_key: str, field: str) -> None:
+    if not user_key:
+        return
+    asks = dict(_onboarding(user_key).get("setup_asks") or {})
+    asks[field] = _setup_asks(user_key, field) + 1
+    _update_onboarding(user_key, setup_asks=asks)
+
+
+def _mark_setup_stalled(user_key: str) -> None:
+    """Stop asking. Not done — just not worth asking a fourth time.
+
+    Nothing unsafe follows from giving up here: `calorie_gate` still refuses
+    every number while the age is unknown, and refuses them outright for a
+    known minor. What is lost is the calorie estimate, which is a thing this
+    person has now declined to answer for three turns running.
+    """
+    _update_onboarding(user_key, setup="stalled")
 
 
 def _mark_confirm_asked(user_key: str, field: str) -> None:
@@ -1284,7 +1340,12 @@ def _messages(history: Iterable[dict[str, Any]]) -> list[tuple[str, str]]:
 
 # The first words of DISCLOSURE_MESSAGE. Ted writes this sentence; the model
 # does not, which is what makes it usable as proof rather than a hint.
-_DISCLOSURE_MARKER = "Ted stores your profile"
+# Both wordings count. The notice was rewritten in Ted's own voice on 4 Sep
+# 2026, and every transcript before that carries the old sentence. The durable
+# record is what answers this for the users who already have one; the scan is
+# the fallback, and dropping the old sentence from it would re-disclose anyone
+# whose consent predates the state file.
+_DISCLOSURE_MARKERS = ("Ted stores your profile", "i keep your profile")
 
 
 def _disclosure_was_sent(
@@ -1315,7 +1376,9 @@ def _disclosure_was_sent(
     if user_key and _onboarding(user_key).get("forgotten_at"):
         return False
     return any(
-        role == "assistant" and _DISCLOSURE_MARKER in text and PRIVACY_URL in text
+        role == "assistant"
+        and any(marker in text for marker in _DISCLOSURE_MARKERS)
+        and PRIVACY_URL in text
         for role, text in _messages(history)
     )
 
@@ -1503,18 +1566,36 @@ def _given_name(
     return None
 
 
-def _personalized_disclosure(name: str | None) -> str:
-    """Disclosure and goal question in one message, per SCOPING.md §3.4.
+SETUP_INTRO = (
+    "before i’m any use to you, quick five questions to get your calorie "
+    "number. a minute tops."
+)
 
-    These used to be two sends, the second fired from a daemon thread after a
-    one-second sleep. A failed send — or a gateway restart inside that second
-    — left onboarding stalled: no goal question, and no record anywhere that
-    one was owed. One message removes the thread, the sleep, and the whole
-    failure mode rather than adding a retry to work around it.
+
+def _personalized_disclosure(name: str | None) -> str:
+    """The notice, then why, then question one — in a single send.
+
+    Vandy asked for two bubbles here, with the notice on its own. The reason
+    is good: the name lands in this message, and while `_clean_name` was a
+    blocklist a mis-parsed answer went out inside the privacy notice — "hey
+    Can I send you voice notes 🙂" is a real one. What the split cannot be is
+    two sends. That is what this used to be, the second fired from a daemon
+    thread after a one-second sleep, and a failed send or a restart inside
+    that second left onboarding stalled with no record that anything was
+    owed; order 08 deleted it, and the hook returns one string anyway.
+
+    So the notice goes first and carries no name, which is the part that
+    actually protected it, and the greeting that used to open this message is
+    gone — the name now appears where it reads as address rather than as a
+    label on a legal notice.
+
+    The open goal question moved out of here to the far side of the number.
+    Asking someone what they want to change before Ted knows anything about
+    them was asking them to do the work; it lands better once the number is
+    on the table and it follows from it.
     """
-    if name:
-        return f"hey {name} 🙂\n\n{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
-    return f"{DISCLOSURE_MESSAGE}\n\n{GOAL_QUESTION}"
+    intro = f"right, {name} — {SETUP_INTRO}" if name else SETUP_INTRO
+    return f"{DISCLOSURE_MESSAGE}\n\n{intro}\n\n{_setup_question(0)}"
 
 
 def _asks_for_name(text: str) -> bool:
@@ -1609,6 +1690,10 @@ def consent_gate(
     name = _given_name(history, user_key)
     if name:
         _remember_name(user_key, name)
+        # The notice carries question 1/5, so the five are running from here
+        # and that copy is the first time the age was asked.
+        _mark_setup_running(user_key)
+        _record_setup_ask(user_key, SETUP_QUESTIONS[0][0])
         return _personalized_disclosure(name)
 
     # The model asked in its own words. Record that it was asked and let it
@@ -1628,6 +1713,10 @@ def consent_gate(
         # answered, and has no consent record to this day, and Vinit had a
         # meal and a run logged behind the same silence. The name was only
         # ever how the disclosure was addressed, never the reason it is owed.
+        # No name, but the same five questions: the number does not depend on
+        # knowing what to call somebody.
+        _mark_setup_running(user_key)
+        _record_setup_ask(user_key, SETUP_QUESTIONS[0][0])
         return _personalized_disclosure(None)
 
     _record_name_ask(user_key)
@@ -1935,6 +2024,14 @@ _ACTIVITY_PHRASES: tuple[tuple[str, str], ...] = (
     ("at my desk", "sedentary"),
     ("desk job", "sedentary"),
     ("office job", "sedentary"),
+    # Question 5/5 offers "desk most of it, on your feet, or training
+    # regularly", and people answer a multiple choice by echoing one of the
+    # choices. Not one of the three parsed until 4 Sep 2026 — the question
+    # invited three answers the parser could not read, which is the same
+    # mistake as asking for a birthday it cannot use.
+    ("desk most", "sedentary"),
+    ("on your feet", "light"),
+    ("training regularly", "active"),
     ("hardly move", "sedentary"),
     ("barely move", "sedentary"),
     ("on my feet", "light"),
@@ -2083,6 +2180,38 @@ def _weight_from_answer_context(
         if _WEIGHT_RANGE_KG[0] <= value <= _WEIGHT_RANGE_KG[1]:
             return value
     return None
+
+
+def _correction_value(field: str, written: str) -> float | None:
+    """A correction to a pending measurement, read from the user's own words.
+
+    Nothing is anchored here, because there is nothing to anchor to and
+    nothing to disambiguate: a pending measurement already names its field,
+    and the next thing this person typed is either about that field or about
+    nothing.
+
+    Anchoring is what broke it. `_answer_after_question` hunts the transcript
+    for Ted's question — and Hermes writes the *model's* text to the
+    transcript, never the gate's, so the confirmation Ted actually sent is not
+    in the history at all. What is there is whatever the model wrote instead,
+    which on 4 Sep 2026 was "ok, noting 60kg". "63 actually" therefore found
+    no anchor, fell back to scanning, and read 60 straight back out of the
+    model's own sentence: the correction was thrown away and the doubted
+    number stood, which is the exact failure the confirmation exists to stop.
+    """
+    if field == "weight_kg":
+        explicit = _find_weight_kg([written])
+        low, high = _WEIGHT_RANGE_KG
+    else:
+        explicit = _find_height_cm([written])
+        low, high = _HEIGHT_RANGE_CM
+    if explicit is not None:
+        return explicit
+    bare = _BARE_MEASUREMENT.search(written)
+    if not bare:
+        return None
+    value = float(bare.group(1))
+    return value if low <= value <= high else None
 
 
 def _sex_from_answer_context(
@@ -2252,6 +2381,60 @@ UNDER_18_REFUSAL = (
 )
 
 
+# The counted five. Order is fixed and the count is a promise: these are
+# exactly the five Mifflin–St Jeor inputs, which is what makes "five
+# questions" literally true. A sixth would be a lie, so the city and the
+# check-in time wait until the first reminder is actually being set.
+#
+# 1/5 stays plain and unfunny while everything around it is cheeky. The age
+# answer is the only thing that makes the under-18 refusal reachable, so a
+# joke inviting someone to lie there is the one joke that costs something.
+SETUP_QUESTIONS: tuple[tuple[str, str], ...] = (
+    ("age", "how old are you? beta's 18+"),
+    ("height_cm", "how tall are you?"),
+    ("weight_kg", "and your weight?"),
+    ("sex", "male or female? the formula needs one or the other."),
+    (
+        "activity",
+        "how active is a normal day? desk most of it, on your feet, or "
+        "training regularly?",
+    ),
+)
+
+
+def _setup_question(index: int) -> str:
+    """Question `index` of five, carrying its own count."""
+    _, question = SETUP_QUESTIONS[index]
+    return f"*{index + 1}/5* {question}"
+
+
+def _next_setup_field(profile: CalorieProfile) -> tuple[int, str] | None:
+    """The first of the five still outstanding, or None when all are in."""
+    for index, (field, _) in enumerate(SETUP_QUESTIONS):
+        if getattr(profile, field) is None:
+            return index, field
+    return None
+
+
+def _setup_payoff(profile: CalorieProfile) -> str:
+    """The number, and why it is that number and not a smaller one.
+
+    Delivered mid-flow as the reward for answering, which is the one thing
+    worth taking from Rex Nutribot. What is deliberately not taken is the
+    cut that follows it there — Rex drops to 80% of TDEE against a goal
+    weight and a date, and a deficit is the exact thing Ted must never hand
+    anybody. Maintenance is the only number that goes out.
+    """
+    estimate = _estimated_maintenance(profile)
+    return (
+        "got it, all five ✅\n\n"
+        f"roughly *{estimate:,} kcal* a day for you — that's your "
+        "*maintenance*, the number where nothing moves. it's saved now, and "
+        "it's a safe one for us both to track against.\n\n"
+        f"{GOAL_QUESTION}"
+    )
+
+
 def _missing_profile_reply(profile: CalorieProfile) -> str | None:
     missing = (
         (profile.height_cm, "before i can do that maths, how tall are you?"),
@@ -2290,6 +2473,171 @@ def _estimated_maintenance(profile: CalorieProfile) -> int:
         "very active": 1.9,
     }
     return int(round(resting * factors[profile.activity] / 10) * 10)
+
+
+def _resolve_measurements(
+    profile: CalorieProfile,
+    history: Iterable[dict[str, Any]],
+    user_message: str,
+    user_key: str,
+) -> tuple[CalorieProfile, str | None]:
+    """Be sure, or ask — settle height and weight before either is a fact.
+
+    A number arrives wrapped in a hedge ("around 60-65"), pointed at the past
+    ("i was 70 last year"), pointed at a goal ("goal is 59"), or in a unit that
+    had to be converted — and until 4 Sep 2026 every one of those was stored as
+    a settled fact about right now. The model's reading of the sentence is not
+    what gets stored; this parse is. So this is where the doubt has to surface.
+
+    Returns the profile with whatever is settled, and a question to send
+    instead of the model's reply when something needs confirming. Shared by
+    `setup_gate` and `calorie_gate` so the counted five questions and a later
+    target conversation cannot drift apart on what counts as certain.
+    """
+    written = _user_written_text(user_message)
+    readers = {
+        "height_cm": _height_from_answer_context,
+        "weight_kg": _weight_from_answer_context,
+    }
+
+    # A field already put in doubt is answered only by what the user says now,
+    # never by the transcript. Otherwise the doubted number is re-read next
+    # turn and kept regardless of the reply.
+    for field in _MEASUREMENT_FIELDS:
+        if _confirm_was_asked(user_key, field):
+            profile = replace(
+                profile, **{field: _stored_measurement(user_key, field)}
+            )
+
+    pending = _pending_measurement(user_key)
+    if pending is not None:
+        field = pending["field"]
+        if _is_measurement_confirmation(written):
+            _remember_measurement(
+                user_key, field, pending["value"], pending.get("from")
+            )
+            _clear_pending_measurement(user_key)
+            profile = replace(profile, **{field: pending["value"]})
+        else:
+            fresh = _correction_value(field, written)
+            _clear_pending_measurement(user_key)
+            if (
+                fresh is not None
+                and not _answer_is_uncertain(written)
+                and not _converted_from(written)
+            ):
+                # They corrected it. The correction is a plain answer, so it
+                # stands without another round of asking.
+                _remember_measurement(user_key, field, fresh)
+                profile = replace(profile, **{field: fresh})
+            else:
+                # Neither a yes nor a usable number. The doubted value does not
+                # become a fact by default — the plain question comes back
+                # instead.
+                profile = replace(profile, **{field: None})
+
+    for field, read_answer in readers.items():
+        if getattr(profile, field) is None:
+            continue
+        if _stored_measurement(user_key, field) is not None:
+            continue
+        value = read_answer(history, written)
+        if value is None:
+            continue
+        converted = _converted_from(written)
+        if not (_answer_is_uncertain(written) or converted):
+            continue
+        _set_pending_measurement(user_key, field, value, converted)
+        _mark_confirm_asked(user_key, field)
+        profile = replace(profile, **{field: None})
+        LOGGER.info(
+            "ted_measurement_unconfirmed user_key=%s field=%s", user_key, field
+        )
+        return profile, _confirm_measurement_reply(field, value, converted)
+
+    return _with_stored_measurements(profile, user_key), None
+
+
+def setup_gate(
+    history: Iterable[dict[str, Any]],
+    user_message: str,
+    user_key: str = "",
+) -> str | None:
+    """Drive the counted five questions, from the name to the number.
+
+    The old flow was reactive: it asked for height only when the model was
+    already about to say a calorie number, so a person could talk to Ted for
+    days with an empty profile and then get four questions in a row at the
+    worst possible moment. This asks up front, says why first, and counts
+    down, which is what stops people being — Vandy's words — "a little bit in
+    the mix".
+
+    It reuses `_resolve_measurements`, so a hedged or converted answer here
+    gets the same read-back it would get later. Nothing about certainty is
+    decided twice.
+    """
+    if _setup_state(user_key) != "running":
+        return None
+
+    profile = extract_calorie_profile(history, user_message)
+    _remember_age(user_key, profile.age)
+    age = profile.age if profile.age is not None else _stored_age(user_key)
+
+    # Same rule as everywhere else, and it has to be here too: the five
+    # questions end in a calorie number, so a minor must never finish them.
+    if (age is not None and age < 18) or _is_known_minor(user_key):
+        _mark_setup_done(user_key)
+        return UNDER_18_REFUSAL
+
+    profile = replace(profile, age=age)
+    profile, doubt = _resolve_measurements(profile, history, user_message, user_key)
+    if doubt:
+        return doubt
+
+    outstanding = _next_setup_field(profile)
+    if outstanding is not None:
+        index, field = outstanding
+        if _setup_asks(user_key, field) >= _MAX_SETUP_ASKS:
+            _mark_setup_stalled(user_key)
+            LOGGER.info(
+                "ted_setup_stalled user_key=%s field=%s", user_key, field
+            )
+            return None
+        _record_setup_ask(user_key, field)
+        return _setup_question(index)
+
+    # All five are in. The read-back comes before the number, because the one
+    # error nobody else can catch is a value that parsed cleanly and wrong —
+    # Pallavi's height was 12 cm short and the sentence handing her the number
+    # promised it was "worked out only from the numbers you gave me".
+    #
+    # It is not a sixth question. It names nothing new and asks for nothing;
+    # it repeats what she already said and invites a correction, so "five
+    # questions" is still true.
+    written = _user_written_text(user_message)
+    state = _summary_state(user_key)
+    if state is None:
+        _mark_summary_shown(user_key)
+        _record_setup_ask(user_key, "summary")
+        LOGGER.info("ted_setup_summary_shown user_key=%s", user_key)
+        return _profile_summary(profile, user_key)
+    if state == "shown":
+        agreed = _is_measurement_confirmation(written) or _is_nothing_wrong(written)
+        # Both matchers are whole-string on purpose, so a real agreement can
+        # miss: "yep that's right" is in neither set. Showing the numbers
+        # again costs little and catches a genuine correction, but it cannot
+        # be the answer forever — an unbounded re-ask is the pestering loop
+        # with a friendlier face. After the same bound as everything else,
+        # the read-back has done its job: they have seen their numbers three
+        # times and not objected.
+        if not agreed and _setup_asks(user_key, "summary") < _MAX_SETUP_ASKS:
+            _record_setup_ask(user_key, "summary")
+            return _profile_summary(profile, user_key)
+        _mark_summary_agreed(user_key)
+
+    _mark_setup_done(user_key)
+    LOGGER.info("ted_setup_complete user_key=%s", user_key)
+    return _setup_payoff(profile)
 
 
 def calorie_gate(
@@ -2335,74 +2683,10 @@ def calorie_gate(
         return AGE_QUESTION
     profile = replace(profile, age=age)
 
-    # Be sure, or ask. A number arrives wrapped in a hedge ("around 60-65"),
-    # pointed at the past ("i was 70 last year"), pointed at a goal ("goal is
-    # 59"), or in a unit that had to be converted — and until 4 Sep 2026 every
-    # one of those was stored as a settled fact about right now. The model's
-    # reading of the sentence is not what gets stored; this parse is. So this
-    # is where the doubt has to surface.
     written = _user_written_text(user_message)
-    readers = {
-        "height_cm": _height_from_answer_context,
-        "weight_kg": _weight_from_answer_context,
-    }
-
-    # A field already put in doubt is answered only by what the user says now,
-    # never by the transcript. Otherwise the doubted number is re-read next
-    # turn and kept regardless of the reply.
-    for field in _MEASUREMENT_FIELDS:
-        if _confirm_was_asked(user_key, field):
-            profile = replace(
-                profile, **{field: _stored_measurement(user_key, field)}
-            )
-
-    pending = _pending_measurement(user_key)
-    if pending is not None:
-        field = pending["field"]
-        if _is_measurement_confirmation(written):
-            _remember_measurement(
-                user_key, field, pending["value"], pending.get("from")
-            )
-            _clear_pending_measurement(user_key)
-            profile = replace(profile, **{field: pending["value"]})
-        else:
-            fresh = readers[field](history, written)
-            _clear_pending_measurement(user_key)
-            if (
-                fresh is not None
-                and not _answer_is_uncertain(written)
-                and not _converted_from(written)
-            ):
-                # They corrected it. The correction is a plain answer, so it
-                # stands without another round of asking.
-                _remember_measurement(user_key, field, fresh)
-                profile = replace(profile, **{field: fresh})
-            else:
-                # Neither a yes nor a usable number. The doubted value does not
-                # become a fact by default — the plain question comes back
-                # below instead.
-                profile = replace(profile, **{field: None})
-
-    for field, read_answer in readers.items():
-        if getattr(profile, field) is None:
-            continue
-        if _stored_measurement(user_key, field) is not None:
-            continue
-        value = read_answer(history, written)
-        if value is None:
-            continue
-        converted = _converted_from(written)
-        if not (_answer_is_uncertain(written) or converted):
-            continue
-        _set_pending_measurement(user_key, field, value, converted)
-        _mark_confirm_asked(user_key, field)
-        profile = replace(profile, **{field: None})
-        LOGGER.info(
-            "ted_measurement_unconfirmed user_key=%s field=%s", user_key, field
-        )
-        return _confirm_measurement_reply(field, value, converted)
-
-    profile = _with_stored_measurements(profile, user_key)
+    profile, doubt = _resolve_measurements(profile, history, user_message, user_key)
+    if doubt:
+        return doubt
 
     missing_reply = _missing_profile_reply(profile)
     if missing_reply:
@@ -2991,6 +3275,12 @@ def transform_response(
     unreadable = unreadable_document_gate(user_message)
     if unreadable:
         return unreadable
+    # The counted five, while they are running. Above the calorie gate because
+    # it owns the same fields and would otherwise ask for them in its own
+    # uncounted words, breaking the "1/5" promise mid-flow.
+    counted = setup_gate(history, user_message, user_key)
+    if counted:
+        return counted
     calorie = calorie_gate(history, user_message, response_text, user_key)
     if calorie:
         return calorie
