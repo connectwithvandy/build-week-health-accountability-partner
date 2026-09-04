@@ -7141,3 +7141,72 @@ class TheCountedFiveTest(unittest.TestCase):
         self.assertEqual(
             gates._find_activity(["desk, plus the gym every single day"]), "light"
         )
+
+    def _to_summary(self) -> str:
+        self.start()
+        self.turn("33")
+        self.turn("170cm")
+        self.turn("62kg")
+        self.turn("female")
+        return self.turn("desk most of it")
+
+    def test_saying_it_is_wrong_asks_which_bit(self) -> None:
+        """Amit sent exactly "its wrong" on 4 Sep and got the same four lines
+        back. That answers nobody — he had already read them, which is how he
+        knew they were wrong."""
+        self.assertIn("here's what i've got:", self._to_summary())
+        reply = self.turn("its wrong")
+        self.assertEqual(reply, gates.SUMMARY_FIX_QUESTION)
+        self.assertNotIn("here's what i've got:", reply)
+
+    def test_the_correction_is_taken_and_the_numbers_go_back_up(self) -> None:
+        self._to_summary()
+        self.turn("its wrong")
+        reply = self.turn("weight is 90 kg not 62")
+        self.assertIn("90 kg", reply)
+        self.assertIn("here's what i've got:", reply)
+        self.assertEqual(gates._stored_measurement(self.USER_KEY, "weight_kg"), 90.0)
+
+    def test_a_correction_lands_without_being_asked_which_bit(self) -> None:
+        """Harshal did not wait to be asked — he wrote the right number
+        straight back. Taking it is the whole reason the numbers are shown."""
+        self._to_summary()
+        reply = self.turn("Weight is 90 kg not 62 kg")
+        self.assertEqual(gates._stored_measurement(self.USER_KEY, "weight_kg"), 90.0)
+        self.assertIn("90 kg", reply)
+
+    def test_every_line_of_the_summary_can_be_corrected(self) -> None:
+        for text, field, expected in (
+            ("my height is 175", "height_cm", 175.0),
+            ("age is 34", "age", 34),
+            ("im male actually", "sex", "male"),
+            ("i'm on my feet all day", "activity", "light"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(gates._summary_correction(text).get(field), expected)
+
+    def test_a_bare_number_after_a_summary_is_not_guessed(self) -> None:
+        """Four lines carry numbers, so "90" names none of them. Guessing
+        which is the family of bugs this whole flow exists to stop."""
+        self.assertEqual(gates._summary_correction("90"), {})
+
+    def test_a_weight_equal_to_the_age_is_not_a_weight(self) -> None:
+        """Belt and braces for the 4 Sep failure.
+
+        The weight range starts at 30, so every adult age from 30 to 99 sits
+        inside it. Two real users answered "33" to "how old are you?" and had
+        33 kg filed against them.
+        """
+        self.start()
+        self.turn("33")
+        profile = gates.CalorieProfile(age=33, weight_kg=33.0)
+        settled, _ = gates._resolve_measurements(profile, [], "33", self.USER_KEY)
+        self.assertIsNone(settled.weight_kg)
+
+    def test_saying_the_unit_means_you_meant_it(self) -> None:
+        """Somebody who is 33 and weighs 33 kg is telling Ted something."""
+        self.start()
+        self.turn("33")
+        profile = gates.CalorieProfile(age=33, weight_kg=33.0)
+        settled, _ = gates._resolve_measurements(profile, [], "33 kg", self.USER_KEY)
+        self.assertEqual(settled.weight_kg, 33.0)

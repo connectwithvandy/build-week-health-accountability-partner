@@ -1942,6 +1942,13 @@ _WEIGHT_STONE = re.compile(
 )
 
 
+# Did this person actually name a weight unit, or just type a number?
+_WEIGHT_UNIT_STATED = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:kgs?|kilos?|kilograms?|lbs?|pounds?|stone)\b",
+    re.IGNORECASE,
+)
+
+
 def _find_weight_kg(texts: list[str]) -> float | None:
     joined = "\n".join(texts)
     # "kg" used to be closed by \b, which the very common "63.5kgs" fails on:
@@ -2512,6 +2519,87 @@ def _setup_profile(
     return replace(profile, **{asked: answer})
 
 
+SUMMARY_FIX_QUESTION = (
+    "which bit’s off? send me the right one — age, height, weight, or how "
+    "active a normal day is."
+)
+
+# "no", "nope", "that's wrong". Says something is off and nothing else.
+_SOMETHING_IS_WRONG = re.compile(
+    r"\b(?:wrong|not right|incorrect|isn’t right|isnt right|not correct|"
+    r"off|mistake|error|no|nope|nah)\b",
+    re.IGNORECASE,
+)
+
+# Which field a correction is about, when the person names it.
+_FIELD_WORDS: tuple[tuple[str, str], ...] = (
+    ("weight_kg", r"weigh|weight"),
+    ("height_cm", r"height|tall"),
+    ("age", r"\bage\b|years old|yrs old"),
+)
+
+
+def _says_something_is_wrong(text: str) -> bool:
+    return bool(_SOMETHING_IS_WRONG.search(text or ""))
+
+
+def _summary_correction(written: str) -> dict[str, Any]:
+    """Whatever the person just corrected, read from their own words.
+
+    Named field first — "weight is 90" is unambiguous and is how people
+    actually correct a read-back. Only then units, because "90 kg" says which
+    field it is without naming it. A bare number is deliberately not read:
+    after a four-line summary there is no way to know which line it means,
+    and guessing is the whole family of bugs this flow exists to stop.
+    """
+    found: dict[str, Any] = {}
+    for field, pattern in _FIELD_WORDS:
+        if not re.search(pattern, written, re.IGNORECASE):
+            continue
+        if field == "age":
+            value: Any = _find_age([written])
+            if value is None:
+                bare = re.search(r"\b(\d{2})\b", written)
+                value = int(bare.group(1)) if bare else None
+        else:
+            value = _correction_value(field, written)
+        if value is not None:
+            found[field] = value
+    if "weight_kg" not in found:
+        by_unit = _find_weight_kg([written])
+        if by_unit is not None:
+            found["weight_kg"] = by_unit
+    if "height_cm" not in found:
+        by_unit = _find_height_cm([written])
+        if by_unit is not None:
+            found["height_cm"] = by_unit
+    sex = _find_sex([written])
+    if sex is not None:
+        found["sex"] = sex
+    activity = _find_activity([written])
+    if activity is not None:
+        found["activity"] = activity
+    return found
+
+
+def _apply_summary_correction(
+    profile: CalorieProfile, user_key: str, found: dict[str, Any]
+) -> CalorieProfile:
+    for field, value in found.items():
+        if field in _MEASUREMENT_FIELDS:
+            _remember_measurement(user_key, field, value)
+        elif field == "age":
+            _remember_age(user_key, value)
+        else:
+            _update_onboarding(user_key, **{field: value})
+    LOGGER.info(
+        "ted_summary_corrected user_key=%s fields=%s",
+        user_key,
+        ",".join(sorted(found)),
+    )
+    return replace(profile, **found)
+
+
 def _setup_payoff(profile: CalorieProfile) -> str:
     """The number, and why it is that number and not a smaller one.
 
@@ -2571,6 +2659,27 @@ def _estimated_maintenance(profile: CalorieProfile) -> int:
     return int(round(resting * factors[profile.activity] / 10) * 10)
 
 
+def _with_stored_profile_fields(
+    profile: CalorieProfile, user_key: str
+) -> CalorieProfile:
+    """Fill sex and activity from what this user already answered, and save
+    what is new. The measurement equivalent of `_with_stored_measurements`,
+    for the two fields that had no durable home at all."""
+    if not user_key:
+        return profile
+    record = _onboarding(user_key)
+    fields: dict[str, Any] = {}
+    for field in ("sex", "activity"):
+        current = getattr(profile, field)
+        if current is None:
+            stored = record.get(field)
+            if isinstance(stored, str) and stored:
+                fields[field] = stored
+        elif record.get(field) != current:
+            _update_onboarding(user_key, **{field: current})
+    return replace(profile, **fields) if fields else profile
+
+
 def _resolve_measurements(
     profile: CalorieProfile,
     history: Iterable[dict[str, Any]],
@@ -2595,6 +2704,30 @@ def _resolve_measurements(
         "height_cm": _height_from_answer_context,
         "weight_kg": _weight_from_answer_context,
     }
+
+    # A bare number that is exactly the age this person just gave is their age.
+    #
+    # Belt and braces for the 4 Sep failure. `_setup_profile` stops the
+    # transcript deciding what a counted answer answers, which is the real
+    # fix; this catches the same collision anywhere else, because the weight
+    # range starts at 30 and every adult age from 30 to 99 sits inside it. Two
+    # real users answered "33" to "how old are you?" and had 33 kg filed.
+    #
+    # Only when they did not name a unit, and only when no weight is on file:
+    # somebody who says "33 kg" at 33 is telling Ted something, and somebody
+    # correcting a stored weight has already been through this.
+    age = _stored_age(user_key)
+    if (
+        profile.weight_kg is not None
+        and age is not None
+        and float(age) == profile.weight_kg
+        and _stored_measurement(user_key, "weight_kg") is None
+        and not _WEIGHT_UNIT_STATED.search(written)
+    ):
+        LOGGER.info(
+            "ted_weight_equals_age_ignored user_key=%s value=%s", user_key, age
+        )
+        profile = replace(profile, weight_kg=None)
 
     # A field already put in doubt is answered only by what the user says now,
     # never by the transcript. Otherwise the doubted number is re-read next
@@ -2726,7 +2859,25 @@ def setup_gate(
         LOGGER.info("ted_setup_summary_shown user_key=%s", user_key)
         return _profile_summary(profile, user_key)
     if state == "shown":
+        # Somebody correcting a number is the point of showing it. Take the
+        # correction first, before anything decides whether they agreed.
+        found = _summary_correction(written)
+        if found:
+            profile = _apply_summary_correction(profile, user_key, found)
+            _record_setup_ask(user_key, "summary")
+            return _profile_summary(profile, user_key)
+
         agreed = _is_measurement_confirmation(written) or _is_nothing_wrong(written)
+
+        # "its wrong" and nothing else. Amit sent exactly that on 4 Sep and
+        # got the same four lines back, which answers nobody: he had already
+        # read them, that is how he knew. Ask which line, and the answer above
+        # picks it up next turn.
+        if not agreed and _says_something_is_wrong(written):
+            _record_setup_ask(user_key, "summary")
+            LOGGER.info("ted_summary_disputed user_key=%s", user_key)
+            return SUMMARY_FIX_QUESTION
+
         # Both matchers are whole-string on purpose, so a real agreement can
         # miss: "yep that's right" is in neither set. Showing the numbers
         # again costs little and catches a genuine correction, but it cannot
@@ -2788,6 +2939,12 @@ def calorie_gate(
     profile = replace(profile, age=age)
 
     written = _user_written_text(user_message)
+    # Sex and activity are answered once and never change in a way Ted should
+    # guess at, but until 4 Sep they were re-read from the transcript on every
+    # turn and nowhere else. A long enough conversation scrolls the answer out
+    # of the window, and then Ted asks again — for something this person
+    # already told him, which is the complaint that started all of this.
+    profile = _with_stored_profile_fields(profile, user_key)
     profile, doubt = _resolve_measurements(profile, history, user_message, user_key)
     if doubt:
         return doubt
