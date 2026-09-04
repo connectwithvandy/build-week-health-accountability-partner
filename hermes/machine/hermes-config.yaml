@@ -114,10 +114,10 @@ display:
   media_ack:
     image: "ooh a pic \U0001F440 taking a look, one sec\u2026"
   provider_messages:
-    auth: "something's broken on my end, not yours. try me again in a bit."
-    policy: "that one didn't land. mind saying it a different way?"
-    rate_limit: "too many at once. give me a minute and send it again."
-    generic: "my brain's gone quiet for a second \U0001F605 send that again in a minute?"
+    auth: "something's broken on my end, not yours. give me a bit?"
+    policy: "that one didn't land. say it another way for me?"
+    rate_limit: "too many at once, i'm catching up \U0001F605 give me a minute?"
+    generic: "my brain hung for a sec \U0001F605 back on track. send that again?"
     stall: ""
 tts:
   provider: openai

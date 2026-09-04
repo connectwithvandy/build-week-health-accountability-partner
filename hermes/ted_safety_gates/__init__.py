@@ -360,7 +360,7 @@ def _confirm_measurement_reply(
         said, noun = f"{value:g} kg", "weight"
     if converted_from:
         return (
-            f"that's about {said} — going with that as your {noun}. "
+            f"that's about {said}, going with that as your {noun}. "
             "shout if it's off, i don't want a wrong number in your file."
         )
     return (
@@ -513,7 +513,7 @@ def _deferral_reply(until: date) -> str:
     acknowledging.
     """
     return (
-        f"{_spoken_date(until)}, locked 📌 i'll leave you alone till then — "
+        f"{_spoken_date(until)}, locked 📌 i'll leave you alone till then. "
         "message me any time before that if you need anything."
     )
 
@@ -793,7 +793,7 @@ def _ted_asked_about_deletion(history: Iterable[dict[str, Any]]) -> bool:
 # bet again, so the gate asks the question itself and remembers that it did.
 # The heuristic above stays as a fallback, for a model that gets there first.
 DELETE_CONFIRMATION_QUESTION = (
-    "this deletes everything i have on you — your profile, targets, logs and "
+    "this deletes everything i have on you: your profile, targets, logs and "
     "this whole conversation. there is no undo. do you want me to delete all "
     "of it? reply “delete” if you do."
 )
@@ -1580,7 +1580,7 @@ def _given_name(
 
 SETUP_INTRO = (
     "before i’m any use to you, quick five questions to get your calorie "
-    "number. a minute tops."
+    "number. one minute tops, pakka promise \U0001f91e"
 )
 
 
@@ -1606,7 +1606,7 @@ def _personalized_disclosure(name: str | None) -> str:
     them was asking them to do the work; it lands better once the number is
     on the table and it follows from it.
     """
-    intro = f"right, {name} — {SETUP_INTRO}" if name else SETUP_INTRO
+    intro = f"right {name}, {SETUP_INTRO}" if name else SETUP_INTRO
     return f"{DISCLOSURE_MESSAGE}\n\n{intro}\n\n{_setup_question(0)}"
 
 
@@ -2461,7 +2461,7 @@ def _maintenance_or_target_flow(user_message: str, response_text: str) -> bool:
 # lowercase, and it says why it is asking.
 AGE_QUESTION = "quick one before i do calorie maths. how old are you? beta's 18+"
 UNDER_18_REFUSAL = (
-    "i can’t do calorie numbers with you — this one’s adults only for now. "
+    "i can’t do calorie numbers with you. this one’s adults only for now. "
     "sorry, that one’s not mine to bend."
 )
 
@@ -2603,7 +2603,7 @@ def _setup_profile(
 
 
 SUMMARY_FIX_QUESTION = (
-    "which bit’s off? send me the right one — age, height, weight, or how "
+    "which bit’s off? send me the right one: age, height, weight, or how "
     "active a normal day is."
 )
 
@@ -2737,7 +2737,7 @@ def _setup_payoff(profile: CalorieProfile) -> str:
     estimate = _estimated_maintenance(profile)
     return (
         "got it, all five ✅\n\n"
-        f"roughly *{estimate:,} kcal* a day for you — that's your "
+        f"roughly *{estimate:,} kcal* a day for you. that's your "
         "*maintenance*, the number where nothing moves. it's saved now, and "
         "it's a safe one for us both to track against.\n\n"
         f"{GOAL_QUESTION}"
@@ -3234,8 +3234,8 @@ def _claim_types(text: str) -> set[str]:
 # NOT_DONE means Ted claimed an action no tool performed. NOT_SAVED means the
 # tool ran and the storage was down — SCOPING.md #27: say the update was not
 # saved and ask them to send it again.
-CLAIM_NOT_DONE = "i couldn’t get that done just now — try me again in a minute?"
-STORAGE_NOT_SAVED = "that didn’t save, send it again in a minute."
+CLAIM_NOT_DONE = "my brain hung for a sec \U0001f605 back on track. try me again?"
+STORAGE_NOT_SAVED = "that one didn’t save, my fault not yours. send it again?"
 # The same stripped reply, to somebody who never asked for anything to happen.
 #
 # On 3 Sep at 22:58:30 a tester said "i think you should really really look at
@@ -3362,79 +3362,17 @@ def _number(value: Any) -> str:
     return f"{round(number):,}"
 
 
-def meal_breakdown(
-    meal: dict[str, Any], day: dict[str, Any], user_key: str = ""
-) -> str:
-    """The numbers for this meal, then the day so far.
-
-    Written by the gate, from what was actually saved, because the model
-    forgets it, reorders it, or quietly rounds it away. On 3 Sep a logged plate
-    came back as "logged 👍 sprouts bowl in — you're at roughly 1060 kcal": no
-    per-meal numbers at all, and "roughly" in front of a figure read straight
-    out of the database. Guardrail 5: the model gets interpretation and voice,
-    deterministic code gets the facts.
-
-    SOUL.md tells Ted not to write these figures itself, so this is the only
-    place they come from and they cannot appear twice.
-    """
-    rows = [
-        ("calories", _number(meal.get("calories")), ""),
-        ("protein", _number(meal.get("proteinGrams")), "g"),
-        ("carbs", _number(meal.get("carbohydrateGrams")), "g"),
-        ("fat", _number(meal.get("fatGrams")), "g"),
-        # Fibre was left out of this block when it was written, while being
-        # stored and counted like everything else. It is the one line here a
-        # user can act on the same day, and Ted's own drafts kept adding it
-        # back, so the block was showing less than the model wanted to say.
-        ("fiber", _number(meal.get("fiberGrams")), "g"),
-    ]
-    # A zero is dropped rather than printed. "carbs 0g" is not a fact about a
-    # plate of food, it is a gap in the estimate wearing a number's clothes,
-    # and guardrail 1 is explicit that a silent zero corrupts the day.
-    lines = [
-        f"{label} {value}{unit}"
-        for label, value, unit in rows
-        if value and value != "0"
-    ]
-    if not lines:
-        return ""
-
-    meals = day.get("meals")
-    header = f"*Meal {meals}*" if isinstance(meals, int) and meals > 0 else "*Meal*"
-    lines = [header, ""] + lines
-
-    day_block = _daily_overview(day, user_key)
-    if day_block:
-        lines.append("")
-        lines.append(day_block)
-    return "\n".join(lines)
-
-
-def _calorie_bar(eaten: float, target: float, width: int = 10) -> str:
-    """Ten squares. Green for eaten, hollow for what is left.
-
-    Deliberately not a percentage and not a warning colour. The bar fills and
-    that is all it does: nobody is told they have gone too far, because the
-    target is maintenance and eating to maintenance is not a failure. Past it
-    the bar is simply full.
-    """
-    if target <= 0:
-        return ""
-    filled = int(round(min(eaten / target, 1.0) * width))
-    return "\U0001F7E9" * filled + "\u2B1C" * (width - filled)
-
-
 # "how much dal roughly?", "how many rotis was that?", "what size portion?"
 #
 # A question about the amount, in the same breath as an exact calorie count
 # for that amount. Ted cannot be both still asking and already sure, and the
 # block underneath makes him look like he was guessing. The estimate is an
 # estimate either way; what has to go is the pretence that a number is
-# pending. If the portion genuinely matters, the person will correct it, and
-# a correction is a thing this flow already handles.
+# pending. If the portion genuinely matters the person will correct it, and a
+# correction is a thing this flow already handles.
 _ASKS_ABOUT_PORTION = re.compile(
     r"\b(?:how (?:much|many|big|large)|what (?:size|portion)|"
-    r"roughly how|portion size|how's the portion)\b",
+    r"roughly how|portion size)\b",
     re.IGNORECASE,
 )
 
@@ -3454,49 +3392,135 @@ def _without_portion_question(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def meal_breakdown(
+    meal: dict[str, Any], day: dict[str, Any], user_key: str = ""
+) -> str:
+    """This meal, then the day, in Rex Nutribot's layout.
+
+    Written by the gate, from what was actually saved, because the model
+    forgets it, reorders it, or quietly rounds it away. On 3 Sep a logged
+    plate came back as "logged 👍 sprouts bowl in, you're at roughly 1060
+    kcal": no per meal numbers at all, and "roughly" in front of a figure read
+    straight out of the database. Guardrail 5: the model gets interpretation
+    and voice, deterministic code gets the facts.
+
+    SOUL.md tells Ted not to write these figures itself, so this is the only
+    place they come from and they cannot appear twice.
+    """
+    rows = [
+        ("Calories", _number(meal.get("calories")), " kcal"),
+        ("Protein", _number(meal.get("proteinGrams")), "g"),
+        ("Fat", _number(meal.get("fatGrams")), "g"),
+        ("Carbs", _number(meal.get("carbohydrateGrams")), "g"),
+        ("Sugars", _number(meal.get("sugarGrams")), "g"),
+        ("Fiber", _number(meal.get("fiberGrams")), "g"),
+    ]
+    # A zero is dropped rather than printed. "Carbs: 0g" is not a fact about a
+    # plate of food, it is a gap in the estimate wearing a number's clothes,
+    # and guardrail 1 is explicit that a silent zero corrupts the day.
+    lines = [
+        f"{label}: {value}{unit}"
+        for label, value, unit in rows
+        if value and value != "0"
+    ]
+    if not lines:
+        return ""
+
+    meals = day.get("meals")
+    heading = "\U0001F37D\uFE0F Meal Summary:"
+    if isinstance(meals, int) and meals > 0:
+        heading = f"\U0001F37D\uFE0F Meal {meals} Summary:"
+    lines = [heading] + lines
+
+    day_block = _daily_overview(day, user_key)
+    if day_block:
+        lines.append("")
+        lines.append(day_block)
+    return "\n".join(lines)
+
+
+def _calorie_bar(eaten: float, target: float, width: int = 6) -> str:
+    """Six circles and the percentage, as in the reference.
+
+    Deliberately not a warning colour. The bar fills and that is all it does:
+    the target is maintenance, and eating to maintenance is not a failure.
+    """
+    if target <= 0:
+        return ""
+    share = eaten / target
+    filled = int(round(min(share, 1.0) * width))
+    circles = "\U0001F7E2" * filled + "\u26AA" * (width - filled)
+    return f"{circles} {round(share * 100)}%"
+
+
+def _left(consumed: float | None, target: float | None) -> str:
+    """" (271 left)", or nothing when there is no target to be left of."""
+    if consumed is None or not target:
+        return ""
+    return f" ({round(target - consumed):,g} left)"
+
+
+def _macro_targets(user_key: str) -> dict[str, float]:
+    """Grams a day for protein, fat and carbs, from the maintenance figure.
+
+    Only ever a split of maintenance, never of a cut, so nothing here can
+    become a deficit by arithmetic. Protein is set from bodyweight rather
+    than from calories because that is how the number is actually used;
+    fat takes a quarter of the day; carbs are whatever is left.
+    """
+    record = _onboarding(user_key) if user_key else {}
+    target = record.get("maintenance_kcal")
+    weight = record.get("weight_kg")
+    if not isinstance(target, (int, float)) or target <= 0:
+        return {}
+    out: dict[str, float] = {}
+    if isinstance(weight, (int, float)) and weight > 0:
+        out["proteinGrams"] = round(weight * 1.6)
+    fat = round(target * 0.25 / 9)
+    out["fatGrams"] = fat
+    protein_kcal = out.get("proteinGrams", 0) * 4
+    out["carbohydrateGrams"] = round((target - protein_kcal - fat * 9) / 4)
+    return out
+
+
 def _daily_overview(day: dict[str, Any], user_key: str) -> str:
     """The day so far, against the number the five questions produced.
 
-    "X left" needs something to be left of, and until the counted five stored
-    a maintenance figure there was nothing — which is why this block used to
-    be one line of raw totals. It is maintenance, never a cut: the target is
-    the value the user agreed to in their own read-back, so this cannot
-    quietly become a deficit.
+    "Left" needed something to be left of, and until the counted five stored
+    a maintenance figure there was nothing. It is maintenance, never a cut:
+    the target is the value the user agreed to in their own read back, so
+    this cannot quietly become a deficit.
     """
     day_calories = day.get("calories")
     if not day_calories:
         return ""
     target = _onboarding(user_key).get("maintenance_kcal") if user_key else None
+    macros = _macro_targets(user_key)
 
-    rows = ["*Today*"]
+    rows = ["\U0001F4CA Daily Overview:"]
     if isinstance(target, (int, float)) and target > 0:
+        rows.append(f"Calories: {_number(day_calories)}{_left(day_calories, target)}")
         bar = _calorie_bar(float(day_calories), float(target))
         if bar:
             rows.append(bar)
-        left = round(float(target) - float(day_calories))
-        # Same shape as the meal above it — one figure per line, label first —
-        # so the eye reads straight down the two blocks. What is left rides on
-        # the calories line because that is the line it is left of.
-        #
-        # Past maintenance there is nothing left, and "-200 left" turns a
-        # neutral number into a scolding. It just stops counting.
-        suffix = f" ({left:,} left)" if left > 0 else ""
-        rows.append(f"calories {_number(day_calories)}{suffix}")
     else:
-        rows.append(f"calories {_number(day_calories)}")
-    # Carbs, fat and fibre are only here once Convex sums them. The day
+        rows.append(f"Calories: {_number(day_calories)}")
+
+    # Carbs, fat, sugars and fibre appear only once Convex sums them. The day
     # summary carried calories and protein alone until 4 Sep, so a gate that
-    # assumed the rest would print blanks against a live deployment that has
-    # not caught up. Absent is absent; the line simply does not appear.
-    for label, key, unit in (
-        ("protein", "proteinGrams", "g"),
-        ("carbs", "carbohydrateGrams", "g"),
-        ("fat", "fatGrams", "g"),
-        ("fiber", "fiberGrams", "g"),
+    # assumed the rest would print blanks against a deployment that has not
+    # caught up. Absent is absent; the line simply does not appear.
+    for label, key in (
+        ("Protein", "proteinGrams"),
+        ("Fat", "fatGrams"),
+        ("Carbs", "carbohydrateGrams"),
+        ("Sugars", "sugarGrams"),
+        ("Fiber", "fiberGrams"),
     ):
         value = _number(day.get(key))
-        if value and value != "0":
-            rows.append(f"{label} {value}{unit}")
+        if not value or value == "0":
+            continue
+        rows.append(f"{label}: {value}g{_left(day.get(key), macros.get(key))}")
     return "\n".join(rows)
 
 
@@ -4380,11 +4404,34 @@ Never you:
   Any sentence you would not say out loud at a chai stall.
 
 The numbers are appended under your reply by code, from the database. Do not
-type calories or macros yourself — they will be stripped and your sentence
-may go with them. Your job is the one human line above them."""
+type calories or macros yourself. They will be stripped and your sentence may
+go with them. Your job is the one human line above them."""
 
 
-def _voice_card(user_key: str) -> str:
+PLATE_CARD = """When a plate lands, your line is the whole personality. The
+blocks under it are a spreadsheet. You are the friend looking at their lunch.
+
+  react to the actual food, not to "a meal"
+  one specific thing you noticed
+  leave a door open that is not about the portion
+
+Real you:
+  "poha with peanuts, arre proper monday food \U0001f642 chai with it?"
+  "rajma chawal on a wednesday, respect \U0001f604 homemade?"
+  "that is a lot of green for one plate \U0001f957 who cooked?"
+
+Never you:
+  "how much dal roughly?"  the numbers are already under you
+  "logged \U0001f44d"               a receipt, not a reaction
+  "Nice meal!"              says nothing about their meal"""
+
+
+# The gateway renders a photo as this, and nothing else in a message looks
+# like it.
+_IMAGE_NOTE = re.compile(r"\[image received\]", re.IGNORECASE)
+
+
+def _voice_card(user_key: str, plate: bool = False) -> str:
     """The voice card, with the person's name in it when we know it.
 
     SOUL.md says "I use names occasionally" twice, in prose. Not one of its
@@ -4403,10 +4450,11 @@ def _voice_card(user_key: str) -> str:
     onboarding.
     """
     name = _known_name(user_key)
+    base = f"{VOICE_CARD}\n\n{PLATE_CARD}" if plate else VOICE_CARD
     if not name:
-        return VOICE_CARD
+        return base
     return (
-        VOICE_CARD
+        base
         + f"\n\nYou are talking to {name}. Their name is for the beat where "
         "something lands: a nudge they have already skipped, a streak worth "
         "marking, one soft push. Never as a greeting, never in every message, "
@@ -4548,7 +4596,7 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
         for part in (
             _gated_reply_context(user_key),
             memory_context,
-            _voice_card(user_key),
+            _voice_card(user_key, plate=bool(_IMAGE_NOTE.search(raw_message))),
         )
         if part
     ]

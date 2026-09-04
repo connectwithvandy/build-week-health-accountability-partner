@@ -49,8 +49,8 @@ def reset_user(user_key: str) -> None:
 # gets after giving their name, and it should be readable as one here.
 VANDY_DISCLOSURE = (
     f"{DISCLOSURE_MESSAGE}\n\n"
-    "right, Vandy — before i’m any use to you, quick five questions to get "
-    "your calorie number. a minute tops.\n\n"
+    "right Vandy, before i’m any use to you, quick five questions to get "
+    "your calorie number. one minute tops, pakka promise \U0001f91e\n\n"
     "*1/5* how old are you? beta's 18+"
 )
 
@@ -4215,19 +4215,19 @@ class MealBreakdownTest(unittest.TestCase):
 
     def test_the_meal_numbers_are_broken_out_one_per_line(self) -> None:
         out = self.transform("ooh sprouts bowl 😍 proper protein for a veg plate")
-        self.assertIn("calories 220", out)
-        self.assertIn("protein 14g", out)
-        self.assertIn("carbs 30g", out)
-        self.assertIn("fat 3g", out)
-        self.assertIn("fiber 9g", out)
+        self.assertIn("Calories: 220 kcal", out)
+        self.assertIn("Protein: 14g", out)
+        self.assertIn("Carbs: 30g", out)
+        self.assertIn("Fat: 3g", out)
+        self.assertIn("Fiber: 9g", out)
 
     def test_the_day_total_comes_after_the_meal_not_instead_of_it(self) -> None:
         out = self.transform("ooh sprouts bowl")
-        self.assertIn("calories 1,060", out)
-        self.assertIn("protein 46g", out)
-        self.assertIn("*Today*", out)
+        self.assertIn("Calories: 1,060", out)
+        self.assertIn("Protein: 46g", out)
+        self.assertIn("Daily Overview", out)
         # Order matters: this meal first, the day underneath.
-        self.assertLess(out.index("calories 220"), out.index("*Today*"))
+        self.assertLess(out.index("Calories: 220"), out.index("Daily Overview"))
 
     def test_ted_s_own_words_are_kept_and_come_first(self) -> None:
         out = self.transform("ooh sprouts bowl 😍 proper protein for a veg plate")
@@ -4236,7 +4236,7 @@ class MealBreakdownTest(unittest.TestCase):
     def test_the_day_line_is_dropped_when_it_would_repeat_the_meal(self) -> None:
         """First meal of the day: "220" then "day so far 220" reads as a bug."""
         out = self.transform("ooh sprouts bowl", day={"calories": 220, "proteinGrams": 14})
-        self.assertIn("calories 220", out)
+        self.assertIn("Calories: 220 kcal", out)
         self.assertNotIn("day so far", out)
 
     def test_nothing_is_appended_when_no_meal_was_logged(self) -> None:
@@ -4255,10 +4255,10 @@ class MealBreakdownTest(unittest.TestCase):
             meal={"calories": 1234.6, "proteinGrams": 45.2, "carbohydrateGrams": 0, "fatGrams": 0},
             day={"calories": 2500.0, "proteinGrams": 90.0},
         )
-        self.assertIn("calories 1,235", out)
-        self.assertIn("protein 45g", out)
-        self.assertIn("calories 2,500", out)
-        self.assertIn("*Today*", out)
+        self.assertIn("Calories: 1,235 kcal", out)
+        self.assertIn("Protein: 45g", out)
+        self.assertIn("Calories: 2,500", out)
+        self.assertIn("Daily Overview", out)
         # A zero macro is omitted rather than printed as a hollow "carbs 0g".
         self.assertNotIn("carbs 0g", out)
 
@@ -4273,7 +4273,7 @@ class MealBreakdownTest(unittest.TestCase):
             logged_meal=self.MEAL,
             day_summary=self.DAY,
         )
-        self.assertIn("calories 220", out)
+        self.assertIn("Calories: 220 kcal", out)
 
     def test_no_emoji_ever_sits_beside_a_metric(self) -> None:
         """SOUL.md: emoji belong in what Ted says, never in what Ted counts."""
@@ -5180,15 +5180,15 @@ class TedsVoiceSurvivesTheFigureStripTest(unittest.TestCase):
             {"calories": 619, "proteinGrams": 40.8},
         )
         self.assertIn("good breakfast lineup", out)
-        self.assertIn("calories 614", out)
+        self.assertIn("Calories: 614 kcal", out)
         # The model's own numbers appear nowhere, so nothing is printed twice.
         self.assertNotIn("615", out)
         # "41g protein" is the model's phrasing and is stripped; "protein 41g"
         # is the block's own. It can legitimately appear twice — the meal and
         # the day round to the same figure on the first meal of the day.
         self.assertNotIn("41g protein", out)
-        self.assertIn("protein 41g", out)
-        self.assertLess(out.index("good breakfast"), out.index("calories 614"))
+        self.assertIn("Protein: 41g", out)
+        self.assertLess(out.index("good breakfast"), out.index("Calories: 614"))
 
     def test_a_line_of_pure_numbers_still_goes(self) -> None:
         self.assertEqual(gates.words_without_figures("1,340 cal, 58g protein"), "")
@@ -5798,7 +5798,7 @@ class TheDayLineIsWrittenOnceTest(unittest.TestCase):
         )
         self.assertIn("veggie peanut toast", out)
         self.assertNotIn("Today · 3 meals", out)
-        self.assertEqual(out.count("*Today*"), 1)
+        self.assertEqual(out.count("Daily Overview"), 1)
 
     def test_the_shapes_a_model_reaches_for(self) -> None:
         for said in (
@@ -6651,7 +6651,7 @@ class OnboardingAdvancesOnceTest(unittest.TestCase):
         second = self.turn("UD", "nice to meet you")
         self.assertEqual(
             second,
-            f"{DISCLOSURE_MESSAGE}\n\nright, UD — {gates.SETUP_INTRO}\n\n"
+            f"{DISCLOSURE_MESSAGE}\n\nright UD, {gates.SETUP_INTRO}\n\n"
             f"{gates._setup_question(0)}",
         )
         self.assertEqual(second.count(gates.PRIVACY_URL), 1)
@@ -6813,7 +6813,7 @@ class TheCountedFiveTest(unittest.TestCase):
     def test_the_name_leads_straight_into_question_one(self) -> None:
         delivered = self.start()
         self.assertTrue(delivered.startswith(DISCLOSURE_MESSAGE))
-        self.assertIn("right, Vandy", delivered)
+        self.assertIn("right Vandy", delivered)
         self.assertTrue(delivered.endswith(gates._setup_question(0)))
         # The old open goal question is gone from here.
         self.assertNotIn(GOAL_QUESTION, delivered)
