@@ -154,7 +154,7 @@ def case_the_counted_five() -> Thread:
     different every turn and none of it goes out: while the five are running
     the count belongs to Ted, not to whatever the model decided to ask.
     """
-    t = Thread("the counted five, name to number")
+    t = Thread("the counted six, name to number to check-in")
     t.send("hey", "hi! what brings you here?")
     t.send("Pallavi", "lovely to meet you, what are your goals?")
     t.send("31", "got it, and your height?")
@@ -163,7 +163,16 @@ def case_the_counted_five() -> Thread:
     t.send("63 actually", "great, and are you male or female?")
     t.send("female", "last one, activity level?")
     t.send("desk most of it", "perfect, here's your target")
-    t.send("yep", "here we go")
+    # 6/6. In her own words rather than one of the three offered labels,
+    # because that is what people actually send.
+    t.send("lose fat", "here we go")
+    # The read-back, then the number, then the one check-in question.
+    t.send("yep", "great, all set!")
+    # The last reply reads "that didn't save", and that is the right answer
+    # here, not a bug: this script runs with the Convex variables removed, so
+    # the write really cannot happen. A gate that claimed the time was saved
+    # anyway would be the exact failure the claim gate exists to prevent.
+    t.send("9pm", "locked in, you're all set!")
     return t
 
 
