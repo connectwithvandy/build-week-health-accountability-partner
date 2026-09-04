@@ -2,6 +2,25 @@ model:
   provider: openrouter
   default: anthropic/claude-sonnet-5
   max_tokens: 1024
+  # The window Ted actually gets, which is not the window the model has.
+  #
+  # OpenRouter caps prompt size by credit tier. On 4 Sep 2026 that cap was
+  # 16,300 tokens while Sonnet advertises 200,000, and Hermes sizes
+  # compression off the advertised number: it would have compacted at
+  # 149,232 tokens, so every long thread was refused with HTTP 402 "Prompt
+  # tokens limit exceeded" long before the safety net could fire. A user
+  # forty messages in simply stopped getting answers.
+  #
+  # Lowering `compression.threshold` does nothing, because
+  # `_effective_threshold_percent` raises anything under a 512K window back
+  # to 0.75. The only lever that moves is the window itself, and it is an
+  # explicit override that beats every other source.
+  #
+  # 16,000 makes compaction fire at 12,729 tokens, leaving 3,571 of headroom
+  # under the cap. Raise this when the credit tier rises, or Ted summarises
+  # more often than he needs to. It is not a limit on what he remembers:
+  # everything durable lives in Convex, not in the conversation window.
+  context_length: 16000
 agent:
   max_turns: 60
   verbose: false

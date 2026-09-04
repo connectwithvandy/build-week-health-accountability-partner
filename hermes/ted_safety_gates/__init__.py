@@ -2607,10 +2607,17 @@ SUMMARY_FIX_QUESTION = (
     "active a normal day is."
 )
 
-# "no", "nope", "that's wrong". Says something is off and nothing else.
+# Searched anywhere in the reply, so every word here has to be unambiguous.
+#
+# It used to carry a bare "no", "nope", "nah" and "off", which read "no
+# problem, proceed" and "i have no allergies, go ahead" as complaints. Bare
+# "no" answering "anything off?" means nothing is off, which is the opposite,
+# and `_is_nothing_wrong` already has it. A loose word in a searched pattern
+# is the same mistake as a strict pattern in a whole string match, just
+# pointing the other way.
 _SOMETHING_IS_WRONG = re.compile(
-    r"\b(?:wrong|not right|incorrect|isn’t right|isnt right|not correct|"
-    r"off|mistake|error|no|nope|nah)\b",
+    r"\b(?:wrong|not right|isn’t right|isnt right|incorrect|not correct|"
+    r"that’s off|thats off|is off|mistake|mixed up|messed up)\b",
     re.IGNORECASE,
 )
 
@@ -3454,7 +3461,7 @@ def _calorie_bar(eaten: float, target: float, width: int = 6) -> str:
 
 
 def _left(consumed: float | None, target: float | None) -> str:
-    """" (271 left)", or nothing when there is no target to be left of."""
+    """The "(271 left)" tail, or nothing when there is no target."""
     if consumed is None or not target:
         return ""
     return f" ({round(target - consumed):,g} left)"
@@ -3607,9 +3614,10 @@ def strip_assistant_speak(text: str) -> str:
 # "day so far" directly underneath it. The result read as a person and a
 # dashboard talking over each other. The day is the gate's to state, once.
 _DAY_HEADER = re.compile(
-    r"^\s*today\s*[·:|\-–—]"          # "Today · 3 meals", "Today: ..."
-    r"|\b\d+\s+meals?\b"               # any line counting meals
-    r"|^\s*day\s+so\s+far\b",          # the block's own line, written early
+    r"^\s*today\s*[·:|\-–—]"                    # "Today · 3 meals", "Today:"
+    r"|\b\d+\s+meals?\b"                        # any line counting meals
+    r"|^\s*day\s+so\s+far\b"                    # the block's line before 4 Sep
+    r"|^\s*\W*\s*(?:daily\s+overview|meal(?:\s+\d+)?\s+summary)\s*:",
     re.IGNORECASE,
 )
 
@@ -4375,8 +4383,10 @@ def _gated_reply_context(user_key: str) -> str:
 VOICE_CARD = """How you sound, and this matters more than being thorough:
 
 You are a close friend in Bangalore who happens to know nutrition. Not an
-assistant. Short — one or two lines, WhatsApp not email. Lower case. One
+assistant. Short, one or two lines, WhatsApp not email. Lower case. One
 thought per message. Hinglish when it lands: arre, yaar, bas, scene.
+
+No dashes, long or short. Comma, full stop, or two sentences instead.
 
 Real examples of you:
   "ooh cheela and ketchup 😍 proper breakfast food"
@@ -4385,7 +4395,7 @@ Real examples of you:
   "can't read PDFs yet 😅 screenshot it?"
   "green tea, ten minutes on the clock ⏳"
   "that's your ten. green tea 🍵"
-  "sprouts and cutlets \u2014 two meals in, nice one \U0001f64c want to give me a
+  "sprouts and cutlets, two meals in, nice one \U0001f64c want to give me a
    protein target to aim at?"
   "three meals in and that's the solid bit \U0001f4aa water's the one still at zero"
 
@@ -4393,13 +4403,13 @@ Never you:
   "Got it! Let's adjust the breakdown:" then a bulleted table
   "Let me know if there's anything else you need!"
   "Perfect! I'll start sending you daily check-ins at 5:30 PM."
-  "Today · 3 meals" — the day line is written for you, never type it
+  "Daily Overview:" or any heading like it. The blocks write themselves
   "done, pinging you in 10 🍵" (a receipt. say the thing back instead)
   "green tea time 🍵" (a calendar alert wearing an emoji)
   The same answer you gave two hours ago with new adjectives on it
-  "so this actually means something" / "instead of a shrug" — their day
+  "so this actually means something" / "instead of a shrug". Their day
    is never the punchline
-  "give me a target" — you ask, never instruct
+  "give me a target". You ask, never instruct
   Opening with the gap. What they did comes first.
   Any sentence you would not say out loud at a chai stall.
 

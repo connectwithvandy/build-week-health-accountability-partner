@@ -5772,7 +5772,7 @@ class NoAssistantSpeakTest(unittest.TestCase):
 
 
 class TheDayLineIsWrittenOnceTest(unittest.TestCase):
-    """"Today · 3 meals" arrived between Ted's sentence and the block.
+    """"Daily Overview:" arrived between Ted's sentence and the block.
 
     3 Sep, 17:36. The block already said "day so far 670 cal, 28g protein"
     two lines below it. It was not caught by the figure strip because it
@@ -5797,12 +5797,13 @@ class TheDayLineIsWrittenOnceTest(unittest.TestCase):
             self.DAY,
         )
         self.assertIn("veggie peanut toast", out)
+        # The model's own day line goes; the block's heading is the only one.
         self.assertNotIn("Today · 3 meals", out)
         self.assertEqual(out.count("Daily Overview"), 1)
 
     def test_the_shapes_a_model_reaches_for(self) -> None:
         for said in (
-            "Today · 3 meals",
+            "Daily Overview:",
             "Today: 2 meals logged",
             "today — 4 meals",
             "you're at 3 meals now",
@@ -5838,7 +5839,7 @@ class TheVoiceRidesOnEveryTurnTest(unittest.TestCase):
     def test_it_carries_the_real_failures_as_the_never_list(self) -> None:
         for tell in (
             "Let me know if there's anything else",
-            "Today · 3 meals",
+            "Daily Overview:",
             "Perfect!",
         ):
             with self.subTest(tell=tell):
@@ -7341,3 +7342,36 @@ class TheCountedFiveTest(unittest.TestCase):
         self.assertIn("all five", payoff)
         self.assertIn("1,630", payoff)
         self.assertEqual(gates._setup_state(self.USER_KEY), "done")
+
+
+class TheDisputeMatcherIsNotTooEagerTest(unittest.TestCase):
+    """Searched anywhere in the reply, so every word in it must be unambiguous.
+
+    Found in an audit, not by a user, and it was mine: the pattern carried a
+    bare "no", "nope", "nah" and "off", so "no problem, proceed" read as a
+    complaint. Bare "no" answering "anything off?" means nothing is off, which
+    is the opposite. A loose word in a searched pattern is the same mistake as
+    a strict pattern in a whole string match, pointing the other way.
+    """
+
+    def test_a_no_inside_a_sentence_is_not_a_complaint(self) -> None:
+        for reply in (
+            "no problem, proceed",
+            "no idea, you can go ahead",
+            "i have no allergies, go ahead",
+            "im off to work, go ahead",
+        ):
+            with self.subTest(reply=reply):
+                self.assertFalse(gates._says_something_is_wrong(reply))
+                self.assertTrue(gates._agrees_to_summary(reply))
+
+    def test_a_real_complaint_still_reads_as_one(self) -> None:
+        for reply in (
+            "its wrong",
+            "no thats not right",
+            "the weight is off",
+            "you mixed up my height",
+            "thats incorrect",
+        ):
+            with self.subTest(reply=reply):
+                self.assertTrue(gates._says_something_is_wrong(reply))
