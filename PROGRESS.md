@@ -1,6 +1,6 @@
 # Ted — WhatsApp Health Accountability V1 Progress
 
-Last updated: Thu 3 Sep 2026, Asia/Kolkata
+Last updated: Fri 4 Sep 2026, Asia/Kolkata
 
 ## What we decided
 
@@ -341,6 +341,80 @@ not schedule a real WhatsApp message.
 
 Tests: 340 Python, 75 vitest.
 
+## Order 19 — 4 Sep 2026, the onboarding rebuild
+
+Designed against a real Rex Nutribot transcript (`~/Downloads/WhatsApp Chat - Rex
+Nutribot/_chat.txt`) after a morning reading live threads. Vandy's diagnosis:
+*"Ted is not understanding the responses well"* and *"people are a little bit in
+the mix"*.
+
+**Be sure, or ask.** Eight fixes, all one shape — Ted read something, was wrong,
+stored it as fact, and said nothing. `5 foot 4` and `5 feet 4 and a half inches`
+both became 152.4 cm. `63.5kgs` became 63.0. `154 lbs` was stored as **154 kg**.
+The name parser was a blocklist, so `[image received]`, `Kuch bi yaar` and `31`
+all became people's names. Consent only fired when a name was captured, so anyone
+who never answered had food logged with no notice, ever. `"9am check-in it is"`
+had no save-verb, so two users held promises nothing scheduled. And nothing
+handled deferral: "talk after the 15th" got four more onboarding questions.
+
+The damage that made it urgent: Pallavi was told her maintenance was 1,520 when
+it is 1,610, inside a sentence promising it was *"worked out only from the numbers
+you gave me"*. It used a height 12 cm shorter than she is.
+
+The rule now: a clean answer is stored silently, because confirming everything is
+its own kind of pestering. A hedge, a range, a past or goal number, or a converted
+unit is read back before it is kept. And a whole-profile summary goes up before
+any calorie number — the load-bearing one, because per-field checks only catch
+doubt Ted can *detect*, and Pallavi's height parsed cleanly and confidently wrong.
+Only she could have caught that.
+
+**One turn at a time.** `display.busy_input_mode` was `interrupt`, which aborts the
+turn in flight when a second message lands. On 3 Sep a tester sent five messages in
+eighty seconds and Ted answered them out of order. It is `queue` now, and the gate
+numbers each inbound message per phone number so a reply that was overtaken can be
+recognised as stale.
+
+**The counted five.** The old flow asked for height only when the model was already
+about to say a calorie number, so somebody could talk to Ted for days with an empty
+profile and then take four questions in a row at the worst moment. Now the name
+leads straight into the privacy notice, then *"before i'm any use to you, quick
+five questions to get your calorie number. a minute tops."*, then `1/5`. Five in a
+fixed order — age, height, weight, sex, activity — which are exactly the
+Mifflin–St Jeor inputs, so "five questions" is literally true. **`1/5` is a promise
+and a sixth question breaks it**, which is why the city and the check-in time wait
+for the first reminder. Then the read-back, then the number as the payoff, then the
+goal question, which now falls out of the number instead of being asked of somebody
+Ted knows nothing about.
+
+Taken from Rex: the counter, saying *why* before asking, and the number delivered
+mid-flow as the reward. **Not** taken: its automatic cut to 80% of TDEE against a
+goal weight and a date. A deficit is the one number Ted must never hand anybody, so
+the payoff says maintenance and says what maintenance means.
+
+Three asks per question and then Ted stops, and the read-back is bounded the same
+way. An unbounded re-ask is the loop that pestered J for a name with a friendlier
+face. Giving up costs the calorie estimate and nothing else — `calorie_gate` still
+has no age, so the under-18 refusal is untouched.
+
+**A load-bearing bug surfaced while building it.** A correction to a doubted
+measurement was read out of the transcript, and Hermes writes the *model's* text to
+the transcript, never the gate's. So Ted's confirmation — "so your weight's 60 kg?"
+— is not in the history at all; what is there is whatever the model wrote instead,
+which was "ok, noting 60kg". "63 actually" found no anchor, fell back to scanning,
+and read 60 straight back out of the model's own sentence. The correction was
+discarded and the doubted number stood, inside the one mechanism built to stop
+exactly that. It is read from the user's own words now, which needs no anchor: a
+pending measurement already names its field. **Direct gate calls cannot see this.**
+It takes a replay through `_transform_live_response` to get the model's text into
+the history, which is what `scripts/ted-onboarding-transcript.py` does.
+
+Also fixed: question 5/5 offers three answers ("desk most of it", "on your feet",
+"training regularly") and the parser could read none of them. People answer a
+multiple choice by echoing a choice.
+
+464 Python tests. **Existing users are untouched** — with no `setup` key the new
+gate is inert, so only new conversations take the counted path.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
@@ -462,13 +536,66 @@ The public web app explains Ted, sends interested visitors into the existing Wha
 
 The stripped-down landing page passes its focused tests, lint, TypeScript, and a production build. The prepared WhatsApp message remains in the button link but is no longer revealed on the page. The obsolete `TED_PERSONALITY.md` dependency and its test have been removed because Ted's personality belongs only in Hermes `SOUL.md`. Visual browser review is still pending because no browser was connected in the coding session.
 
-## Exact next step
+## Exact next step — 4 Sep 2026
 
-- Website track: visually check the live `/privacy` page in a signed-out browser when one is connected, then collect landing-page feedback.
-- Beta track: the repeating name/consent state is fixed (order 02) and a fresh thread now logs, corrects and reads back from Convex. Still open before another tester is onboarded: hide raw provider errors and force-test the Codex fallback — both are order 09, which also covers the 1000-second provider stalls that put `⚠ No response from provider` into a tester's chat five times, and the raw `ArgumentValidationError` strings the Convex actions return on a bad payload.
-- Backend track: per-user fact memory, meal and progress logs, targets, reminders and onboarding writes are all live in production and proven on a real thread. What remains is the behaviour on top of them — the duplicate check, date confirmation, the report-a-bad-reply path, and quiet-hours enforcement in code rather than prompt (order 11). Hermes shared memory must stay disabled.
-- Build check: 81 Python tests with 36 subtests, 19 web tests, lint, the Convex typecheck and the production build all pass as of 2 Sep 2026, 19:00.
-- Queue position: orders 00–07 and 10 of the fourteen-order audit queue are done, merged, pushed and deployed. Orders 08 and 09 were skipped deliberately — neither blocks 10 — and 11 depends on 10. Recommended next is 09, because raw provider errors and the 1000-second stalls are what a tester actually sees.
+Ordered by what a real user hits first.
+
+### Blocked on Vandy, not on code
+
+1. **The gateway is serving the old gate.** It started 4 Sep 12:44:53; the gate
+   source changed at 13:46:52. `python3 scripts/ted-gate-guard.py --check-only`
+   reports STALE. Nothing from order 19 is live until `hermes gateway restart`.
+   Claude Code can stop the gateway but cannot start it, so this is a human step.
+2. **Four commits are unpushed** (`aeca1c5`, `17edff6`, `80ac672`, `74b749e`).
+3. **Three of the five named users still have no reminders.** Pradosh and nagga
+   have jobs. UD, harsh, Ankie and J do not.
+
+### Then, in order
+
+4. **Watch a real thread take the counted five.** Everything in order 19 is proven
+   in tests and in an offline replay. No live WhatsApp conversation has been
+   through it. The read-back is the step to watch: it is the one that would have
+   caught Pallavi's height, and it is also the most likely to feel like an extra
+   turn.
+5. **The save-my-number ask.** Deliberately unwritten — Vandy disliked every draft.
+   It belongs after the number, never before, once Ted has actually been useful.
+6. **The meal card**, and it is blocked on two missing things, not on copy:
+   `ted_food_table.json` has 59 entries with `calories/protein/carbs/fat/fiber`
+   and **no sugars field**, and nothing stores a daily target for "X left" to
+   count against. That target must be maintenance, never a cut. The agreed
+   structure is Rex's minus the per-macro emojis, with the voice first:
+   pic → "ooo a pic 📸 let me look…" → Ted's reaction and his question → on the
+   plate → Meal Summary → Daily Overview. `words_without_figures` already strips
+   numbers from Ted's prose, so he names the food and asks while the block counts.
+7. **Order 09, the half that is left.** Provider error copy is done and the stall
+   watchdogs use `time.monotonic()`. Still open: force-test the Codex fallback,
+   and stop the raw `ArgumentValidationError` strings the Convex actions return on
+   a bad payload from reaching a chat.
+8. **Order 11 is written, tested, and not deployed.** The duplicate check, date
+   confirmation, the report-a-bad-reply path and `decideReminderDelivery` all
+   exist on `fix/order-11-milestones-10-11-12` and none of it is in production.
+
+### Open design calls
+
+- **The notice and question one share one bubble.** Vandy asked for two. The hook
+  returns a single string, and order 08 deleted the threaded second send because a
+  failure inside it stalled onboarding with no record. The notice goes first and
+  carries no name, which is the part that actually protected it from a mis-parsed
+  name. Two bubbles needs a real Hermes change, not a gate change.
+- **The read-back is an extra turn.** It is not numbered, so the promise holds,
+  but it does sit between question five and the number.
+- **Ted ignores a direct question during the five.** "what do you even do" gets
+  `1/5` back, up to three times. Bounded, but it is a version of the complaint
+  that started this. Letting genuine questions through without losing the count is
+  a change worth making if a real thread shows it landing badly.
+
+### Stale notes now corrected
+
+- `main` is **34 commits ahead** of `ship/landing-v6` and 0 behind. The old warning
+  that main was 11 behind, and the held-back `c2d82be`, no longer apply.
+- The test suite is 464 Python tests, not 81. Run it with pytest and the root
+  `conftest.py`; `python3 -m unittest` skips conftest and writes fixture keys into
+  `~/.hermes/state`, which happened again on 4 Sep and had to be cleaned by hand.
 
 ## Local design experiment — 1 Sep 2026
 
