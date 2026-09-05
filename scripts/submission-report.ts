@@ -48,6 +48,14 @@ const REPO_URL =
 const MANUAL_HEADING = "## Fill in manually before submitting";
 
 /**
+ * Written by `scripts/gateway-message-count.py`, which reads the gateway's own
+ * store because Convex structurally cannot count inbound messages. This script
+ * must never generate that section, only carry it through untouched, so a
+ * Convex refresh does not silently drop the one number Convex cannot produce.
+ */
+const GATEWAY_HEADING = "## Inbound messages, from the gateway";
+
+/**
  * The blank shape of the hand-written section, used only the first time or
  * after the section has been emptied. One row per post so each number sits
  * next to the post it came from, which is how the insight panels are read.
@@ -101,6 +109,26 @@ function readManualSection(target: string): string[] {
     return cells.slice(1).some((c) => c !== "");
   });
   return hasAnswer || hasFilledCell ? body : MANUAL_TEMPLATE;
+}
+
+/**
+ * Reads back the gateway section verbatim, or returns nothing when the file
+ * has none yet. Unlike the hand-written section there is no blank template to
+ * fall back on: an absent section means `gateway-message-count.py` has not run,
+ * and inventing a placeholder here would put an empty table where a real number
+ * belongs.
+ */
+function readGatewaySection(target: string): string[] {
+  if (!existsSync(target)) return [];
+  const lines = readFileSync(target, "utf8").split("\n");
+  const start = lines.findIndex((l) => l.trim() === GATEWAY_HEADING);
+  if (start === -1) return [];
+  let end = lines.findIndex((l, i) => i > start && l.startsWith("## "));
+  if (end === -1) end = lines.length;
+  const body = lines.slice(start + 1, end);
+  while (body.length && body[0].trim() === "") body.shift();
+  while (body.length && body[body.length - 1].trim() === "") body.pop();
+  return body.length ? [GATEWAY_HEADING, "", ...body, ""] : [];
 }
 
 /** The only convex subcommand this script may ever run. */
@@ -544,6 +572,7 @@ function main(): void {
   // the hand-written section of the existing SUBMISSION.md wins over the
   // blank template whenever it already has something in it.
   const target = join(REPO, "SUBMISSION.md");
+  md.push(...readGatewaySection(target));
   md.push(MANUAL_HEADING);
   md.push("");
   md.push(...readManualSection(target));
