@@ -1,6 +1,9 @@
 # Ted — WhatsApp Health Accountability V1 Progress
 
-Last updated: Fri 4 Sep 2026, Asia/Kolkata
+Last updated: Sat 5 Sep 2026, Asia/Kolkata
+
+Current open items are under **Open — 5 Sep 2026**, not under the older
+"Exact next step" section below, which is kept as the record of 4 Sep.
 
 ## What we decided
 
@@ -490,6 +493,277 @@ vitest, lint, tsc and the build all pass.
 the gate at 21:50:31 and the source changed at 22:27:40. Needs
 `hermes gateway restart`, which is a human step.
 
+## Order 22 — 5 Sep 2026, night, one nameless exception and an empty credit balance
+
+Two screenshots from Vandy, and the audit behind them.
+
+### The Anthropic key ran out of credit at 19:06
+
+Last Claude call that worked was 19:00:40. From 19:06:30 the log carries 64 of
+`Your credit balance is too low to access the Anthropic API`, and every turn
+after that was served by `openai/gpt-5.3-codex` over OpenRouter. 32 fallbacks
+in one evening. Patch 07 keeps the swap out of chat, correctly, so nothing in
+any conversation said Ted had changed model. Credits were topped up at 22:45
+and a direct API call confirmed the key live again before the restart.
+
+### Khusha lost a whole day of food to a 1,024-token cap
+
+At 19:36 she sent every meal of her day in one message, about twelve items.
+Ted looked all of them up over three `ted_food_lookup` calls and then hit the
+output cap while writing the log entry:
+
+    API call #4: model=openai/gpt-5.3-codex in=19359 out=1024 total=20383
+
+`out=1024` exactly, which is `model.max_tokens` in `~/.hermes/config.yaml`.
+What she received was the string `Response truncated due to output length
+limit`. Nothing was logged.
+
+The recovery already existed. `agent/conversation_loop.py` doubles the token
+budget and re-runs, up to four times, and it was gated on an api_mode set of
+`chat_completions`, `bedrock_converse` and `anthropic_messages`. The fallback
+runs `codex_responses`, which is on none of them, so the truncation fell
+straight through to the rollback return. On WhatsApp that return value is not
+an operator log line, it is Ted's reply. Fixed as patch 10, plus `max_tokens`
+raised to 4096. Output is billed as used, so a short reply costs what it did.
+
+### One nameless exception sent one message three times and five not at all
+
+`plugins/platforms/whatsapp/adapter.py` gives the bridge POST a 30s timeout.
+`str(asyncio.TimeoutError())` is the empty string, so the bare
+`except Exception as e: error=str(e)` returned `error=""` and the log read
+`Send failed: ` with nothing after it.
+
+`_send_with_retry` has a guard for exactly this, whose own comment says the
+message "may have been delivered". It matches on the words "timed out". With no
+words it could not fire, and the send fell into the branch that assumes
+anything not-network and not-timeout must be a formatting problem. Both
+symptoms came out of that one blank string:
+
+  * 21:03, Ankita. Her reply was delivered, the bridge was slow to say so, and
+    the plain-text fallback sent it again under `(Response formatting failed,
+    plain text:)`. Nothing had failed to format. That send timed out the same
+    way, so the obligation was never marked delivered, and the 22:16 restart
+    redelivered it a third time under the recovered marker. Three copies of one
+    message, two of them labelled with claims that were untrue.
+  * 21:01, five daily reviews. Wellness Monk, Parth Bhatia, Vishnu, Ankita and
+    the owner account all got `delivery error: WhatsApp send failed: ` and
+    nothing arrived. Cron has no delivery ledger, so unlike Ankita's message
+    they were never retried. Nobody was told, and the schedule shows them `ok`.
+
+Fixed as patch 09, in two places, because either alone leaves the other open:
+the adapter names its timeout, and `_send_with_retry` refuses the plain-text
+re-send when a failure carries no reason at all.
+
+### The chosen calorie number was stored and never read
+
+`target_choice_gate` asks "want me to track you against *1,700*, or *2,000*?",
+records the answer as `tracking_kcal`, and replies "*1,700* it is." Nothing
+read it back. `_daily_overview` and `_macro_targets` both used
+`maintenance_kcal`, so Gourav, who picked 1,700 at 09:46, was told at dinner he
+had 437 kcal left when against his own number he had 137. Four cards, all day,
+all wrong. He is the only user affected: everyone else picked maintenance or
+was never offered a choice.
+
+`_tracked_kcal` now reads the choice and falls back to maintenance for anyone
+onboarded before the choice existed. It cannot smuggle in a deficit, because
+the only values reachable are the two the gate computed and said out loud, and
+the lower one is floored by `_LOSS_FLOOR_KCAL` before it is ever offered.
+
+Also `Protein: 126g (-6 left)`, which Gourav received at 18:38. A minus sign
+doing the work of a word, in a line that still said "left". `_left` now says
+`(6 over)`.
+
+### Sent
+
+Apologies to Khusha and Ankita only, at 23:0x, through `hermes send`, which
+posts exact text with no model in the loop. The three who silently missed a
+9pm review were not messaged: they saw nothing break, and a ping at 11pm to
+correct something they had not noticed is more disruption than repair.
+
+### Verified
+
+`gates:guard` green, all 10 patches applied, 603 gate tests and 101 web tests
+pass, lint and tsc clean. Gourav's 22:41 day re-rendered against a copy of his
+real record reads `Calories: 1,978 (278 over)` at 116%, where it had read
+`22 left` at 99%.
+
+### Nine internal sentinels could reach a user, not one
+
+Vandy, after the fixes above: "internal failure message should be in different
+language ... not send Response truncated due to output length limit". Correct,
+and the string she saw was one of nine. `agent/conversation_loop.py` returns
+all of these as the turn's `final_response`, including a thinking-budget block
+telling a person in a health chat to run `/thinkon low` or `/model`, and a
+no-fallback line telling them to edit `config.yaml`.
+
+The gates cannot catch any of them. `transform_llm_output` fires in
+`finalize_turn`, at the end of the loop; every one of these is an early
+`return` from inside it. So patch 11 sits at `_sanitize_gateway_final_response`
+in `gateway/run.py`, the choke point every chat surface already passes through,
+ahead of the existing provider-error rewrite because these are not provider
+errors.
+
+One reply covers all nine:
+
+> oops, my brain just blanked there 🙈 that one didn't save, send it again?
+
+It started as three, one per failure shape, and Vandy's note on those drafts
+was "it should be generic, not technical, and like fun". Right on both counts:
+somebody who just sent a photo of their lunch cannot act on the difference
+between an output cap and a dropped stream, so a reply that distinguishes them
+is describing the machine to a person who asked about food. What it has to
+carry is that the message did not save, so nobody thinks a meal was logged when
+it was not, and what to do next. No model name, provider, token count or slash
+command.
+
+Reuses patch 02's `display.provider_messages.internal_failure` override, so the
+wording is editable in config.yaml without touching the patch. All nine
+sentinels verified caught against the live patched file, and five ordinary
+replies verified untouched.
+
+### A whole day in one message was logged four times and shown once
+
+Khushboo's second attempt, 22:59, after the truncation fix. One message, her
+whole day: "subha do ande ek bread ek cup chai ... phir ek roti thoda sa chawal
+and lauki k kofte ... anar ka raita phir sham ki chai or ek mathri ... aadha cup
+dudh panch makhane and do natiyal k piece". Four meals, twelve foods.
+
+All four were written. What she received was:
+
+    🍽️ Meal 4 Summary:
+    Calories: 160 kcal
+    ...
+    📊 Daily Overview:
+    Calories: 1,053 (857 left)
+
+Her breakfast, lunch and evening tea were in the database and nowhere in the
+reply. `_log_daily_entry` held the turn's meal in a single slot and assigned to
+it on every call, so three of four were overwritten before the card was drawn.
+Ted also told her "lauki kofte aur mathri dono cover ho gaye" when the mathri
+was an estimate and the makhana was wrong.
+
+Vandy: "here people can send multiple meals together for the entire day, so
+calories has to be a breakdown of all meals together ... it should be a
+permanent fix ... bcoz other users will also do it." Four changes, in that
+order of importance:
+
+1. **A food is never another food.** `_match_food` matched a table key as a raw
+   substring, so `makhan`, the alias of butter at 717 kcal per 100g, matched
+   inside `makhana`. Her five fox nuts were logged as ten grams of butter she
+   had not eaten. Matching is on whole words now, which fixes the class and not
+   the instance.
+2. **Describing a food fully no longer loses it.** Coverage was the key's
+   character length over the query's, so `chai` found tea and `chai with milk
+   and sugar` found nothing at 4/24. She lost both cups that way. Coverage is
+   counted in words now, and a word the entry already uses in its own name or
+   aliases counts as covered, so the fuller description is the better one
+   again. The cutlet the rule was written for is still refused.
+3. **Ted says which numbers are guesses.** A food the table cannot answer for is
+   still logged, from the model's estimate, and nothing said so. The card now
+   ends with "(mathri, coconut and makhana are my estimate, tell me if it's
+   off)". 64 rows cannot hold the food of a country, and the permanent answer
+   is not to keep adding rows until they can: it is to be honest about which
+   numbers are firm, so the person who ate it can correct the guess.
+4. **Every meal in a turn is kept and shown.** Meals accumulate rather than
+   overwrite, and a turn that logs more than one renders a breakdown. The first
+   version of that carried calories alone, which Vandy read and answered with
+   "but the meal breakup? calorie and other things". She is right: a calorie
+   count on its own is not a breakdown. Each meal carries its own macros now,
+   across one row rather than down a column, so four of them still fit a
+   screen:
+
+       🍽️ 4 meals logged:
+
+       1. 2 eggs, 1 bread slice, chai
+       249 kcal · 16g protein · 11g fat · 18g carbs · 1g fiber
+
+       2. 1 roti, rice, lauki kofta, anar raita
+       489 kcal · 14g protein · 16g fat · 68g carbs · 6g fiber
+
+       3. chai, 1 mathri
+       155 kcal · 5g protein · 10g fat · 10g carbs
+
+       4. half cup milk, 5 makhane, 2 coconut pieces
+       160 kcal · 3g protein · 7g fat · 20g carbs
+
+   A macro the meal has no figure for is left out rather than printed as "0g",
+   the same rule the single-meal card already follows. That card is otherwise
+   untouched and still reads down a column, because it is the reviewed layout
+   and one meal is what most turns are.
+
+Five rows were added to `ted_food_table.json` as well, for the foods real beta
+messages asked for and it could not answer: makhana, mathri, coconut, lauki
+kofta, and the papad Roshan sent at 15:18. That is the least important of the
+five changes and deliberately not the fix.
+
+19 new tests, 622 passing.
+
+## Open — 5 Sep 2026, night, three findings not acted on
+
+Written up rather than fixed. Vandy's call in the morning.
+
+### 1. Ted agreed to a target below his own floor
+
+At 22:42 Gourav asked to keep calories between 1500 and 1600 and Ted replied
+"*1550 it is*". His loss target is 1,700 and his resting burn is 1,667, so
+1,550 is under both. `target_choice_gate` only listens while
+`target_state == "asking"`, and his had closed at 09:46, so a target proposed
+later in open conversation reaches no gate at all. This is the one rule
+SCOPING.md §9 says Ted must never break, and it was walked around rather than
+broken: the model simply agreed.
+
+His card is safe. It counts against `tracking_kcal`, which is 1,700. What is
+wrong is the last thing Ted said to him, and the fact that he will probably
+get the same answer if he asks again.
+
+The shape of a fix: a gate that reads any number a user proposes as a calorie
+target, at any point, and answers with the floor instead of agreeing.
+
+### 2. Check-ins are duplicated on the owner account and mistimed for Pradosh
+
+47 cron jobs are active. Two problems, both visible in `hermes cron list`:
+
+  * **The owner gets everything twice.** `ted:27b6eabe8c71:coq10_am`,
+    `:b12_am`, `:vitd_am`, `:omega3_am` and `:iron_pm` deliver to
+    `whatsapp:144504426369026@lid`, and `CoQ10 reminder`, `B12 reminder`,
+    `Vitamin D reminder`, `omega3 reminder` and `Iron reminder` deliver to
+    `origin`, which is the same chat, at the same times. Three daily reviews
+    are scheduled too: 21:00 to `origin`, 21:00 to `whatsapp:owner@...` under
+    the key `ted:sha256:owner` which is a literal string where a hash belongs,
+    and 23:00 to her own chat.
+  * **Pradosh's whole schedule is shifted +5:30.** He asked for "2 pm and
+    10 pm" and quiet hours from 12am. He has `morning_checkin` at 13:30,
+    `midday_checkin` at 18:30, `supplements` at 15:00 and `daily_review` at
+    **02:30**, which is inside the quiet hours he asked for. Every one of his
+    times is its intended value plus 5:30. No other user's schedule is shifted,
+    so this is his record rather than the scheduler.
+
+Separately, and not a bug: Gourav, Vishnu and Roshan each said yes to all four
+nudge types and each have six jobs a day. That is what they opted into, but it
+is worth knowing what "all of them" buys before more people are asked.
+
+### 3. Ted answers English in Hinglish
+
+Measured across every chat since 3 Sep, counting romanised Hindi markers per
+message in what the user wrote against what Ted delivered:
+
+  * 17 of 26 users write **0%** Hinglish.
+  * Ted is more Hinglish than the user in **23 of 26** chats. The gap only ever
+    runs one way: Ted never answers more English than he was written to.
+  * Two users genuinely write it, Khusha at 33% and Vishnu at 28%, and matching
+    them is right.
+  * The clearest case is Ankita. Five messages, all plain English, "Yes",
+    "That's it", "Female", "Desk most of it. 2-3kms walk that's all", "9pm".
+    What she got back was "scene set 😌 abhi tak jo last meal khaya hai bhej
+    de, start wahi se karein?" and, thanks to the send bug above, she got it
+    three times.
+
+This is `SOUL.md`, not gate code. Ted has no rule that says match the language
+you were written in, and an India-first persona plus twenty protected Hinglish
+examples in context will drift that way every time. Worth a rule rather than
+an adjective, on the evidence of everything else in this file that adjectives
+lost.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
@@ -611,6 +885,9 @@ The public web app explains Ted, sends interested visitors into the existing Wha
 The stripped-down landing page passes its focused tests, lint, TypeScript, and a production build. The prepared WhatsApp message remains in the button link but is no longer revealed on the page. The obsolete `TED_PERSONALITY.md` dependency and its test have been removed because Ted's personality belongs only in Hermes `SOUL.md`. Visual browser review is still pending because no browser was connected in the coding session.
 
 ## Exact next step — 4 Sep 2026
+
+*Superseded. What is open now is under **Open — 5 Sep 2026** above; the patch
+count and gate timestamps here are 4 Sep's and have moved on.*
 
 Ordered by what a real user hits first.
 
