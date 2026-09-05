@@ -80,7 +80,15 @@ export default async function MetricsPage({
     try {
       summary = await loadSummary(convexUrl, secret);
     } catch (error) {
-      problem = error instanceof Error ? error.message : "Convex did not answer.";
+      // A ConvexError arrives with its message in `data`; anything else is a
+      // genuine failure and its own message is the most useful thing to show.
+      const data = (error as { data?: unknown })?.data;
+      problem =
+        typeof data === "string"
+          ? data
+          : error instanceof Error
+            ? error.message
+            : "Convex did not answer.";
     }
   }
 

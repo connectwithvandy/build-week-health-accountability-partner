@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
 
@@ -19,13 +19,19 @@ import { mutation, query } from "./_generated/server";
  */
 function assertSecret(supplied: string) {
   const expected = process.env.TED_SITE_SECRET;
+
+  // ConvexError, not Error: a plain throw reaches the browser as the word
+  // "Server Error" and nothing else, which would make the setup panel's promise
+  // to name the missing variable a lie. ConvexError carries its message through.
   if (!expected) {
-    throw new Error(
-      "TED_SITE_SECRET is not set on this Convex deployment, so site analytics is refusing to run. Set it with `npx convex env set TED_SITE_SECRET`.",
+    throw new ConvexError(
+      "TED_SITE_SECRET is not set on this Convex deployment. Add it in the Convex dashboard under Settings → Environment Variables, on the same deployment this site reads.",
     );
   }
   if (supplied !== expected) {
-    throw new Error("Unauthorized");
+    throw new ConvexError(
+      "TED_SITE_SECRET is set on Convex but does not match the value in the Vercel project. The two must be identical.",
+    );
   }
 }
 
