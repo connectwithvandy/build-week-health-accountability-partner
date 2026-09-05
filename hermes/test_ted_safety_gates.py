@@ -8274,3 +8274,60 @@ class InternalNoteInReplyTest(unittest.TestCase):
         ):
             with self.subTest(reply=reply):
                 self.assertEqual(gates.strip_assistant_speak(reply), reply)
+
+
+class FoodMatchingIsNotGuessingTest(unittest.TestCase):
+    """A confident number for a food nobody ate is worse than no number.
+
+    Every one of these was served to a real person. On 5 Sep 2026 "peanut -
+    15g" was logged as peanut butter and a cucumber on a plate was logged as
+    raita; on 4 Sep "soya paneer cutlets shallow fried, 4-5 pcs" came back as
+    250g of plain paneer, 662 kcal and 45g of protein. The table has no peanut
+    and no cucumber in it at all, so the first two were the matcher reaching
+    for the nearest composed dish and calling it found.
+    """
+
+    def look(self, name, grams=None):
+        item = {"name": name}
+        if grams is not None:
+            item["grams"] = grams
+        return json.loads(gates._food_lookup({"items": [item]}))
+
+    def test_the_three_that_reached_users_are_no_longer_matched(self) -> None:
+        for said in ("peanut", "cucumber", "soya paneer cutlet, shallow fried"):
+            with self.subTest(said=said):
+                self.assertIsNone(gates._match_food(said))
+                result = self.look(said)
+                self.assertEqual(result["unmatched"], [said])
+                self.assertFalse(result["items"][0]["found"])
+                self.assertEqual(result["total"]["calories"], 0)
+
+    def test_a_made_dish_is_not_priced_as_its_loudest_ingredient(self) -> None:
+        """The word that names a dish has to be in the entry too."""
+        for said in ("chicken sandwich", "paneer roll", "egg curry", "banana shake"):
+            with self.subTest(said=said):
+                self.assertIsNone(gates._match_food(said))
+
+    def test_the_words_that_did_work_still_work(self) -> None:
+        for said, expected in (
+            ("toast bread", "bread, white"),
+            ("chocolate protein powder", "whey protein powder"),
+            ("steamed rice", "rice, cooked white"),
+            ("grilled chicken", "chicken breast, cooked"),
+            ("chapati", "roti"),
+            ("dahi", "curd"),
+            ("paneer", "paneer"),
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates._match_food(said)["name"], expected)
+
+    def test_a_key_that_accounts_for_too_little_is_refused(self) -> None:
+        """"paneer" is a fifth of "soya paneer cutlet shallow fried". "bread"
+        is nearly half of "toast bread". The first is a different food."""
+        self.assertIsNone(gates._match_food("soya paneer cutlet shallow fried"))
+        self.assertIsNotNone(gates._match_food("toast bread"))
+
+    def test_every_table_key_still_finds_itself(self) -> None:
+        for key in gates._FOOD_INDEX:
+            with self.subTest(key=key):
+                self.assertIsNotNone(gates._match_food(key))

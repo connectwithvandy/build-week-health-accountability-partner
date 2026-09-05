@@ -6788,26 +6788,76 @@ def _food_index() -> dict[str, dict[str, Any]]:
 _FOOD_INDEX = _food_index()
 
 
+# Words that name a made dish rather than an ingredient. When one of these is
+# in what the user said and not in the table entry being considered, the entry
+# is the wrong food however much of the name it shares: "soya paneer cutlet,
+# shallow fried" is not paneer, and pricing it as 250g of paneer gave one
+# tester 662 kcal and 45g of protein for four cutlets on 4 Sep 2026.
+_DISH_WORDS = frozenset(
+    {
+        "fried", "fry", "cutlet", "tikki", "pakora", "pakoda", "roll", "wrap",
+        "sandwich", "burger", "curry", "gravy", "masala", "biryani", "pulao",
+        "paratha", "stuffed", "fritter", "samosa", "kebab", "kabab", "shake",
+        "smoothie", "raita", "chaat", "bhaji", "sabzi", "korma", "butter",
+    }
+)
+
+# How much of what the user said a shorter table key has to account for before
+# it is allowed to stand in for the whole thing. "bread" carries most of "toast
+# bread" and is right; "paneer" carries a fifth of "soya paneer cutlet shallow
+# fried" and is not.
+_MIN_KEY_COVERAGE = 0.4
+
+
+def _dish_words(text: str) -> frozenset[str]:
+    return frozenset(text.split()) & _DISH_WORDS
+
+
 def _match_food(query: str) -> dict[str, Any] | None:
     """The table entry a user's words most likely mean, or None.
 
-    Exact first, then containment, then a shared significant word. Nothing
-    fuzzier: a wrong match is worse than no match, because no match leaves Ted
-    estimating as it always has, while a wrong one hands it a confident number
-    for the wrong food.
+    Exact first, then a table key contained in what they said. Nothing fuzzier,
+    and this is stricter than it was, because the old rule broke its own
+    promise. On 4 and 5 Sep 2026 it answered "peanut" with peanut butter,
+    "cucumber" with raita, and "soya paneer cutlet, shallow fried" with 250g of
+    plain paneer — each one a confident number for a food nobody ate.
+
+    Three things went, each earning its place:
+
+    * Matching when what they said is inside a *key* rather than the other way
+      round. That is how a peanut became peanut butter and a cucumber became
+      raita: the table has no entry for either, and answering with the nearest
+      composed dish is worse than admitting it. Nothing in the table needs it —
+      every key matches itself exactly.
+    * Matching on one shared word of four letters or more. Any food sharing any
+      word with any other would do, and whichever came first in the dict won.
+      Nothing was using it.
+    * A key that accounts for too little of what was said, or that misses a word
+      naming a made dish. Both are the cutlet.
+
+    A near miss now returns None, which is the documented behaviour for an
+    unknown food: it comes back found:false, Ted estimates as it always has,
+    and nobody is handed a precise number for the wrong thing.
     """
     wanted = _normalise_reply(query)
     if not wanted:
         return None
     if wanted in _FOOD_INDEX:
         return _FOOD_INDEX[wanted]
-    for key, food in _FOOD_INDEX.items():
-        if len(key) >= 4 and (key in wanted or wanted in key):
-            return food
-    words = {word for word in wanted.split() if len(word) >= 4}
-    for key, food in _FOOD_INDEX.items():
-        if words & {word for word in key.split() if len(word) >= 4}:
-            return food
+
+    asked_dishes = _dish_words(wanted)
+    # Longest key first, so the most specific entry wins rather than whichever
+    # the dict happens to yield first.
+    for key in sorted(_FOOD_INDEX, key=len, reverse=True):
+        if len(key) < 4 or key not in wanted:
+            continue
+        if len(key) / len(wanted) < _MIN_KEY_COVERAGE:
+            continue
+        # A dish word they said and the entry does not have makes it a
+        # different food, whatever the two names share.
+        if asked_dishes - _dish_words(key):
+            continue
+        return _FOOD_INDEX[key]
     return None
 
 
