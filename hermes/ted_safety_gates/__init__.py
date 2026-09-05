@@ -569,6 +569,29 @@ _NOTHING_WRONG = frozenset(
         # Hinglish agreement in two words, which the one-word set missed.
         "haan sahi hai", "haan thik hai", "haan theek hai", "bilkul",
         "haan bilkul", "sab sahi", "sab sahi hai", "done", "ho gaya",
+        # Telling Ted to get on with it is agreeing.
+        #
+        # The question is "anything off? if not i'll do the maths", and on
+        # 4 Sep 2026 a tester answered "you can go ahead", then "You can do
+        # the maths", then "its ok". The first two were the plainest possible
+        # yes and matched nothing, so she was shown the same four lines of
+        # profile three times in 65 seconds before "nothing off" got through.
+        #
+        # Bare "yes", "yeah" and "yep" are deliberately still absent: to
+        # "anything off?" they can as easily mean "yes, something is off",
+        # and reading that as agreement would save a wrong profile.
+        "go ahead", "you can go ahead", "please go ahead", "go on",
+        "carry on", "proceed", "continue", "go for it", "do it",
+        "lets go", "let s go", "you can do the maths", "do the maths",
+        "you can do the math", "do the math", "you can proceed",
+        "you can continue", "ok", "okay", "k", "kk", "its ok", "it s ok",
+        "thats ok", "that s ok", "sure", "aage badho", "chalo",
+        # Answering the question in its own words. "anything off?" -> "nothing
+        # off" was not in this set either, which is how the same tester got to
+        # a third copy of her profile.
+        "nothing off", "nothing is off", "nothing wrong", "no nothing off",
+        "nothing s off", "nothings off",
+        "chalo theek hai", "haan chalo", "aage chalo",
     }
 )
 

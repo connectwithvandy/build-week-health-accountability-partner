@@ -8196,3 +8196,37 @@ class OnboardingAbandonedFieldTest(unittest.TestCase):
         self.assertNotIn("unanswered", result)
 
 
+
+
+class ProfileConfirmationWordsTest(unittest.TestCase):
+    """Telling Ted to get on with it is agreeing with the profile.
+
+    Replays 4 Sep 2026, 14:42-14:43 IST. Asked "anything off? if not i'll do
+    the maths", a tester answered "you can go ahead", then "You can do the
+    maths", then "its ok", then "nothing off". Only the last one moved things
+    along, so she was shown the same four lines of her own profile three times
+    in 65 seconds. Read from what was delivered to her, not the model's text.
+    """
+
+    def test_the_four_replies_that_tester_actually_sent_all_agree(self) -> None:
+        for reply in ("you can go ahead", "You can do the maths", "its ok", "nothing off"):
+            with self.subTest(reply=reply):
+                self.assertTrue(gates._is_nothing_wrong(reply))
+
+    def test_telling_it_to_proceed_agrees(self) -> None:
+        for reply in ("go ahead", "carry on", "proceed", "do it", "sure", "ok", "chalo"):
+            with self.subTest(reply=reply):
+                self.assertTrue(gates._is_nothing_wrong(reply))
+
+    def test_a_bare_yes_is_still_not_agreement(self) -> None:
+        """To "anything off?" a bare yes can as easily mean "yes, something is
+        off". Reading it as agreement would save a wrong profile, so these stay
+        out and Ted asks again."""
+        for reply in ("yes", "yeah", "yep", "yup"):
+            with self.subTest(reply=reply):
+                self.assertFalse(gates._is_nothing_wrong(reply))
+
+    def test_an_actual_correction_is_never_read_as_agreement(self) -> None:
+        for reply in ("the weight is wrong", "58 not 85", "im female", "change my age"):
+            with self.subTest(reply=reply):
+                self.assertFalse(gates._is_nothing_wrong(reply))
