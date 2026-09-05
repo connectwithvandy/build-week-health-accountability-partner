@@ -8078,15 +8078,14 @@ class TheNudgesAreOptInTest(unittest.TestCase):
 
 
 class OnboardingAbandonedFieldTest(unittest.TestCase):
-    """A step the model moved past without an answer is not a step it finished.
+    """A step the flow moved past without an answer is not a step it finished.
 
-    Replays what actually happened to three testers. Each was asked for one
-    thing and answered another — "Male" to a question about their city, "Male"
-    to a question about their weight, "female" to a question about their city —
-    and in every case the model simply moved the flow onward and never came
-    back. The tool call that would have completed the field was never made, so
-    the tester finished onboarding with no weight or no timezone stored, while
-    the chat kept counting up to "5/6".
+    Replays what reached three real testers, read from what was actually
+    delivered to them rather than from the model's own text. Two went through
+    the whole scripted flow — which never asks where they are — and finished
+    with no timezone, the setting their evening review is scheduled against. A
+    third was sent *2/5* and then *4/5*, so his weight was never asked for. In
+    every case the completing call was simply never made.
     """
 
     SESSION = "session-onboarding-abandoned"
@@ -8122,8 +8121,8 @@ class OnboardingAbandonedFieldTest(unittest.TestCase):
         with patch.object(gates, "_convex_request", fake_request):
             return json.loads(gates._save_onboarding(args, session_id=self.SESSION))
 
-    def test_the_city_question_answered_with_a_gender_leaves_the_field_open(self) -> None:
-        """5 Sep 2026, 12:30 IST, verbatim from the gateway store."""
+    def test_a_timezone_the_script_never_asks_for_stays_open(self) -> None:
+        """5 Sep 2026, 12:30 IST. The tool calls this tester actually produced."""
         self._run(
             {
                 "current_field": "timeZone",
@@ -8142,8 +8141,8 @@ class OnboardingAbandonedFieldTest(unittest.TestCase):
         self.assertEqual(result["unanswered"], ["timeZone"])
         self.assertIn("Ask for each one again", result["note"])
 
-    def test_the_weight_question_answered_with_a_gender_leaves_the_field_open(self) -> None:
-        """4 Sep 2026, 14:16 IST. The model moved to weight and never returned."""
+    def test_a_weight_question_that_was_never_sent_stays_open(self) -> None:
+        """4 Sep 2026, 14:16 IST. He was sent *2/5* and then *4/5*."""
         self._run(
             {
                 "current_field": "weight",

@@ -7220,21 +7220,27 @@ _ANSWERED_ONBOARDING_FIELDS = frozenset(
 def _note_abandoned_field(
     user_key: str, current_field: str, completed: Any
 ) -> list[str]:
-    """Notice a step the model walked away from without an answer.
+    """Notice a step the flow moved past without an answer.
 
-    The failure this catches is not a false claim of progress — the model never
-    claims it. It moves the flow onto a field, the user answers something else,
-    and the model quietly moves on again without ever completing it. On 4 Sep
-    2026 that lost one tester's weight and another's city; on 5 Sep it lost a
-    third tester's city. In every case the user had answered "Male" or "female"
-    to a question about weight or which city they were in, the model took the
-    answer as read, and its own chat narration kept counting up to "5/6".
-    Nothing anywhere recorded that the field was never filled.
+    Two shapes of this reached real testers, and neither one announced itself.
 
-    So the record of what was asked lives here, not in the model's account of
-    itself: whatever step the last call moved to is remembered, and if the next
-    call completes something else instead, that step is marked unanswered until
-    it really is completed.
+    The scripted questions are name, height, weight, sex, activity and goal.
+    Nothing in that list asks where the user is, so `timeZone` is only ever
+    filled when the model happens to ask conversationally. On 4 and 5 Sep 2026
+    two testers went through the whole script, got a correct summary back, and
+    finished with no timezone stored — and the timezone is what their evening
+    review is scheduled against. One of them was told "11pm it is, that's on
+    the schedule now".
+
+    The second shape is a question that simply does not arrive: a third tester
+    was sent *2/5* and then *4/5*, so he was never asked his weight and does
+    not have one.
+
+    In both, the completing call was never made, so a check on the model's
+    account of its own progress had nothing to catch — there was no claim, just
+    a gap. The record of what was asked therefore lives here: whatever step a
+    call moves to is remembered, and when the next call completes something
+    else instead, that step comes back as unanswered until it really is done.
     """
     record = _onboarding(user_key)
     asked = str(record.get("asked") or "")
@@ -7253,7 +7259,7 @@ def _note_abandoned_field(
     ):
         unanswered.add(asked)
         LOGGER.warning(
-            "ted_onboarding_field_abandoned user_key=%s field=%s moved_to=%s",
+            "ted_onboarding_field_unanswered user_key=%s field=%s moved_to=%s",
             user_key,
             asked,
             current_field,
