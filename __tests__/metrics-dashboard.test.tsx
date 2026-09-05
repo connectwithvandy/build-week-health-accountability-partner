@@ -75,7 +75,10 @@ describe("the /metrics dashboard", () => {
     const lede = screen.getByLabelText("This week, stage by stage");
     // 36 of 180 tapped, and 9 of those 36 became a first conversation.
     expect(within(lede).getByText(/20% of the people who came/)).toBeInTheDocument();
-    expect(within(lede).getByText(/25% of the people who\s+tapped/)).toBeInTheDocument();
+    // Conversations are never shown as a share of the taps: nothing links a tap
+    // to the message that follows, and people reach Ted without the site at all.
+    expect(within(lede).getByText(/not a share of the taps/)).toBeInTheDocument();
+    expect(within(lede).queryByText(/% of the people who tapped/)).not.toBeInTheDocument();
   });
 
   it("says nothing rather than 0% when a stage had nobody in it", () => {

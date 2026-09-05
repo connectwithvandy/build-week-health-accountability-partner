@@ -110,9 +110,15 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
           <div className="metric-stage metric-stage-starts">
             <p className="metric-stage-value">{thisWeek.conversationsStarted.toLocaleString()}</p>
             <p className="metric-stage-label">started talking to Ted</p>
+            {/* Deliberately not a percentage of the taps to its left. Nothing
+                links a tap to the WhatsApp message that may follow it, and
+                people reach Ted from Instagram or a forwarded number without
+                ever opening the site — so a share here would be a made-up
+                conversion rate, and on any day the site is quiet it prints
+                numbers like 2700%. */}
             <p className="metric-stage-note">
-              {share(thisWeek.conversationsStarted, thisWeek.uniqueClickers)} of the people who
-              tapped · {totals.conversationsStarted.toLocaleString()} all time
+              {totals.conversationsStarted.toLocaleString()} all time · people also reach Ted
+              without opening the site, so this is not a share of the taps
             </p>
           </div>
         </div>
@@ -231,9 +237,9 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
             {coverage.eventsScanned.toLocaleString()} site events read
             {coverage.truncated ? " (the read limit was hit, so older events are not counted)" : ""}
             {coverage.oldestEventAt
-              ? `, the oldest from ${IST_TIME.format(new Date(coverage.oldestEventAt))}`
-              : ""}
-. Read from the Convex deployment at <code>{source}</code> at{" "}
+              ? `, the oldest from ${IST_TIME.format(new Date(coverage.oldestEventAt))}. `
+              : ". "}
+            Read from the Convex deployment at <code>{source}</code> at{" "}
             {IST_TIME.format(new Date(summary.generatedAt))} IST — the same deployment the
             WhatsApp side writes to, so the conversations counted here are the conversations Ted
             actually had.
