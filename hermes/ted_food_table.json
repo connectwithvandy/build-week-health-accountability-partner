@@ -59,6 +59,11 @@
     {"name": "avocado", "aliases": ["avacado"], "portion_g": 100, "per_100g": {"calories": 160, "protein": 2, "carbs": 8.5, "fat": 14.7, "fiber": 6.7}},
     {"name": "orange juice", "aliases": ["juice", "fruit juice", "mosambi juice"], "portion_g": 200, "per_100g": {"calories": 45, "protein": 0.7, "carbs": 10.4, "fat": 0.2, "fiber": 0.2}},
     {"name": "beer", "aliases": ["lager", "pint of beer"], "portion_g": 330, "per_100g": {"calories": 43, "protein": 0.5, "carbs": 3.6, "fat": 0, "fiber": 0}},
-    {"name": "wine", "aliases": ["red wine", "white wine"], "portion_g": 150, "per_100g": {"calories": 83, "protein": 0.1, "carbs": 2.6, "fat": 0, "fiber": 0}}
+    {"name": "wine", "aliases": ["red wine", "white wine"], "portion_g": 150, "per_100g": {"calories": 83, "protein": 0.1, "carbs": 2.6, "fat": 0, "fiber": 0}},
+    {"name": "makhana, roasted", "aliases": ["makhana", "makhane", "fox nuts", "foxnuts", "phool makhana", "lotus seeds"], "portion_g": 15, "per_100g": {"calories": 347, "protein": 9.7, "carbs": 76.9, "fat": 0.1, "fiber": 14.5}},
+    {"name": "mathri", "aliases": ["mathris", "matthi", "mathari"], "portion_g": 15, "per_100g": {"calories": 500, "protein": 7.5, "carbs": 55.0, "fat": 28.0, "fiber": 2.2}},
+    {"name": "coconut, fresh", "aliases": ["coconut", "nariyal", "nariyal piece", "coconut meat"], "portion_g": 15, "per_100g": {"calories": 354, "protein": 3.3, "carbs": 15.2, "fat": 33.5, "fiber": 9.0}},
+    {"name": "lauki kofta", "aliases": ["kofta", "lauki ke kofte", "dudhi kofta", "kofte"], "portion_g": 150, "per_100g": {"calories": 170, "protein": 3.5, "carbs": 12.0, "fat": 12.0, "fiber": 2.0}},
+    {"name": "papad, roasted", "aliases": ["papad", "papadum", "appalam", "roasted papad"], "portion_g": 13, "per_100g": {"calories": 300, "protein": 20.0, "carbs": 50.0, "fat": 2.5, "fiber": 7.0}}
   ]
 }

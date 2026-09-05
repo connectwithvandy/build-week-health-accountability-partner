@@ -3942,24 +3942,66 @@ def _calorie_bar(eaten: float, target: float, width: int = 6) -> str:
 
 
 def _left(consumed: float | None, target: float | None) -> str:
-    """The "(271 left)" tail, or nothing when there is no target."""
+    """The "(271 left)" tail, or "(6 over)" past the target, or nothing.
+
+    Going over prints as going over. Subtraction alone produced "Protein: 126g
+    (-6 left)", which a real user received on 5 Sep 2026: a minus sign doing
+    the work of a word, in a line that still said "left". Being over the
+    protein target is not a failure and is not phrased as one, it is simply
+    the other side of the same number.
+    """
     if consumed is None or not target:
         return ""
-    return f" ({round(target - consumed):,g} left)"
+    remaining = round(target - consumed)
+    if remaining < 0:
+        return f" ({abs(remaining):,g} over)"
+    return f" ({remaining:,g} left)"
+
+
+def _tracked_kcal(user_key: str) -> float | None:
+    """The number the day is counted against, and the only one.
+
+    `target_choice_gate` asks "want me to track you against *1,700*, or
+    *2,000*?", stores the answer as `tracking_kcal`, and says "*1,700* it
+    is." Nothing read it back. Every meal card went on counting against
+    `maintenance_kcal`, so on 5 Sep 2026 a user who picked 1,700 was told at
+    dinner that he had 437 kcal left when against his own number he had 137.
+    Ted asked the question, repeated his answer, and then ignored it.
+
+    Reading the choice cannot smuggle in a deficit. `tracking_kcal` is only
+    ever one of two values the gate itself computed: maintenance, or the
+    lower number from `_loss_target`/`_gain_target`, which are floored by
+    `_LOSS_FLOOR_KCAL` before they are ever offered. An unanswered question
+    still closes on maintenance. So the set of numbers reachable here is the
+    set Ted was already allowed to say out loud, which is what SCOPING.md §9
+    asks for: the user provides or chooses any weight-loss target.
+
+    Maintenance stays the fallback for everyone onboarded before the choice
+    existed, and for anyone whose stored choice is unreadable.
+    """
+    if not user_key:
+        return None
+    record = _onboarding(user_key)
+    for field in ("tracking_kcal", "maintenance_kcal"):
+        value = record.get(field)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
 
 
 def _macro_targets(user_key: str) -> dict[str, float]:
-    """Grams a day for protein, fat and carbs, from the maintenance figure.
+    """Grams a day for protein, fat and carbs, from the tracked figure.
 
-    Only ever a split of maintenance, never of a cut, so nothing here can
-    become a deficit by arithmetic. Protein is set from bodyweight rather
-    than from calories because that is how the number is actually used;
-    fat takes a quarter of the day; carbs are whatever is left.
+    Split from the same number the calorie line counts against, because two
+    numbers that disagree are worse than either: a 1,700 day with a 2,000
+    macro split does not add up, and the user is the one who has to notice.
+    Protein is set from bodyweight rather than from calories because that is
+    how the number is actually used, and so a smaller day never asks for less
+    of it; fat takes a quarter of the day; carbs are whatever is left.
     """
-    record = _onboarding(user_key) if user_key else {}
-    target = record.get("maintenance_kcal")
-    weight = record.get("weight_kg")
-    if not isinstance(target, (int, float)) or target <= 0:
+    target = _tracked_kcal(user_key)
+    weight = (_onboarding(user_key) if user_key else {}).get("weight_kg")
+    if target is None:
         return {}
     out: dict[str, float] = {}
     if isinstance(weight, (int, float)) and weight > 0:
@@ -3967,22 +4009,28 @@ def _macro_targets(user_key: str) -> dict[str, float]:
     fat = round(target * 0.25 / 9)
     out["fatGrams"] = fat
     protein_kcal = out.get("proteinGrams", 0) * 4
-    out["carbohydrateGrams"] = round((target - protein_kcal - fat * 9) / 4)
+    carbs = round((target - protein_kcal - fat * 9) / 4)
+    # Protein is floored at bodyweight and does not shrink with the day, so a
+    # small enough target can leave nothing for carbohydrate. No target beats
+    # a negative one: "Carbs: 130g (-40 left)" is not a thing to tell anybody.
+    if carbs > 0:
+        out["carbohydrateGrams"] = carbs
     return out
 
 
 def _daily_overview(day: dict[str, Any], user_key: str) -> str:
-    """The day so far, against the number the five questions produced.
+    """The day so far, against the number the user is being tracked against.
 
-    "Left" needed something to be left of, and until the counted five stored
-    a maintenance figure there was nothing. It is maintenance, never a cut:
-    the target is the value the user agreed to in their own read back, so
-    this cannot quietly become a deficit.
+    "Left" needed something to be left of, and until the counted six stored a
+    figure there was nothing. That figure is `_tracked_kcal`: the number the
+    user picked when Ted offered them two, or maintenance when they were
+    never offered a choice or never answered it. It is never a number Ted
+    invented, and never below the floor.
     """
     day_calories = day.get("calories")
     if not day_calories:
         return ""
-    target = _onboarding(user_key).get("maintenance_kcal") if user_key else None
+    target = _tracked_kcal(user_key)
     macros = _macro_targets(user_key)
 
     rows = ["\U0001F4CA Daily Overview:"]
@@ -4230,18 +4278,123 @@ def _mentions_food(words: str, meal: dict[str, Any]) -> bool:
     return bool(spoken & _food_words(meal))
 
 
-def _with_meal_breakdown(
-    reply: str, meal: dict[str, Any], day: dict[str, Any], user_key: str = ""
+def _estimate_note(unmatched: list[str] | None) -> str:
+    """Which foods Ted guessed at, named, or nothing.
+
+    A food the table cannot answer for is still logged: the model estimates it
+    and the number goes into the day like any other. Nothing said so. On
+    5 Sep 2026 a user's mathri and coconut were both estimates, and Ted told
+    her "lauki kofte aur mathri dono cover ho gaye" — covered, as though they
+    had been looked up.
+
+    59 rows cannot hold the food of a country, and the honest move is not to
+    keep adding rows until they do. It is to say which numbers are firm and
+    which are a guess, so the person who actually ate it can correct the
+    guess. That is the only version of this that keeps working as the table
+    falls further behind.
+    """
+    names = [str(name).strip() for name in (unmatched or []) if str(name).strip()]
+    if not names:
+        return ""
+    # The model asks for the same food in several phrasings across a turn
+    # ("mathri", "mathri, fried", "mathri, 1 piece"). One mention each.
+    seen: list[str] = []
+    for name in names:
+        head = _normalise_reply(name.split(",")[0])
+        if head and head not in seen:
+            seen.append(head)
+    if not seen:
+        return ""
+    listed = seen[0] if len(seen) == 1 else ", ".join(seen[:-1]) + f" and {seen[-1]}"
+    verb = "is" if len(seen) == 1 else "are"
+    return f"({listed} {verb} my estimate, tell me if it's off)"
+
+
+def _meal_line(meal: dict[str, Any]) -> str:
+    """One meal's numbers on one row: "249 kcal · 16g protein · 11g fat".
+
+    The same figures the single-meal card prints down a column, across. A day
+    sent in one message is four of these, and four full cards would bury the
+    day total they add up to. A zero is dropped here for the same reason it is
+    dropped there: it is a gap in the estimate wearing a number's clothes.
+    """
+    parts: list[str] = []
+    calories = _number(meal.get("calories"))
+    if calories and calories != "0":
+        parts.append(f"{calories} kcal")
+    for label, key in (
+        ("protein", "proteinGrams"),
+        ("fat", "fatGrams"),
+        ("carbs", "carbohydrateGrams"),
+        ("fiber", "fiberGrams"),
+    ):
+        value = _number(meal.get(key))
+        if value and value != "0":
+            parts.append(f"{value}g {label}")
+    return " \u00B7 ".join(parts)
+
+
+def _meals_breakdown(
+    meals: list[dict[str, Any]], day: dict[str, Any], user_key: str = ""
 ) -> str:
-    block = meal_breakdown(meal, day, user_key)
+    """Every meal logged this turn, with its own numbers, then the day.
+
+    The single-meal card is unchanged and still carries the full macro split
+    down a column: that is the reviewed layout and it is what most turns are.
+    This is for the turn that logs several at once, where one card for the last
+    of them hides the other three entirely. On 5 Sep 2026 a user sent her whole
+    day in one message, Ted wrote all four meals to the database, and showed
+    her "Meal 4 Summary: 160 kcal".
+    """
+    blocks: list[str] = []
+    index = 0
+    for meal in meals:
+        line = _meal_line(meal)
+        if not line:
+            continue
+        index += 1
+        items = [
+            str(item).strip()
+            for item in (meal.get("items") or [])
+            if str(item).strip()
+        ]
+        named = ", ".join(items[:5])
+        if len(items) > 5:
+            named += f" +{len(items) - 5} more"
+        blocks.append(f"{index}. {named}\n{line}" if named else f"{index}. {line}")
+    if len(blocks) < 2:
+        return ""
+    out = [f"\U0001F37D\uFE0F {len(blocks)} meals logged:", ""]
+    out.append("\n\n".join(blocks))
+    day_block = _daily_overview(day, user_key)
+    if day_block:
+        out.append("")
+        out.append(day_block)
+    return "\n".join(out)
+
+
+def _with_meal_breakdown(
+    reply: str,
+    meal: dict[str, Any],
+    day: dict[str, Any],
+    user_key: str = "",
+    meals: list[dict[str, Any]] | None = None,
+    unmatched: list[str] | None = None,
+) -> str:
+    block = _meals_breakdown(meals or [], day, user_key) or meal_breakdown(
+        meal, day, user_key
+    )
     if not block:
         return reply
+    note = _estimate_note(unmatched)
+    if note:
+        block = f"{block}\n\n{note}"
     words = _without_portion_question(words_without_figures(reply))
     # The food is named exactly once. If Ted already named it, Ted's version
     # wins: "ooh cheela and ketchup" carries warmth that "besan/moong dal
     # cheela (2-3 pieces) and ketchup" does not. Matched on words rather than
     # the whole string, because Ted's phrasing is always the shorter one.
-    if not _mentions_food(words, meal):
+    if not (meals and len(meals) > 1) and not _mentions_food(words, meal):
         name = _meal_name(meal)
         if name:
             block = f"{name}\n\n{block}"
@@ -4259,6 +4412,8 @@ def transform_response(
     storage_failed: bool = False,
     report_saved: bool | None = None,
     logged_meal: dict[str, Any] | None = None,
+    logged_meals: list[dict[str, Any]] | None = None,
+    unmatched_foods: list[str] | None = None,
     day_summary: dict[str, Any] | None = None,
     reminder_set: dict[str, Any] | None = None,
     stale_turn: bool = False,
@@ -4411,6 +4566,8 @@ def transform_response(
             logged_meal,
             day_summary or {},
             user_key,
+            meals=logged_meals,
+            unmatched=unmatched_foods,
         )
     # Last, over everything above and over the model's own reply when nothing
     # above touched it. The gates before this decide *what* Ted is allowed to
@@ -5590,6 +5747,8 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         storage_failed=bool(context.get("storage_failed")),
         report_saved=report_saved,
         logged_meal=context.get("logged_meal"),
+        logged_meals=context.get("logged_meals"),
+        unmatched_foods=context.get("unmatched_foods"),
         day_summary=context.get("day_summary"),
         reminder_set=context.get("reminder_set"),
         stale_turn=_turn_is_stale(user_key, int(context.get("turn_seq") or 0)),
@@ -6802,15 +6961,87 @@ _DISH_WORDS = frozenset(
     }
 )
 
-# How much of what the user said a shorter table key has to account for before
-# it is allowed to stand in for the whole thing. "bread" carries most of "toast
-# bread" and is right; "paneer" carries a fifth of "soya paneer cutlet shallow
-# fried" and is not.
+def _dish_words(text: str) -> frozenset[str]:
+    return frozenset(text.split()) & _DISH_WORDS
+
+
+def _contains_words(haystack: list[str], needle: list[str]) -> bool:
+    """Is `needle` a run of whole words inside `haystack`?
+
+    Whole words, not raw characters. `"makhan" in "makhana"` is true of
+    strings and false of food: the table lists `makhan` as an alias of butter,
+    at 717 kcal per 100g, and makhana is a fox nut at a fifth of that. On
+    5 Sep 2026 a user's five makhane were logged as ten grams of butter she
+    had not eaten, and the same rule would read "makhane" the same way.
+    """
+    if not needle or len(needle) > len(haystack):
+        return False
+    return any(
+        haystack[i : i + len(needle)] == needle
+        for i in range(len(haystack) - len(needle) + 1)
+    )
+
+
+# Words that describe a portion rather than a food. Left over after a match
+# they say nothing about what was eaten, so they cannot make a match wrong.
+_PORTION_WORDS = frozenset(
+    {
+        "a", "an", "the", "of", "and", "with", "some", "approx", "approximately",
+        "about", "around", "piece", "pieces", "slice", "slices", "cup", "cups",
+        "glass", "glasses", "bowl", "bowls", "plate", "plates", "serving",
+        "servings", "spoon", "spoons", "tbsp", "tsp", "katori", "half", "quarter",
+        "small", "medium", "large", "big", "little", "thoda", "ek", "do", "teen",
+        "g", "gm", "gms", "gram", "grams", "kg", "ml", "l", "litre", "liter",
+    }
+)
+
+
+# A key has to account for this much of what was actually said. Unchanged in
+# spirit from the ratio it replaces, and changed in what it counts: words
+# rather than characters, and only the words that carry a food.
 _MIN_KEY_COVERAGE = 0.4
 
 
-def _dish_words(text: str) -> frozenset[str]:
-    return frozenset(text.split()) & _DISH_WORDS
+def _key_covers_enough(
+    asked_words: list[str], key: str, entry: dict[str, Any]
+) -> bool:
+    """Does the matched key account for enough of what the user said?
+
+    The rule this replaces measured the key against the *character length* of
+    the query, which punished precision. "chai" found tea and "chai with milk
+    and sugar" found nothing, because the truer description scored 4/24 and
+    the shorter one scored 4/4. On 5 Sep 2026 a user described her whole day
+    carefully and lost both cups of tea to that, in the same message that
+    logged her makhana as butter.
+
+    Two changes, and the second is the one that matters:
+
+    * Words, not characters. "protein powder" is two thirds of "chocolate
+      protein powder" however many letters chocolate happens to have.
+    * A word the entry already uses in its own name or aliases is covered, not
+      missing. "chai with milk and sugar" is spelled out in full by the entry
+      called "tea with milk and sugar", so every word of it is accounted for.
+      Portion words and bare numbers are covered for the same reason: "makhana,
+      5 pieces" says nothing about the food that "makhana" did not.
+
+    What it still refuses is the case it was written for. "soya paneer cutlet
+    shallow fried" leaves `soya` and `cutlet` unexplained by the paneer entry,
+    one content word in four, so it stays unmatched rather than being priced
+    as 250g of paneer.
+    """
+    described = {
+        word
+        for name in [str(entry.get("name") or "")] + [
+            str(alias) for alias in entry.get("aliases") or []
+        ]
+        for word in _normalise_reply(name).split()
+    }
+    key_words = set(key.split())
+    counted = [w for w in asked_words if w not in _PORTION_WORDS and not w.isdigit()]
+    if not counted:
+        return False
+    covered = sum(1 for w in counted if w in key_words or w in described)
+    return covered / len(counted) >= _MIN_KEY_COVERAGE
 
 
 def _match_food(query: str) -> dict[str, Any] | None:
@@ -6846,18 +7077,20 @@ def _match_food(query: str) -> dict[str, Any] | None:
         return _FOOD_INDEX[wanted]
 
     asked_dishes = _dish_words(wanted)
+    asked_words = wanted.split()
     # Longest key first, so the most specific entry wins rather than whichever
     # the dict happens to yield first.
     for key in sorted(_FOOD_INDEX, key=len, reverse=True):
-        if len(key) < 4 or key not in wanted:
-            continue
-        if len(key) / len(wanted) < _MIN_KEY_COVERAGE:
+        if len(key) < 4 or not _contains_words(asked_words, key.split()):
             continue
         # A dish word they said and the entry does not have makes it a
         # different food, whatever the two names share.
         if asked_dishes - _dish_words(key):
             continue
-        return _FOOD_INDEX[key]
+        entry = _FOOD_INDEX[key]
+        if not _key_covers_enough(asked_words, key, entry):
+            continue
+        return entry
     return None
 
 
@@ -6929,8 +7162,16 @@ TED_FOOD_LOOKUP_SCHEMA = {
 }
 
 
-def _food_lookup(args: dict[str, Any], **_: Any) -> str:
-    """Composition for a list of foods. No user, no writes, no side effects."""
+def _food_lookup(
+    args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
+) -> str:
+    """Composition for a list of foods. No user, no writes, no side effects.
+
+    It does record, in this turn only, which foods the table could not answer
+    for. Not user data and never written anywhere: the reply gate needs it to
+    say which numbers are estimates, and the table will always be missing
+    something, so this cannot be solved by adding rows to it.
+    """
     items = args.get("items") if isinstance(args, dict) else None
     if not isinstance(items, list) or not items:
         return _refused("Send at least one item to look up")
@@ -6959,12 +7200,21 @@ def _food_lookup(args: dict[str, Any], **_: Any) -> str:
         "fat_grams": round(sum(row["fat_grams"] for row in found), 1),
         "fiber_grams": round(sum(row["fiber_grams"] for row in found), 1),
     }
+    unmatched = [row["asked"] for row in resolved if not row.get("found")]
+    if unmatched:
+        with _TURN_LOCK:
+            turn = _TURN_CONTEXT.get(session_id or task_id)
+            if turn is not None:
+                seen = turn.setdefault("unmatched_foods", [])
+                for name in unmatched:
+                    if name not in seen:
+                        seen.append(name)
     return json.dumps(
         {
             "success": True,
             "items": resolved,
             "total": total,
-            "unmatched": [row["asked"] for row in resolved if not row.get("found")],
+            "unmatched": unmatched,
         },
         ensure_ascii=False,
     )
@@ -7073,6 +7323,16 @@ def _log_daily_entry(
             with _TURN_LOCK:
                 turn = _TURN_CONTEXT.get(session_id or task_id)
                 if turn is not None:
+                    # Appended, not assigned. People send a whole day in one
+                    # message: "subha do ande ... phir ek roti ... phir sham ki
+                    # chai ... baad mein makhane". Ted logs that as four meals,
+                    # four calls to this handler, and the single slot this used
+                    # to be kept only the last of them. On 5 Sep 2026 a user
+                    # sent her entire day and the reply said "Meal 4 Summary:
+                    # 160 kcal": breakfast, lunch and her evening tea were
+                    # written to the database and then dropped on the floor
+                    # between here and the card.
+                    turn.setdefault("logged_meals", []).append(body["meal"])
                     turn["logged_meal"] = body["meal"]
                     turn["day_summary"] = result.get("daySummary") or {}
     return json.dumps(result, ensure_ascii=False)

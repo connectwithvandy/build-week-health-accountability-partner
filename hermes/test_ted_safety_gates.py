@@ -8031,6 +8031,256 @@ class TheLosingNumberHasAFloorTest(unittest.TestCase):
         self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1600)
 
 
+class TheDayIsCountedAgainstTheChosenNumberTest(unittest.TestCase):
+    """Gourav, 5 Sep 2026. Ted asked, he answered, Ted repeated it back, and
+    then every meal card all day counted against the other number."""
+
+    KEY = "tracked-kcal"
+
+    def setUp(self) -> None:
+        gates._update_onboarding(
+            self.KEY, target_state="asking", target_lower=1700, target_maintenance=2000
+        )
+        gates._update_onboarding(self.KEY, maintenance_kcal=2000, weight_kg=75.1)
+        self.addCleanup(gates._forget_user, self.KEY)
+
+    def test_the_card_counts_against_the_number_he_picked(self) -> None:
+        gates.target_choice_gate("1700", self.KEY)
+        out = gates._daily_overview({"calories": 1563}, self.KEY)
+        # 1700 - 1563, not 2000 - 1563.
+        self.assertIn("Calories: 1,563 (137 left)", out)
+        self.assertNotIn("437 left", out)
+
+    def test_the_bar_fills_against_the_number_he_picked(self) -> None:
+        gates.target_choice_gate("1700", self.KEY)
+        out = gates._daily_overview({"calories": 1563}, self.KEY)
+        # 1563/1700 is 92%, and it read 78% against maintenance.
+        self.assertIn("92%", out)
+        self.assertNotIn("78%", out)
+
+    def test_picking_maintenance_still_counts_against_maintenance(self) -> None:
+        gates.target_choice_gate("2000", self.KEY)
+        out = gates._daily_overview({"calories": 1563}, self.KEY)
+        self.assertIn("(437 left)", out)
+
+    def test_an_unanswered_choice_falls_back_to_maintenance(self) -> None:
+        """A bare "yes" closes the question on maintenance. It must still count."""
+        self.assertIsNone(gates.target_choice_gate("yes", self.KEY))
+        out = gates._daily_overview({"calories": 1563}, self.KEY)
+        self.assertIn("(437 left)", out)
+
+    def test_someone_onboarded_before_the_choice_existed_still_gets_a_target(self) -> None:
+        key = "tracked-legacy"
+        gates._update_onboarding(key, maintenance_kcal=2000, weight_kg=75.1)
+        self.addCleanup(gates._forget_user, key)
+        self.assertIsNone(gates._onboarding(key).get("tracking_kcal"))
+        self.assertIn("(437 left)", gates._daily_overview({"calories": 1563}, key))
+
+    def test_the_macro_split_follows_the_same_number(self) -> None:
+        """A 1,700 day with a 2,000 macro split does not add up."""
+        gates.target_choice_gate("1700", self.KEY)
+        macros = gates._macro_targets(self.KEY)
+        self.assertEqual(macros["fatGrams"], round(1700 * 0.25 / 9))
+        # Protein is bodyweight, so a smaller day never asks for less of it.
+        self.assertEqual(macros["proteinGrams"], round(75.1 * 1.6))
+
+    def test_the_choice_can_never_reach_below_the_floor(self) -> None:
+        """The only two numbers reachable are the two Ted offered out loud."""
+        for answer in ("1700", "2000", "yes"):
+            with self.subTest(answer=answer):
+                gates._update_onboarding(
+                    self.KEY,
+                    target_state="asking",
+                    target_lower=1700,
+                    target_maintenance=2000,
+                )
+                gates.target_choice_gate(answer, self.KEY)
+                self.assertIn(gates._tracked_kcal(self.KEY), (1700.0, 2000.0))
+
+
+class GoingOverIsSaidInWordsTest(unittest.TestCase):
+    """"Protein: 126g (-6 left)" reached a real user on 5 Sep 2026."""
+
+    def test_over_the_target_reads_as_over(self) -> None:
+        self.assertEqual(gates._left(126, 120), " (6 over)")
+
+    def test_under_the_target_is_unchanged(self) -> None:
+        self.assertEqual(gates._left(17, 120), " (103 left)")
+
+    def test_exactly_on_the_target_is_zero_left_not_zero_over(self) -> None:
+        self.assertEqual(gates._left(120, 120), " (0 left)")
+
+    def test_no_minus_sign_survives_into_a_card(self) -> None:
+        key = "over-target"
+        gates._update_onboarding(key, maintenance_kcal=2000, weight_kg=75.1)
+        self.addCleanup(gates._forget_user, key)
+        out = gates._daily_overview(
+            {"calories": 2100, "proteinGrams": 147, "fatGrams": 56}, key
+        )
+        self.assertNotIn("-", out)
+        self.assertIn("(100 over)", out)
+
+
+class AWholeDayInOneMessageTest(unittest.TestCase):
+    """Khushboo, 5 Sep 2026, one message: "Haa subha do ande ek bread ek cup
+    chai piye phir ek roti thoda sa chawal and lauki k kofte khaye and anar ka
+    raita phir sham ki chai or ek mathri khayi and baad nei aadha cup dudh
+    panch makhane and do natiyal k piece khaye". Four meals, twelve foods. She
+    was shown "Meal 4 Summary: 160 kcal"."""
+
+    KEY = "whole-day"
+
+    MEALS = [
+        {"calories": 249, "proteinGrams": 15.8, "fatGrams": 11.3,
+         "carbohydrateGrams": 17.9, "fiberGrams": 0.7,
+         "items": ["2 eggs", "1 bread slice", "chai"]},
+        {"calories": 489, "proteinGrams": 14.1, "fatGrams": 16.1,
+         "carbohydrateGrams": 68.0, "fiberGrams": 6.4,
+         "items": ["1 roti", "rice", "lauki kofta", "anar raita"]},
+        {"calories": 155, "proteinGrams": 5.2, "fatGrams": 9.5,
+         "carbohydrateGrams": 10.3, "items": ["chai", "1 mathri"]},
+        {"calories": 160, "proteinGrams": 3.0, "fatGrams": 7.0,
+         "carbohydrateGrams": 20.0,
+         "items": ["half cup milk", "5 makhane", "2 coconut pieces"]},
+    ]
+    DAY = {"calories": 1053, "proteinGrams": 38.1, "meals": 4}
+
+    def setUp(self) -> None:
+        gates._update_onboarding(self.KEY, maintenance_kcal=1910, weight_kg=60)
+        self.addCleanup(gates._forget_user, self.KEY)
+
+    def render(self, **kw):
+        return gates._with_meal_breakdown(
+            "poora din bhar acha khaya 🙌", self.MEALS[-1], self.DAY, self.KEY,
+            meals=kw.get("meals", self.MEALS), unmatched=kw.get("unmatched"),
+        )
+
+    def test_every_meal_is_listed_not_just_the_last(self) -> None:
+        out = self.render()
+        self.assertIn("4 meals logged", out)
+        for kcal in ("249", "489", "155", "160"):
+            self.assertIn(kcal, out)
+
+    def test_every_food_she_named_appears(self) -> None:
+        out = self.render()
+        for food in ("2 eggs", "1 bread slice", "chai", "1 roti", "rice",
+                     "lauki kofta", "anar raita", "1 mathri", "half cup milk",
+                     "5 makhane", "2 coconut pieces"):
+            with self.subTest(food=food):
+                self.assertIn(food, out)
+
+    def test_each_meal_carries_its_own_macros_not_just_calories(self) -> None:
+        """A calorie count on its own is not a breakdown."""
+        out = self.render()
+        self.assertIn("249 kcal \u00b7 16g protein \u00b7 11g fat \u00b7 18g carbs", out)
+        self.assertIn("489 kcal \u00b7 14g protein \u00b7 16g fat \u00b7 68g carbs", out)
+
+    def test_a_macro_the_meal_does_not_have_is_left_out(self) -> None:
+        """Meals 3 and 4 carry no fibre. "0g fiber" is a gap, not a fact."""
+        out = self.render()
+        self.assertNotIn("0g fiber", out)
+        self.assertIn("155 kcal \u00b7 5g protein \u00b7 10g fat \u00b7 10g carbs", out)
+
+    def test_a_meal_line_is_only_the_numbers_it_has(self) -> None:
+        self.assertEqual(gates._meal_line({"calories": 100}), "100 kcal")
+        self.assertEqual(gates._meal_line({}), "")
+
+    def test_the_day_total_still_comes_last(self) -> None:
+        out = self.render()
+        self.assertIn("Daily Overview", out)
+        self.assertLess(out.index("4 meals logged"), out.index("Daily Overview"))
+
+    def test_one_meal_still_gets_the_full_macro_card(self) -> None:
+        """The reviewed single-meal layout is untouched. Most turns are this."""
+        one = [{"calories": 220, "proteinGrams": 14, "carbohydrateGrams": 30,
+                "fatGrams": 3, "items": ["sprouts bowl"]}]
+        out = gates._with_meal_breakdown(
+            "ooh sprouts bowl", one[0], {"calories": 1060, "proteinGrams": 46, "meals": 3},
+            self.KEY, meals=one,
+        )
+        self.assertIn("Meal 3 Summary", out)
+        self.assertNotIn("meals logged", out)
+        self.assertIn("Protein: 14g", out)
+
+    def test_a_turn_keeps_every_meal_it_logs(self) -> None:
+        """The handler used to assign to one slot, so three of four were lost."""
+        turn: dict = {}
+        for meal in self.MEALS:
+            turn.setdefault("logged_meals", []).append(meal)
+            turn["logged_meal"] = meal
+        self.assertEqual(len(turn["logged_meals"]), 4)
+        self.assertEqual(turn["logged_meal"], self.MEALS[-1])
+
+
+class TedSaysWhichNumbersAreGuessesTest(unittest.TestCase):
+    """A food the table cannot answer for is still logged, from the model's
+    estimate. Nothing said so, and Ted told Khushboo "mathri cover ho gaye"."""
+
+    def test_the_guessed_foods_are_named(self) -> None:
+        note = gates._estimate_note(["mathri", "coconut piece"])
+        self.assertIn("mathri", note)
+        self.assertIn("coconut piece", note)
+        self.assertIn("estimate", note)
+
+    def test_one_food_reads_as_one(self) -> None:
+        self.assertIn(" is my estimate", gates._estimate_note(["mathri"]))
+
+    def test_the_same_food_asked_three_ways_is_named_once(self) -> None:
+        """The model retries a lookup with new phrasings within one turn."""
+        note = gates._estimate_note(["mathri", "mathri, fried", "mathri, 1 piece"])
+        self.assertEqual(note.count("mathri"), 1)
+
+    def test_nothing_is_said_when_everything_was_looked_up(self) -> None:
+        self.assertEqual(gates._estimate_note([]), "")
+        self.assertEqual(gates._estimate_note(None), "")
+
+
+class AFoodIsNeverAnotherFoodTest(unittest.TestCase):
+    """`"makhan" in "makhana"` is true of strings and false of food."""
+
+    def test_makhana_is_not_butter(self) -> None:
+        """Five fox nuts were logged as ten grams of butter on 5 Sep 2026."""
+        for said in ("makhana", "makhane", "makhana, 5 pieces", "phool makhana"):
+            with self.subTest(said=said):
+                matched = gates._match_food(said)
+                self.assertIsNotNone(matched)
+                self.assertNotEqual(matched["name"], "butter")
+
+    def test_makhan_is_still_butter(self) -> None:
+        """The alias is right. Substring matching was what was wrong."""
+        self.assertEqual(gates._match_food("makhan")["name"], "butter")
+
+    def test_a_key_only_matches_on_whole_words(self) -> None:
+        self.assertTrue(gates._contains_words(["toast", "bread"], ["bread"]))
+        self.assertFalse(gates._contains_words(["makhana"], ["makhan"]))
+        self.assertTrue(gates._contains_words(["chai", "with", "milk"], ["chai"]))
+
+    def test_describing_a_food_more_fully_does_not_lose_it(self) -> None:
+        """"chai" matched and "chai with milk and sugar" did not, because the
+        old coverage ratio scored the truer description 4/24."""
+        for said in ("chai", "chai with milk and sugar", "tea with milk and sugar"):
+            with self.subTest(said=said):
+                self.assertEqual(
+                    gates._match_food(said)["name"], "tea with milk and sugar"
+                )
+
+    def test_portion_words_and_numbers_do_not_block_a_match(self) -> None:
+        for said in ("milk, half cup", "roti, 2 pieces", "rice, 150 g"):
+            with self.subTest(said=said):
+                self.assertIsNotNone(gates._match_food(said))
+
+    def test_the_cutlet_is_still_refused(self) -> None:
+        """The case the coverage rule was written for, kept."""
+        self.assertIsNone(gates._match_food("soya paneer cutlet shallow fried"))
+
+    def test_every_food_khushboo_named_now_resolves(self) -> None:
+        for said in ("egg", "bread slice", "chai", "roti", "rice, cooked white",
+                     "lauki kofta", "raita", "mathri", "milk", "makhana",
+                     "coconut", "nariyal"):
+            with self.subTest(said=said):
+                self.assertIsNotNone(gates._match_food(said))
+
+
 class TheNudgesAreOptInTest(unittest.TestCase):
     """Vandy, 4 Sep 2026: "if they say to give water reminder then only"."""
 
