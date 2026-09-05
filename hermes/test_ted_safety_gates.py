@@ -8075,3 +8075,125 @@ class TheNudgesAreOptInTest(unittest.TestCase):
         ):
             with self.subTest(written=written):
                 self.assertEqual(gates._find_picks(written), expected)
+
+
+class OnboardingAbandonedFieldTest(unittest.TestCase):
+    """A step the model moved past without an answer is not a step it finished.
+
+    Replays what actually happened to three testers. Each was asked for one
+    thing and answered another — "Male" to a question about their city, "Male"
+    to a question about their weight, "female" to a question about their city —
+    and in every case the model simply moved the flow onward and never came
+    back. The tool call that would have completed the field was never made, so
+    the tester finished onboarding with no weight or no timezone stored, while
+    the chat kept counting up to "5/6".
+    """
+
+    SESSION = "session-onboarding-abandoned"
+    USER_KEY = "whatsapp:sha256:owner"
+
+    def setUp(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT[self.SESSION] = {
+                "history": [],
+                "user_message": "",
+                "successful_actions": set(),
+                "disclosure_sent": True,
+                "user_key": self.USER_KEY,
+                "chat_id": "owner@s.whatsapp.net",
+                "message_id": "wamid.LIVE",
+            }
+        self.addCleanup(self._drop_context)
+        for target in (
+            patch.object(gates, "_ONBOARDING_STATE", {}),
+            patch.object(gates, "_persist_onboarding_state"),
+        ):
+            target.start()
+            self.addCleanup(target.stop)
+
+    def _drop_context(self) -> None:
+        with gates._TURN_LOCK:
+            gates._TURN_CONTEXT.pop(self.SESSION, None)
+
+    def _run(self, args):
+        def fake_request(action, user_key, facts=None, body=None):
+            return {"success": True, "created": False}
+
+        with patch.object(gates, "_convex_request", fake_request):
+            return json.loads(gates._save_onboarding(args, session_id=self.SESSION))
+
+    def test_the_city_question_answered_with_a_gender_leaves_the_field_open(self) -> None:
+        """5 Sep 2026, 12:30 IST, verbatim from the gateway store."""
+        self._run(
+            {
+                "current_field": "timeZone",
+                "completed_field": "weight",
+                "profile": {"weight_kg": 66},
+            }
+        )
+        result = self._run(
+            {
+                "current_field": "nutrition",
+                "completed_field": "goal",
+                "profile": {"goal": "gainWeight"},
+            }
+        )
+
+        self.assertEqual(result["unanswered"], ["timeZone"])
+        self.assertIn("Ask for each one again", result["note"])
+
+    def test_the_weight_question_answered_with_a_gender_leaves_the_field_open(self) -> None:
+        """4 Sep 2026, 14:16 IST. The model moved to weight and never returned."""
+        self._run(
+            {
+                "current_field": "weight",
+                "completed_field": "height",
+                "profile": {"height_cm": 175},
+            }
+        )
+        result = self._run({"current_field": "goal"})
+
+        self.assertEqual(result["unanswered"], ["weight"])
+
+    def test_a_flow_that_answers_every_question_is_never_flagged(self) -> None:
+        self._run(
+            {"current_field": "age", "completed_field": "name", "profile": {"name": "Vandy"}}
+        )
+        self._run(
+            {"current_field": "height", "completed_field": "age", "profile": {"age": 32}}
+        )
+        result = self._run(
+            {
+                "current_field": "weight",
+                "completed_field": "height",
+                "profile": {"height_cm": 173},
+            }
+        )
+
+        self.assertNotIn("unanswered", result)
+        self.assertNotIn("note", result)
+
+    def test_answering_the_skipped_question_later_clears_it(self) -> None:
+        self._run({"current_field": "timeZone", "completed_field": "weight"})
+        flagged = self._run({"current_field": "nutrition", "completed_field": "goal"})
+        self.assertEqual(flagged["unanswered"], ["timeZone"])
+
+        result = self._run(
+            {
+                "current_field": "steps",
+                "completed_field": "timeZone",
+                "profile": {"time_zone": "Asia/Kolkata"},
+            }
+        )
+
+        self.assertNotIn("unanswered", result)
+
+    def test_a_step_with_a_default_is_not_treated_as_a_lost_answer(self) -> None:
+        """nutrition, steps, water and the reminder steps all have defaults, so
+        passing one with nothing sent is ordinary, not a dropped answer."""
+        self._run({"current_field": "steps", "completed_field": "nutrition"})
+        result = self._run({"current_field": "water", "completed_field": "workouts"})
+
+        self.assertNotIn("unanswered", result)
+
+

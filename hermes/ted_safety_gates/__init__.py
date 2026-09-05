@@ -7209,6 +7209,60 @@ def _schedule_saved_reminders(
         result["scheduled"] = scheduled
 
 
+# Onboarding steps that exist to capture one answer and store it. The rest
+# (nutrition, steps, water, workouts, reminders and friends) have defaults and
+# may legitimately pass with the model sending nothing.
+_ANSWERED_ONBOARDING_FIELDS = frozenset(
+    {"name", "age", "height", "weight", "timeZone", "goal"}
+)
+
+
+def _note_abandoned_field(
+    user_key: str, current_field: str, completed: Any
+) -> list[str]:
+    """Notice a step the model walked away from without an answer.
+
+    The failure this catches is not a false claim of progress — the model never
+    claims it. It moves the flow onto a field, the user answers something else,
+    and the model quietly moves on again without ever completing it. On 4 Sep
+    2026 that lost one tester's weight and another's city; on 5 Sep it lost a
+    third tester's city. In every case the user had answered "Male" or "female"
+    to a question about weight or which city they were in, the model took the
+    answer as read, and its own chat narration kept counting up to "5/6".
+    Nothing anywhere recorded that the field was never filled.
+
+    So the record of what was asked lives here, not in the model's account of
+    itself: whatever step the last call moved to is remembered, and if the next
+    call completes something else instead, that step is marked unanswered until
+    it really is completed.
+    """
+    record = _onboarding(user_key)
+    asked = str(record.get("asked") or "")
+    done = set(record.get("done") or ())
+    unanswered = set(record.get("unanswered") or ())
+
+    completed_name = str(completed or "")
+    unanswered.discard(completed_name)
+
+    if (
+        asked
+        and asked in _ANSWERED_ONBOARDING_FIELDS
+        and asked not in done
+        and asked != completed_name
+        and asked != current_field
+    ):
+        unanswered.add(asked)
+        LOGGER.warning(
+            "ted_onboarding_field_abandoned user_key=%s field=%s moved_to=%s",
+            user_key,
+            asked,
+            current_field,
+        )
+
+    _update_onboarding(user_key, asked=current_field, unanswered=sorted(unanswered))
+    return sorted(unanswered)
+
+
 def _save_onboarding(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -7241,6 +7295,18 @@ def _save_onboarding(
         _persist_onboarding_reminders(
             args, completed, user_key, session_id or task_id, result
         )
+        unanswered = _note_abandoned_field(user_key, current_field, completed)
+        if unanswered:
+            # Named back to the model rather than enforced by refusing the
+            # write: the answer that did arrive is still worth keeping, and a
+            # refusal with no way to satisfy it would trap the user in the step.
+            result["unanswered"] = unanswered
+            result["note"] = (
+                "These steps were moved past without an answer: "
+                + ", ".join(unanswered)
+                + ". Ask for each one again, one at a time, before saying setup "
+                "is done. Do not count them as complete."
+            )
     return json.dumps(
         result,
         ensure_ascii=False,
