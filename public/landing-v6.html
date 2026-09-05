@@ -492,7 +492,7 @@ h2 + .lede{margin-top:22px}
   <div class="nav-links">
     <a href="#day">A day with Ted</a><a href="#review">The review</a><a href="#privacy">Privacy</a>
   </div>
-  <div class="nav-cta"><a class="btn ghost" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer">Message Ted</a></div>
+  <div class="nav-cta"><a class="btn ghost" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer" data-ted-cta="nav">Message Ted</a></div>
 </div></nav>
 
 <main>
@@ -504,7 +504,7 @@ h2 + .lede{margin-top:22px}
       <p class="lede rv">Ted remembers your meals, movement, water, and commitments. Then it messages
         you with the one useful thing you can still do today.</p>
       <div class="hero-actions rv">
-        <a class="btn" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer">Message Ted</a>
+        <a class="btn" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer" data-ted-cta="hero">Message Ted</a>
         <span class="fineprint">Free during beta · 18+ · Opens WhatsApp ↗</span>
       </div>
     </div>
@@ -648,7 +648,7 @@ h2 + .lede{margin-top:22px}
 <section class="band warm final" id="start"><div class="shell">
   <span class="eyebrow rv">Today, whenever you're ready</span>
   <h2 class="loud rv">One message starts the conversation.</h2>
-  <a class="btn rv" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer">Message Ted</a>
+  <a class="btn rv" href="https://wa.me/918660650986?text=Okay%20Ted%2C%20let's%20do%20this%20%F0%9F%92%AA" target="_blank" rel="noreferrer" data-ted-cta="close">Message Ted</a>
   <span class="fineprint rv">Free during beta · 18+ · Opens WhatsApp ↗</span>
 </div></section>
 </main>
@@ -982,6 +982,32 @@ if(!motionOK){
   cards(); review(); daypill();
   requestAnimationFrame(loop);
 }
+</script>
+<!-- Ted's own count of the website, alongside Vercel's.
+     Vercel Web Analytics gives the visitor number; it cannot see a tap on a
+     WhatsApp button (custom events are a paid feature) and it can never see a
+     conversation that starts inside WhatsApp. These two beacons feed
+     /metrics, where all three numbers sit on one page.
+
+     Nothing is stored on your device and no cookie is set: the server hashes
+     the address the request already carries, and the hash changes every week.
+     One request on load, one per button tap, both fire-and-forget. -->
+<script>
+(function(){
+  function send(payload){
+    try{
+      var body=new Blob([JSON.stringify(payload)],{type:'application/json'});
+      if(navigator.sendBeacon&&navigator.sendBeacon('/api/site-event',body))return;
+      fetch('/api/site-event',{method:'POST',body:body,keepalive:true}).catch(function(){});
+    }catch(e){}
+  }
+  send({type:'page_view',path:location.pathname,referrer:document.referrer});
+  document.querySelectorAll('[data-ted-cta]').forEach(function(link){
+    link.addEventListener('click',function(){
+      send({type:'whatsapp_click',path:location.pathname,placement:link.dataset.tedCta});
+    });
+  });
+})();
 </script>
 <!-- Vercel Web Analytics. This page is served straight from /public via the
      `beforeFiles` rewrite in next.config.ts, so the App Router layout and the

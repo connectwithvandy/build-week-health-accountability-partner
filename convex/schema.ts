@@ -163,4 +163,32 @@ export default defineSchema({
   })
     .index("by_user_and_date", ["userId", "localDate"])
     .index("by_user_and_dedupe_key", ["userId", "dedupeKey"]),
+
+  /**
+   * What the website itself did, as opposed to what Ted did in WhatsApp.
+   *
+   * One row per page view and per tap on a "Message Ted" button. `visitorHash`
+   * is not an identity: it is a one-way hash of the visitor's IP address and
+   * browser string, salted with a value that changes every week, computed on
+   * the server and never sent to the browser. Nothing is stored on the
+   * visitor's device, no cookie is set, and the hash cannot be turned back
+   * into an address. It stays the same for one IST week, which is exactly the
+   * window "unique visitors this week" needs and no longer.
+   */
+  siteEvents: defineTable({
+    type: v.union(v.literal("page_view"), v.literal("whatsapp_click")),
+    visitorHash: v.string(),
+    // IST calendar day and week the event belongs to, written at insert time so
+    // the dashboard never has to redo timezone maths over the whole table.
+    dayKey: v.string(),
+    weekKey: v.string(),
+    path: v.string(),
+    // which "Message Ted" button: nav, hero or close. Page views leave it unset.
+    placement: v.optional(v.string()),
+    referrer: v.optional(v.string()),
+    createdAt: timestamp,
+  })
+    .index("by_created_at", ["createdAt"])
+    .index("by_type_and_created_at", ["type", "createdAt"])
+    .index("by_day", ["dayKey"]),
 });

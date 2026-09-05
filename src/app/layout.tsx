@@ -4,6 +4,7 @@ import "./globals.css";
 import { Analytics } from "@vercel/analytics/next";
 
 import { ConvexClientProvider } from "./ConvexClientProvider";
+import { SiteBeacon } from "./SiteBeacon";
 
 /**
  * The same three faces the landing page uses. The landing page is a static file
@@ -57,6 +58,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           that script tag becomes redundant; until then both are needed.
         */}
         <Analytics />
+        {/*
+          Ted's own count, which sits beside Vercel's rather than replacing it.
+          Vercel gives the visitor number and is the cross-check; this one also
+          sees WhatsApp button taps, which Vercel charges for, and feeds the
+          /metrics dashboard where they sit next to conversations started.
+        */}
+        <SiteBeacon />
       </body>
     </html>
   );

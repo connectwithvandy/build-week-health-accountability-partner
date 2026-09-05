@@ -10,6 +10,7 @@
 
 import type * as http from "../http.js";
 import type * as model from "../model.js";
+import type * as site from "../site.js";
 import type * as ted from "../ted.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   http: typeof http;
   model: typeof model;
+  site: typeof site;
   ted: typeof ted;
 }>;
 

@@ -68,6 +68,22 @@ describe("the v6 landing page", () => {
     }
   });
 
+  it("labels every WhatsApp button with where it sits, so the dashboard can tell them apart", () => {
+    const anchors = [...html.matchAll(/<a[^>]*href="https:\/\/wa\.me\/[^"]*"[^>]*>/g)].map((m) => m[0]);
+    expect(anchors.length).toBe(3);
+
+    const placements = anchors.map((tag) => tag.match(/data-ted-cta="([^"]+)"/)?.[1]);
+    expect(placements).toEqual(["nav", "hero", "close"]);
+  });
+
+  it("counts its own visitors and taps, which Vercel's free tier cannot", () => {
+    expect(html).toContain("/api/site-event");
+    expect(html).toContain("type:'page_view'");
+    expect(html).toContain("type:'whatsapp_click'");
+    // Vercel's script stays: it is the independent cross-check on the visitor number.
+    expect(html).toContain('<script defer src="/_vercel/insights/script.js"></script>');
+  });
+
   it("no longer calls itself an experiment", () => {
     expect(html).not.toMatch(/design experiment/i);
     expect(html).not.toMatch(/not the live site/i);

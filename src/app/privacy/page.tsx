@@ -49,6 +49,12 @@ export default function PrivacyPage() {
         </section>
 
         <section>
+          <h2>The website itself</h2>
+          <p>Visiting this site is counted, in two ways that both stop at a number. Vercel&rsquo;s analytics counts page views, and the site keeps its own count of visits and taps on the &ldquo;Message Ted&rdquo; button, so we can tell whether the page is doing its job.</p>
+          <p>Neither one sets a cookie or stores anything on your device, and neither can be traced back to you. To count you once instead of twice, our server scrambles the network address and browser name your visit already carries into a short code it cannot unscramble, and that code is thrown away and replaced every week. Reading the site is not linked to your WhatsApp chat with Ted.</p>
+        </section>
+
+        <section>
           <h2>How long it is kept</h2>
           <p>Your profile, conversations, logs, and original uploads are kept until you ask for deletion. Ted does not use your health information for advertising.</p>
         </section>
