@@ -1,6 +1,6 @@
 # Hermes patches
 
-Seven fixes now live *below* Ted's plugin, in the Hermes gateway
+Eleven fixes now live *below* Ted's plugin, in the Hermes gateway
 itself (`~/.hermes/hermes-agent`). A plugin cannot reach them: the strings are
 emitted by Hermes' own retry machinery, and `VALID_HOOKS` has no hook for
 outbound gateway status messages.
@@ -13,7 +13,7 @@ destroyed, but the gateway silently goes back to leaking model names into
 WhatsApp and charging laptop sleep to the provider — which is why this is
 checked rather than remembered.
 
-`npm run gates:guard` reports whether all seven patches are still applied, alongside
+`npm run gates:guard` reports whether all eleven patches are still applied, alongside
 its existing gate checks. It treats a missing patch as a warning, not a stop:
 an unpatched Ted is noisy, but he still refuses under-18s, still never returns a
 deficit, and still keeps users' memories apart.
@@ -113,6 +113,111 @@ person eight times in ninety minutes on 3 Sep, one per deploy. A restart here
 is a deploy, and the people on the other end are using a health app. Nothing
 they sent was lost, so it announced an outage that never touched them. The
 notice stays in the log.
+
+## 09 — name the WhatsApp send timeout
+
+On 5 Sep at 21:03 one reply reached a tester three times: once plainly, once
+under "(Response formatting failed, plain text:)", and once more 73 minutes
+later under "♻️ Recovered reply". Nothing had failed to format, and the first
+copy had arrived with two ticks.
+
+The bridge POST has a 30s timeout (`plugins/platforms/whatsapp/adapter.py`).
+WhatsApp accepted the message; the bridge was just slow to say so. The handler
+was a bare `except Exception as e: error=str(e)`, and `str(asyncio.TimeoutError())`
+is the **empty string**, so the log line read `Send failed: ` with nothing after
+it.
+
+`_send_with_retry` has a guard for exactly this, whose own comment says the
+message "may have been delivered". It looks for the words "timed out" in the
+error text. There was no text, so it could not fire, and the send fell into the
+branch that assumes anything not-network and not-timeout must be a formatting
+problem. That branch re-sent the message. The obligation was never marked
+delivered, so the next gateway restart redelivered it a third time.
+
+Two changes, because either alone leaves the other half open:
+
+* the adapter names the timeout, and gives any other bare exception its class
+  name rather than an empty string;
+* `_send_with_retry` refuses the plain-text re-send when the failure carries no
+  reason at all. A send that fails for reasons unknown is not evidence that
+  reformatting will help, and it is not evidence the message went missing.
+
+## 10 — retry truncated tool calls on the codex fallback
+
+`max_tokens` was 1024. A tester sent a whole day of food in one message, about
+twelve items. Ted looked all of them up, then hit the cap at exactly 1024
+output tokens partway through writing the `ted_log_entry` call, and what she
+received was the sentence `Response truncated due to output length limit`. Her
+meal was never logged.
+
+The recovery for this already existed: doubling the token budget and re-running
+the call, up to four times. It was gated on an api_mode list of
+`chat_completions`, `bedrock_converse` and `anthropic_messages`. The Anthropic
+key had run out of credit at 19:06 that evening, so every turn was being served
+by the OpenRouter fallback in `codex_responses` mode, which is on none of those
+lists. The truncation fell straight through to the rollback return, and that
+return value is not an operator log line on WhatsApp. It is Ted's reply.
+
+Adding `codex_responses` is safe: `_trunc_msg` comes from the transport's own
+`normalize_response`, and `agent/transports/codex.py` returns tool calls in the
+same shape the other three modes do. The branch only raises the budget and
+re-runs from the current message state, and never appends the broken response.
+
+Paired with `max_tokens: 4096` in `~/.hermes/config.yaml`, which is not in this
+repo. 1024 was enough for Ted's words and not for the tool call carrying a
+meal. Output is billed as used, so a short reply costs the same as before.
+
+## 11 — no internal failure strings to users
+
+Patch 10 makes a truncated tool call retry. It does not make the give-up
+impossible, and truncation was never the only sentinel that could reach a
+person. The conversation loop returns nine of these as the turn's
+`final_response`:
+
+    Response truncated due to output length limit
+    First response truncated due to output length limit
+    Response remained truncated after 4 continuation attempts
+    Stream repeatedly dropped mid tool-call (network); the tool was not executed
+    ⚠️ **Thinking Budget Exhausted** … `/thinkon low` … `/model`
+    Incomplete REASONING_SCRATCHPAD after 2 retries
+    Codex response remained incomplete after 3 continuation attempts
+    Invalid API response after 3 retries: <hint>
+    No fallback provider available … add a fallback provider in config.yaml
+
+Two are worse than the one that actually went out: the thinking-budget block
+tells somebody in a health chat to run `/thinkon low` or `/model`, and the
+no-fallback line tells them to edit `config.yaml`.
+
+**No plugin hook can catch these.** `transform_llm_output` fires in
+`agent/turn_finalizer.finalize_turn`, at the end of the loop. Every one of
+these is an early `return` from inside it, so the gates never see them. That is
+why this lives in the gateway and not in `hermes/ted_safety_gates`.
+
+The choke point is `_sanitize_gateway_final_response` in `gateway/run.py`,
+which every chat surface already goes through and which already rewrites raw
+provider errors. The new check runs before that one, because these are not
+provider errors. The last two are not caught by
+`_looks_like_gateway_provider_error` either, which was checked rather than
+assumed, so leaving them out would send the raw `config.yaml` advice.
+
+One reply covers all nine:
+
+> oops, my brain just blanked there 🙈 that one didn't save, send it again?
+
+It started as three, one per failure shape. That was wrong, and not only in
+tone: somebody who just sent a photo of their lunch cannot act on the
+difference between an output cap and a dropped stream, so a reply that
+distinguishes them is describing the machine to a person who asked about food.
+
+The two things it has to carry are that the message did not save, so nobody
+believes a meal was logged when it was not, and what to do next. Both fit in
+one sentence, with no model name, provider, token count or slash command in it.
+It reuses patch 02's `display.provider_messages.internal_failure` override, so
+the wording is editable in `config.yaml` without touching this patch, and an
+empty string suppresses it.
+
+The raw sentinel still reaches `agent.log` at every emission site. Only the
+chat copy changes.
 
 ## Where the checks live
 

@@ -1,0 +1,68 @@
+diff --git a/plugins/platforms/whatsapp/adapter.py b/plugins/platforms/whatsapp/adapter.py
+--- a/plugins/platforms/whatsapp/adapter.py
++++ b/plugins/platforms/whatsapp/adapter.py
+@@ -896,8 +896,34 @@
+                 continuation_message_ids=tuple(sent_message_ids[:-1]),
+                 raw_response={"message_ids": sent_message_ids},
+             )
++        except asyncio.TimeoutError:
++            # Ted patch 09. str(asyncio.TimeoutError()) is the empty string, so
++            # the bare `except Exception` below returned error="" and the log
++            # line read "Send failed: " with nothing after it. Both guards in
++            # BasePlatformAdapter._send_with_retry key off the words "timed
++            # out", and neither can fire against an empty string, so a timeout
++            # was read as a formatting failure and re-sent as plain text.
++            #
++            # A timeout here says nothing about delivery. The bridge keeps the
++            # message and WhatsApp usually accepts it: on 5 Sep 2026 at 21:03
++            # a beta user received the same reply three times off one send,
++            # because this exception arrived nameless. Name it, so the
++            # may-already-be-delivered guard upstream can do its job.
++            return SendResult(
++                success=False,
++                error=(
++                    f"Send timed out after 30s waiting for the WhatsApp bridge "
++                    f"(chat {chat_id}); the message may already have been delivered"
++                ),
++                retryable=False,
++            )
+         except Exception as e:
+-            return SendResult(success=False, error=str(e))
++            # An exception whose str() is empty is the same trap as the timeout
++            # above. Never hand the retry logic a blank error to reason about.
++            return SendResult(
++                success=False,
++                error=str(e) or f"{type(e).__name__} (no detail)",
++            )
+ 
+     async def edit_message(
+         self,
+diff --git a/gateway/platforms/base.py b/gateway/platforms/base.py
+--- a/gateway/platforms/base.py
++++ b/gateway/platforms/base.py
+@@ -4333,6 +4333,25 @@
+         # Timeout errors are not safe to retry (message may have been
+         # delivered) and not formatting errors — return the failure as-is.
+         if not is_network and self._is_timeout_error(error_str):
++            return result
++
++        # Ted patch 09. The plain-text fallback at the bottom of this method
++        # assumes a failure that is neither network nor timeout must be a
++        # formatting problem. An adapter that reports no reason at all is not
++        # evidence of that, and the guard above cannot classify what it cannot
++        # read: asyncio.TimeoutError stringifies to "".
++        #
++        # On 5 Sep 2026 that blank error re-sent a WhatsApp reply the bridge
++        # had already delivered, under the heading "(Response formatting
++        # failed, plain text:)" — a claim that was untrue, about a message that
++        # had arrived intact. With no reason to think reformatting helps, and
++        # no way to know the first attempt failed, do not send it twice.
++        if not is_network and not error_str.strip():
++            logger.warning(
++                "[%s] Send reported failure with no error detail — not re-sending; "
++                "the message may already have been delivered",
++                self.name,
++            )
+             return result
+ 
+         if is_network:

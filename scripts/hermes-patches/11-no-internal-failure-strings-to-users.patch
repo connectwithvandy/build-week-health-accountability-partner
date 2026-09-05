@@ -1,0 +1,80 @@
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -424,6 +424,23 @@
+     # with it. On terminal failure the "generic" line above is still delivered,
+     # so a failed turn is never silent.
+     "stall": "",
++    # Ted patch 11. One line for every way the conversation loop can give up.
++    #
++    # Deliberately generic. There were three of these to begin with, one per
++    # failure shape, and Vandy's note on the drafts was "it should be generic,
++    # not technical, and like fun". She is right, and not only about tone: a
++    # person who sent a photo of their lunch cannot act on the difference
++    # between an output cap and a dropped stream, so a reply that distinguishes
++    # them is describing the machine to somebody who asked about food.
++    #
++    # The two things it must carry are that the message did not save, so nobody
++    # believes a meal was logged when it was not, and what to do next. Both fit
++    # in one sentence. Overridable per install like every key above; set it to
++    # an empty string to say nothing at all.
++    "internal_failure": (
++        "oops, my brain just blanked there \U0001F648 that one didn't save, "
++        "send it again?"
++    ),
+ }
+ 
+ 
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -517,6 +517,32 @@
+     if len(body) > 400 or body.count("\n") > 4:
+         return False
+     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
++
++
++# Ted patch 11. Every sentinel `agent/conversation_loop.py` returns as a turn's
++# `final_response` when it gives up. All of them have been deliverable to a
++# WhatsApp user verbatim, and two are worse than the one that was: the
++# thinking-budget block tells a person in a health chat to run `/thinkon low`
++# or `/model`, and the no-fallback line tells them to edit config.yaml.
++#
++# One pattern rather than one per failure shape, because they all resolve to
++# the same reply. Neither of the last two is caught by
++# `_looks_like_gateway_provider_error`, which was checked rather than assumed,
++# so dropping them here would send the raw text.
++#
++# The raw sentinel still reaches agent.log at every emission site. Only the
++# chat copy changes.
++_GATEWAY_INTERNAL_FAILURE_RE = re.compile(
++    r"(?:first\s+)?response\s+truncated\s+due\s+to\s+output\s+length"
++    r"|response\s+remained\s+truncated\s+after\s+\d+\s+continuation"
++    r"|thinking\s+budget\s+exhausted"
++    r"|stream\s+repeatedly\s+dropped\s+mid\s+tool-?call"
++    r"|incomplete\s+REASONING_SCRATCHPAD"
++    r"|response\s+remained\s+incomplete\s+after\s+\d+\s+continuation"
++    r"|invalid\s+API\s+response\s+after\s+\d+\s+retries"
++    r"|no\s+fallback\s+provider\s+available",
++    re.IGNORECASE,
++)
+ 
+ 
+ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -540,6 +540,13 @@
+         return ""
+ 
+     redacted = _redact_gateway_user_facing_secrets(str(text))
++    # Ted patch 11. Checked before the provider-error test because these are
++    # not provider errors: they are the loop's own give-up sentinels, returned
++    # as `final_response` from early `return` statements that never reach
++    # `finalize_turn`. That is why no plugin hook can catch them, and why this
++    # has to live at the delivery boundary instead of in the safety gates.
++    if _GATEWAY_INTERNAL_FAILURE_RE.search(redacted):
++        return _gateway_provider_message("internal_failure")
+     if _looks_like_gateway_provider_error(redacted):
+         return _gateway_provider_error_reply(redacted)
+     return redacted

@@ -121,6 +121,61 @@
           "absent": []
         }
       ]
+    },
+    {
+      "file": "09-name-the-whatsapp-send-timeout.patch",
+      "what": "a WhatsApp send timeout saying so, instead of re-sending a delivered message",
+      "checks": [
+        {
+          "path": "plugins/platforms/whatsapp/adapter.py",
+          "present": [
+            "except asyncio.TimeoutError:",
+            "the message may already have been delivered"
+          ],
+          "absent": [
+            "            return SendResult(success=False, error=str(e))\n\n    async def edit_message("
+          ]
+        },
+        {
+          "path": "gateway/platforms/base.py",
+          "present": [
+            "if not is_network and not error_str.strip():"
+          ],
+          "absent": []
+        }
+      ]
+    },
+    {
+      "file": "10-retry-truncated-tool-calls-on-codex.patch",
+      "what": "truncated tool calls retrying on the codex fallback, not becoming Ted's reply",
+      "checks": [
+        {
+          "path": "agent/conversation_loop.py",
+          "present": [
+            "\"codex_responses\",\n                    }:"
+          ],
+          "absent": [
+            "if agent.api_mode in {\"chat_completions\", \"bedrock_converse\", \"anthropic_messages\"}:\n                        assistant_message = _trunc_msg\n                        if assistant_message is not None and _trunc_has_tool_calls:"
+          ]
+        }
+      ]
+    },
+    {
+      "file": "11-no-internal-failure-strings-to-users.patch",
+      "what": "the loop's give-up sentinels reaching users as Ted's words, not as variable names",
+      "checks": [
+        {
+          "path": "gateway/run.py",
+          "present": [
+            "_GATEWAY_INTERNAL_FAILURE_RE",
+            "if _GATEWAY_INTERNAL_FAILURE_RE.search(redacted):",
+            "\"internal_failure\": ("
+          ],
+          "absent": [
+            "    redacted = _redact_gateway_user_facing_secrets(str(text))\n    if _looks_like_gateway_provider_error(redacted):\n        return _gateway_provider_error_reply(redacted)\n    return redacted"
+          ]
+        }
+      ]
     }
   ]
 }
