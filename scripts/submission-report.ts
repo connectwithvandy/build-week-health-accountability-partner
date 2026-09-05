@@ -45,6 +45,64 @@ const PRODUCT_URL = "https://heyted.vercel.app/";
 const REPO_URL =
   "https://github.com/connectwithvandy/build-week-health-accountability-partner";
 
+const MANUAL_HEADING = "## Fill in manually before submitting";
+
+/**
+ * The blank shape of the hand-written section, used only the first time or
+ * after the section has been emptied. One row per post so each number sits
+ * next to the post it came from, which is how the insight panels are read.
+ */
+const MANUAL_TEMPLATE = [
+  "Numbers here come from each post's own insights panel and from analytics.",
+  "Screenshot each panel as you go and keep the file names next to the row.",
+  "",
+  "| Post | Link | Impressions | Reactions | Screenshot |",
+  "| --- | --- | ---: | ---: | --- |",
+  "| LinkedIn |  |  |  |  |",
+  "| Instagram |  |  |  |  |",
+  "| X |  |  |  |  |",
+  "",
+  "- Unique site visitors this week: ",
+  "- Analytics screenshot: ",
+  "- Analytics read-only access link: ",
+];
+
+/**
+ * Reads back whatever was typed into the hand-written section of an existing
+ * SUBMISSION.md. Returns the blank template when the file is missing, when the
+ * section is absent, or when every line still reads as empty, so a re-run mid
+ * submission never costs numbers that are only written down here.
+ */
+function readManualSection(target: string): string[] {
+  if (!existsSync(target)) return MANUAL_TEMPLATE;
+  const lines = readFileSync(target, "utf8").split("\n");
+  const start = lines.findIndex((l) => l.trim() === MANUAL_HEADING);
+  if (start === -1) return MANUAL_TEMPLATE;
+  let end = lines.findIndex((l, i) => i > start && l.startsWith("## "));
+  if (end === -1) end = lines.length;
+  const body = lines.slice(start + 1, end);
+  while (body.length && body[0].trim() === "") body.shift();
+  while (body.length && body[body.length - 1].trim() === "") body.pop();
+  if (!body.length) return MANUAL_TEMPLATE;
+
+  // A section still holding only labels, table scaffolding and blanks carries
+  // no answers, so it is worth nothing and the template is the better start.
+  const hasAnswer = body.some((line) => {
+    const t = line.trim();
+    if (t === "" || t.startsWith("|")) return false;
+    const afterLabel = t.replace(/^[-*]\s*/, "");
+    const colon = afterLabel.indexOf(":");
+    return colon !== -1 && afterLabel.slice(colon + 1).trim() !== "";
+  });
+  const hasFilledCell = body.some((line) => {
+    const t = line.trim();
+    if (!t.startsWith("|") || /^\|[\s|:-]*\|$/.test(t)) return false;
+    const cells = t.split("|").slice(1, -1).map((c) => c.trim());
+    return cells.slice(1).some((c) => c !== "");
+  });
+  return hasAnswer || hasFilledCell ? body : MANUAL_TEMPLATE;
+}
+
 /** The only convex subcommand this script may ever run. */
 const ALLOWED_CONVEX_SUBCOMMAND = "data";
 
@@ -481,14 +539,14 @@ function main(): void {
     for (const n of notes) md.push(`- ${n}`);
     md.push("");
   }
-  md.push("## Fill in manually before submitting");
+  // Everything below is typed in by hand from places Convex cannot see: post
+  // insight panels, the analytics dashboard. A re-run must never wipe it, so
+  // the hand-written section of the existing SUBMISSION.md wins over the
+  // blank template whenever it already has something in it.
+  const target = join(REPO, "SUBMISSION.md");
+  md.push(MANUAL_HEADING);
   md.push("");
-  md.push("- LinkedIn impressions: ");
-  md.push("- LinkedIn reactions: ");
-  md.push("- Instagram or other post impressions: ");
-  md.push("- Other post reactions: ");
-  md.push("- Unique site visitors: ");
-  md.push("- Analytics read-only access link: ");
+  md.push(...readManualSection(target));
   md.push("");
   md.push("## Checklist");
   md.push("");
@@ -497,7 +555,6 @@ function main(): void {
   md.push("- [ ] Metrics — the table above, plus the manual numbers filled in");
   md.push("");
 
-  const target = join(REPO, "SUBMISSION.md");
   writeFileSync(target, md.join("\n"), "utf8");
   console.log("");
   console.log(`Wrote ${target}`);
