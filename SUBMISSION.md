@@ -97,6 +97,13 @@ better:
 
 ## Checklist
 
-- [ ] Live product URL — https://heyted.vercel.app/
-- [ ] Public GitHub repo URL — https://github.com/connectwithvandy/build-week-health-accountability-partner
-- [ ] Metrics — the table above, plus the manual numbers filled in
+- [x] Live product URL — https://heyted.vercel.app/
+      Tested by hand on 2026-09-05: opened the site on a phone, tapped through
+      to WhatsApp, sent Ted a message and got a reply. This also settles the
+      number on the site being the one Ted answers on, which the three
+      automated checks in `scripts/gateway-message-count.py --verify-number`
+      could not confirm from the machine.
+- [x] Public GitHub repo URL — https://github.com/connectwithvandy/build-week-health-accountability-partner
+      Loaded with no login, so it is genuinely public.
+- [x] Metrics — the Convex table, the gateway table, and the social numbers
+- [ ] Unique site visitors — still the one number missing
