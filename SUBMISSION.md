@@ -1,4 +1,4 @@
-# Build Week submission — generated 2026-09-05 10:25:11 IST
+# Build Week submission — generated 2026-09-05 10:34:33 IST
 
 Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/vandana.agarwal/.hermes/.env (the live gateway's backend)) with read-only `npx convex data` queries. No writes, no migrations.
 
@@ -11,8 +11,8 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 | Users onboarded (finished onboarding) | 4 | `onboarding` | `completedAt !== undefined` |
 | Users onboarded (cross-check on the user row) | 4 | `users` | `status === "active"` |
 | Users part-way through onboarding | 21 | `users` | `status === "onboarding"` |
-| Users active in the last 24 hours | 22 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788497711287 (2026-09-04 10:25:11 IST)` |
-| Users active in the last 7 days | 25 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1787979311287 (2026-08-29 10:25:11 IST)` |
+| Users active in the last 24 hours | 22 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788498273540 (2026-09-04 10:34:33 IST)` |
+| Users active in the last 7 days | 25 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1787979873540 (2026-08-29 10:34:33 IST)` |
 | Total inbound messages | NOT STORED | `dailyEntries` | `distinct externalMessageId where externalMessageId !== '' → 0 rows carry one; the schema has no messages table, so inbound turns are not counted anywhere in Convex` |
 | Inbound messages — defensible floor | 31 | `dailyEntries` | `no filter — every row is one thing a user sent that Ted logged; excludes chat that produced no log, so this is a lower bound` |
 | Meals logged | 27 | `dailyEntries` | `entryType === "meal"` |
@@ -63,14 +63,33 @@ figure repeated here, which would go stale on the next refresh.
 
 ## Fill in manually before submitting
 
-Numbers here come from each post's own insights panel and from analytics.
-Screenshot each panel as you go and keep the file names next to the row.
+Numbers here come from each post's own insights panel, transcribed from the
+social stats doc. Every link below was checked and returns 200.
 
 | Post | Link | Impressions | Reactions | Screenshot |
-| --- | --- | ---: | ---: | --- |
-| LinkedIn |  |  |  |  |
-| Instagram |  |  |  |  |
-| X |  |  |  |  |
+| --- | --- | ---: | --- | --- |
+| LinkedIn | https://lnkd.in/p/dXFgHZTh | 1,441 | not recorded | |
+| Instagram | https://www.instagram.com/p/Dc1PCZwRFpl3YRkUfDaTqKYnXRoO2JjF8P_Lqk0/ | not available | 72 likes, 11 comments | |
+| X, post 1 | https://x.com/vandism_ag/status/2095558754586734706 | 155 views | 9 likes | |
+| X, post 2 | https://x.com/vandism_ag/status/2096093283483312332 | 7 views | not recorded | |
+
+**Total impressions across posts with a number: 1,603.** That is LinkedIn 1,441
+plus X 155 plus X 7. Instagram is not in that total, so the real reach is higher
+than 1,603 by however many people saw the Instagram post.
+
+**Total recorded reactions: 92.** That is 72 Instagram likes, 11 Instagram
+comments and 9 X likes. LinkedIn reactions are not recorded in the source doc,
+so this is a floor rather than the true count.
+
+Three gaps to close if there is time, each of which only makes the numbers
+better:
+
+- Instagram impressions are unavailable because the account is private. The
+  likes and comments still count, but the reach cannot be shown.
+- LinkedIn reactions and comments were not captured, only the 1,441 impressions.
+  That is the best-performing post by reach, so its engagement is worth having.
+- No screenshots are filed yet. Judges generally accept the numbers, but a
+  screenshot of each insights panel is what makes them checkable.
 
 - Unique site visitors this week: 
 - Analytics screenshot: 
