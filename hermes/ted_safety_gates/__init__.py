@@ -4057,14 +4057,52 @@ _ASSISTANT_CLOSERS = re.compile(
 )
 
 
+# A note Ted wrote to itself and sent anyway.
+#
+# On 4 Sep 2026 one tester received "(waiting on the timezone/city)" and then
+# "Good, that's scheduled. Waiting for their actual food/activity input now."
+# The second one refers to him in the third person, to his face. SOUL.md §"When
+# something is unsafe or unclear" already forbids exposing internal status; this
+# is the backstop for when that instruction does not hold.
+#
+# Deliberately narrow. "waiting on that one" is a perfectly good thing to say to
+# somebody and is not matched — only a line that is entirely an aside, or a
+# sentence that talks about the user as "their", "them" or "the user", which Ted
+# speaking to them never does.
+_WHOLE_ASIDE = re.compile(r"^\s*\(.*\)\s*$")
+_THIRD_PERSON_NOTE = re.compile(
+    r"\b(the|this) user\b"
+    r"|waiting (on|for) (their|them|the user|his|her)\b"
+    r"|\b(their|his|her) (actual )?(food|activity|input|reply|answer|message)\b"
+    r"|\ball set on my end\b",
+    re.I,
+)
+
+
+def _is_internal_note(text: str) -> bool:
+    """A sentence or line that is Ted talking about the user, not to them."""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    return bool(_WHOLE_ASIDE.match(stripped) or _THIRD_PERSON_NOTE.search(stripped))
+
+
 def strip_assistant_speak(text: str) -> str:
     """Ted's reply with the chatbot furniture taken off.
 
-    Four things go: heading markers, list bullets, bold markers, and a closing
-    offer that is the whole sentence. Nothing is rewritten and no sentence with
-    content is removed — a bulleted line keeps its words and loses its dash, so
-    the worst case is a message that reads as lines instead of a list.
+    Five things go: heading markers, list bullets, bold markers, a closing offer
+    that is the whole sentence, and a note Ted wrote to itself. Nothing is
+    rewritten — a bulleted line keeps its words and loses its dash, so the worst
+    case is a message that reads as lines instead of a list.
+
+    The one thing that can still get through is a message that is *nothing but*
+    an aside. Emptying it is not available: the live WhatsApp path has no way to
+    send nothing, `[SILENT]` is understood on the cron path only, and returning
+    it here would deliver those eight characters to a real person. So that case
+    is passed through and logged loudly instead, which at least makes a
+    recurrence visible rather than silent.
     """
+    dropped_note = False
     lines: list[str] = []
     for line in (text or "").splitlines():
         cleaned = _HEADING.sub("", line)
@@ -4072,21 +4110,37 @@ def strip_assistant_speak(text: str) -> str:
         cleaned = _BOLD.sub(lambda m: m.group(1) or m.group(2) or "", cleaned)
         if _ASSISTANT_CLOSERS.match(cleaned):
             continue
+        # Only a wholly-bracketed line goes here. A third-person note sharing a
+        # line with a real sentence is dropped one sentence down, or the good
+        # half would go with it.
+        if _WHOLE_ASIDE.match(cleaned.strip()):
+            dropped_note = True
+            continue
         lines.append(cleaned.rstrip())
 
     kept: list[str] = []
     for line in lines:
-        sentences = [
-            sentence
-            for sentence in re.split(r"(?<=[.!?])\s+", line.strip())
-            if sentence.strip() and not _ASSISTANT_CLOSERS.match(sentence)
-        ]
+        sentences = []
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            if not sentence.strip() or _ASSISTANT_CLOSERS.match(sentence):
+                continue
+            if _is_internal_note(sentence):
+                dropped_note = True
+                continue
+            sentences.append(sentence)
         joined = " ".join(sentences).strip()
         if joined:
             kept.append(joined)
     # A reply that was nothing but furniture is left alone rather than emptied:
     # sending nothing is worse than sending something over-polished.
-    return "\n".join(kept).strip() or (text or "").strip()
+    result = "\n".join(kept).strip()
+    if dropped_note:
+        LOGGER.warning(
+            "ted_internal_note_in_reply removed=%s text=%r",
+            "yes" if result else "no, whole message was the note",
+            (text or "")[:200],
+        )
+    return result or (text or "").strip()
 
 
 # A line the block already says. "Today · 3 meals" is not a figure by the

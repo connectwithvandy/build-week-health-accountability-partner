@@ -8230,3 +8230,47 @@ class ProfileConfirmationWordsTest(unittest.TestCase):
         for reply in ("the weight is wrong", "58 not 85", "im female", "change my age"):
             with self.subTest(reply=reply):
                 self.assertFalse(gates._is_nothing_wrong(reply))
+
+
+class InternalNoteInReplyTest(unittest.TestCase):
+    """A note Ted wrote to itself is not a message to the user.
+
+    Replays 4 Sep 2026, 14:19-14:20 IST, read from delivery_obligations. One
+    tester received "(waiting on the timezone/city)" and then "Good, that's
+    scheduled. Waiting for their actual food/activity input now." — the second
+    one describing him in the third person, to his face.
+    """
+
+    def test_a_note_sharing_a_line_with_a_real_sentence_loses_only_the_note(self) -> None:
+        self.assertEqual(
+            gates.strip_assistant_speak(
+                "Good, that's scheduled. Waiting for their actual food/activity input now."
+            ),
+            "Good, that's scheduled.",
+        )
+
+    def test_a_note_on_its_own_line_goes_and_the_reply_stays(self) -> None:
+        self.assertEqual(
+            gates.strip_assistant_speak("logged that 👍\nWaiting for their reply now."),
+            "logged that 👍",
+        )
+
+    def test_a_message_that_is_nothing_but_a_note_is_passed_through(self) -> None:
+        """Not a wish, a limit. The live WhatsApp path cannot send nothing, and
+        `[SILENT]` is read on the cron path only, so delivering those eight
+        characters to a person is the alternative. It is logged instead."""
+        self.assertEqual(
+            gates.strip_assistant_speak("(waiting on the timezone/city)"),
+            "(waiting on the timezone/city)",
+        )
+
+    def test_ordinary_replies_are_untouched(self) -> None:
+        for reply in (
+            "one last thing before we start. what time works for your evening check-in?",
+            "still waiting on that one 😄",
+            "nice, waiting on your reply whenever",
+            "logged 👍 that's 420 kcal",
+            "(2 rotis) logged",
+        ):
+            with self.subTest(reply=reply):
+                self.assertEqual(gates.strip_assistant_speak(reply), reply)
