@@ -69,7 +69,7 @@ social stats doc. Every link below was checked and returns 200.
 | Post | Link | Impressions | Reactions | Screenshot |
 | --- | --- | ---: | --- | --- |
 | LinkedIn | https://lnkd.in/p/dXFgHZTh | 1,441 | not recorded | |
-| Instagram | https://www.instagram.com/p/Dc1PCZwRFpl3YRkUfDaTqKYnXRoO2JjF8P_Lqk0/ | not available | 72 likes, 11 comments | |
+| Instagram | https://www.instagram.com/p/Dc1PCZwRFpl3YRkUfDaTqKYnXRoO2JjF8P_Lqk0/ | not available | 72 likes, 11 comments, 2 shares | `docs/evidence/instagram-insights.png` |
 | X, post 1 | https://x.com/vandism_ag/status/2095558754586734706 | 155 views | 9 likes | |
 | X, post 2 | https://x.com/vandism_ag/status/2096093283483312332 | 7 views | not recorded | |
 
