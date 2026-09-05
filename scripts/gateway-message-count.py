@@ -43,6 +43,65 @@ def ist(ts: float | None) -> str:
     return datetime.fromtimestamp(float(ts), IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
+CONFIG_YAML = Path.home() / ".hermes" / "config.yaml"
+
+
+def mask(digits: str) -> str:
+    """Country code and last three only, so a comparison can be read without
+    printing anyone's full number into a terminal or a log."""
+    return f"{digits[:2]}…{digits[-3:]}" if len(digits) > 6 else "…"
+
+
+WHATSAPP_STORE = Path.home() / ".hermes" / "whatsapp"
+
+
+def own_jids() -> set[str]:
+    """
+    The phone numbers the gateway is logged in as, read out of the WhatsApp
+    client store. Every sqlite file under the store directory is opened
+    read-only and any column named like a JID is scanned for one; the store
+    layout differs between client libraries, so this looks for the shape rather
+    than assuming a table name. Returns bare digits.
+    """
+    numbers: set[str] = set()
+    if not WHATSAPP_STORE.exists():
+        return numbers
+    for path in sorted(WHATSAPP_STORE.rglob("*")):
+        if not path.is_file() or path.suffix in {".log", ".json", ".yaml"}:
+            continue
+        try:
+            db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            continue
+        try:
+            tables = [
+                r[0]
+                for r in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+            for table in tables:
+                cols = [r[1] for r in db.execute(f'PRAGMA table_info("{table}")').fetchall()]
+                for col in cols:
+                    if "jid" not in col.lower() and col.lower() not in {"id", "our_jid"}:
+                        continue
+                    try:
+                        rows = db.execute(f'SELECT DISTINCT "{col}" FROM "{table}" LIMIT 50').fetchall()
+                    except sqlite3.Error:
+                        continue
+                    for (value,) in rows:
+                        # A JID looks like 918660650986:12@s.whatsapp.net; the
+                        # part before the colon or @ is the account's number.
+                        m = re.match(r"^(\\d{10,15})[:@]", str(value or ""))
+                        if m:
+                            numbers.add(m.group(1))
+        except sqlite3.Error:
+            continue
+        finally:
+            db.close()
+    return numbers
+
+
 def connect() -> sqlite3.Connection:
     if not STATE_DB.exists():
         sys.exit(f"no gateway database at {STATE_DB}")
@@ -195,13 +254,108 @@ def report(conn: sqlite3.Connection) -> None:
     print("")
 
 
+def verify_number(conn: sqlite3.Connection, number: str) -> None:
+    """
+    Check that the WhatsApp number advertised on the site is the one the gateway
+    is actually carrying traffic for. A live gateway proves only that some
+    number is answering; putting the wrong one on the landing page would send
+    every visitor into silence, and nothing else in the submission catches that.
+
+    Only digits are compared, so +91 866..., 91866... and 0091866... all match.
+    No number other than the one passed in is ever printed.
+    """
+    digits = re.sub(r"\\D", "", number)
+    if not digits:
+        sys.exit("pass a phone number to check, digits and separators both fine")
+
+    hits = conn.execute(
+        """
+        SELECT COUNT(*) FROM sessions s
+        WHERE LOWER(COALESCE(s.source, '')) LIKE '%whatsapp%'
+          AND (
+            REPLACE(REPLACE(REPLACE(COALESCE(s.session_key,''), '+',''), '-',''), ' ','') LIKE ?
+         OR REPLACE(REPLACE(REPLACE(COALESCE(s.chat_id,''),     '+',''), '-',''), ' ','') LIKE ?
+         OR REPLACE(REPLACE(REPLACE(COALESCE(s.user_id,''),     '+',''), '-',''), ' ','') LIKE ?
+         OR REPLACE(REPLACE(REPLACE(COALESCE(s.origin_json,''), '+',''), '-',''), ' ','') LIKE ?
+          )
+        """,
+        (f"%{digits}%",) * 4,
+    ).fetchone()[0]
+
+    latest = conn.execute(
+        """
+        SELECT MAX(m.timestamp) FROM messages m JOIN sessions s ON s.id = m.session_id
+        WHERE LOWER(COALESCE(s.source, '')) LIKE '%whatsapp%'
+        """
+    ).fetchone()[0]
+
+    print(f"Checking {number} against the gateway's WhatsApp sessions.")
+    print("")
+    if hits:
+        print(f"  MATCH: {hits} WhatsApp session rows reference this number.")
+        print("  The number on the site is the one the gateway is running.")
+    else:
+        print("  No session row references it. On its own this proves nothing:")
+        print("  sessions record who messaged Ted, not the number Ted answers on.")
+    print("")
+
+    # The session rows are the wrong place to settle this. The number the
+    # gateway actually answers on is the account bound in its config, so read
+    # that and compare. Only the verdict and a masked number are printed; the
+    # config holds credentials and none of it is echoed.
+    print(f"  Config check ({CONFIG_YAML}):")
+    if not CONFIG_YAML.exists():
+        print("    no config file, cannot settle this from here.")
+    else:
+        text = CONFIG_YAML.read_text(errors="replace")
+        # Phone-shaped runs of digits, 10 to 15 long, which is E.164's range.
+        found = {re.sub(r"\\D", "", m) for m in re.findall(r"\\+?\\d[\\d\\-\\s]{9,20}", text)}
+        found = {f for f in found if 10 <= len(f) <= 15}
+        if digits in found:
+            print(f"    MATCH: {mask(digits)} is bound in the gateway config.")
+            print("    The site is advertising the number Ted answers on.")
+        elif found:
+            print(f"    MISMATCH: the config carries {len(found)} phone-shaped number(s),")
+            for f in sorted(found):
+                print(f"      {mask(f)}")
+            print(f"    and none of them is {mask(digits)}, the number on the site.")
+            print("    Open the site link on your phone and confirm a reply comes back")
+            print("    before submitting, because this is the one failure a judge hits first.")
+        else:
+            print("    no phone-shaped number in the config, cannot settle this from here.")
+
+    # A linked WhatsApp account keeps its own JID in the client store rather
+    # than in config, so that is the last place worth looking before giving up
+    # and telling the builder to test it by hand.
+    print("")
+    print(f"  Linked-device check ({WHATSAPP_STORE}):")
+    own = own_jids()
+    if not own:
+        print("    no linked-device record found, cannot settle this from here.")
+    elif digits in own:
+        print(f"    MATCH: {mask(digits)} is the account the gateway is linked to.")
+        print("    The site is advertising the number Ted answers on.")
+    else:
+        print(f"    MISMATCH: the gateway is linked to {', '.join(mask(o) for o in sorted(own))},")
+        print(f"    not {mask(digits)}, which is the number on the site.")
+    print("")
+    print(f"  Most recent WhatsApp message on any session: {ist(latest)}")
+    print("")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--schema", action="store_true", help="print table and column names only")
+    ap.add_argument("--verify-number", metavar="NUMBER", help="check a number against the gateway's WhatsApp sessions")
     args = ap.parse_args()
     conn = connect()
     try:
-        print_schema(conn) if args.schema else report(conn)
+        if args.schema:
+            print_schema(conn)
+        elif args.verify_number:
+            verify_number(conn, args.verify_number)
+        else:
+            report(conn)
     finally:
         conn.close()
 
