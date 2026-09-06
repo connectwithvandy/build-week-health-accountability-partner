@@ -3,7 +3,7 @@ import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 
 import { internalMutation, internalQuery } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   addLocalDays,
   buildDedupeKey,
@@ -17,6 +17,9 @@ import {
   isLocalTimeKey,
   needsDateConfirmation,
   onboardingFieldValidator,
+  type SetupSnapshot,
+  type SetupState,
+  setupStateFor,
   summariseDay,
   summariseWeek,
   WEEK_LENGTH_DAYS,
@@ -263,6 +266,75 @@ async function ensureUser(
   const created = await ctx.db.get(userId);
   if (!created) throw new Error("Could not create Ted user");
   return created;
+}
+
+/**
+ * Read everything `setupStateFor` needs for one user, across the three tables
+ * that hold it.
+ *
+ * `userId` is passed rather than re-resolved so a caller that has just written
+ * a row reads back the same user it wrote to.
+ */
+async function buildSetupSnapshot(
+  // Reader, not writer: this only ever reads, so the read-only audit query can
+  // share the exact code the status refresh judges by. Two implementations of
+  // "what is missing" is the bug this whole change exists to remove.
+  ctx: { db: QueryCtx["db"] },
+  user: Doc<"users">,
+): Promise<SetupSnapshot> {
+  const [target, reminder] = await Promise.all([
+    ctx.db
+      .query("targets")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique(),
+    ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique(),
+  ]);
+  return {
+    privacyNoticeSentAt: user.privacyNoticeSentAt ?? null,
+    name: user.name ?? null,
+    age: user.age ?? null,
+    heightCm: user.heightCm ?? null,
+    weightKg: user.weightKg ?? null,
+    goal: user.goal ?? null,
+    calories: target?.calories ?? null,
+    dailyReviewTime: reminder?.dailyReviewTime ?? null,
+  };
+}
+
+/**
+ * Recompute `users.status` from what is actually stored, and return the gaps.
+ *
+ * Called after every write that could close or reopen one, so the status is a
+ * fact about the row rather than a claim somebody made about it. This is the
+ * only place outside `deleteUserMemory` that may move a user between
+ * "onboarding" and "active": nothing else, and specifically not the model, gets
+ * to decide.
+ *
+ * "deleting" is left alone. A user part-way through erasure whose rows happen
+ * to still satisfy the requirements must not be quietly reactivated by a late
+ * write landing after they asked to be forgotten.
+ */
+async function refreshSetupStatus(
+  ctx: { db: MutationCtx["db"] },
+  userId: Id<"users">,
+): Promise<SetupState> {
+  // Re-read rather than trust the caller's copy: every caller has just written
+  // to one of these rows, and the whole point is to judge the state after the
+  // write rather than the state that prompted it.
+  const user = await ctx.db.get(userId);
+  if (!user) throw new Error("Could not read Ted user");
+
+  const state = setupStateFor(await buildSetupSnapshot(ctx, user));
+  if (user.status === "deleting") return state;
+
+  const derived = state.ready ? "active" : "onboarding";
+  if (user.status !== derived) {
+    await ctx.db.patch(user._id, { status: derived, updatedAt: Date.now() });
+  }
+  return state;
 }
 
 const mealValidator = v.object({
@@ -599,7 +671,11 @@ export const setTarget = internalMutation({
     if (existing) {
       await ctx.db.patch(existing._id, patch);
       await ctx.db.patch(user._id, { updatedAt: now });
-      return { success: true, created: false, targetId: existing._id };
+      // A calorie target is one of the eight requirements, so agreeing one can
+      // be the write that finishes setup. Checked here rather than only in
+      // saveOnboarding because this is reached from open conversation too.
+      const state = await refreshSetupStatus(ctx, user._id);
+      return { success: true, created: false, targetId: existing._id, ...state };
     }
 
     const targetId = await ctx.db.insert("targets", {
@@ -610,7 +686,8 @@ export const setTarget = internalMutation({
       updatedAt: now,
     });
     await ctx.db.patch(user._id, { updatedAt: now });
-    return { success: true, created: true, targetId };
+    const state = await refreshSetupStatus(ctx, user._id);
+    return { success: true, created: true, targetId, ...state };
   },
 });
 
@@ -679,7 +756,10 @@ export const setReminder = internalMutation({
     if (existing) {
       await ctx.db.patch(existing._id, patch);
       await ctx.db.patch(user._id, { updatedAt: now });
-      return { success: true, created: false, reminderId: existing._id };
+      // Naming a check-in time is the last of the eight for most people, so
+      // this is usually the write that flips them active.
+      const state = await refreshSetupStatus(ctx, user._id);
+      return { success: true, created: false, reminderId: existing._id, ...state };
     }
 
     const reminderId = await ctx.db.insert("reminders", {
@@ -695,7 +775,8 @@ export const setReminder = internalMutation({
       updatedAt: now,
     });
     await ctx.db.patch(user._id, { updatedAt: now });
-    return { success: true, created: true, reminderId };
+    const state = await refreshSetupStatus(ctx, user._id);
+    return { success: true, created: true, reminderId, ...state };
   },
 });
 
@@ -712,6 +793,13 @@ export const saveOnboarding = internalMutation({
         weightKg: v.optional(v.number()),
         timeZone: v.optional(v.string()),
         goal: v.optional(goalValidator),
+        // The privacy notice the gate already sends every new user. It was
+        // going out and being recorded only in the gateway's local file, so
+        // Convex held nothing for anybody: on 6 Sep the gate's own record
+        // covered 31 of 32 users and Convex covered 0. A thing that happens
+        // and is never written down did not happen as far as any other part
+        // of the system can tell.
+        privacyNoticeSentAt: v.optional(v.number()),
       }),
     ),
   },
@@ -724,10 +812,11 @@ export const saveOnboarding = internalMutation({
       for (const [key, value] of Object.entries(profile)) {
         if (value !== undefined) patch[key] = value;
       }
-      if (currentField === "complete") patch.status = "active";
+      // No status here. `currentField: "complete"` used to set it directly,
+      // which is what let the model mark Pradosh active with no age, height,
+      // weight or target on file. What onboarding step the model believes it
+      // is on is now a note about the conversation, not a claim about the row.
       await ctx.db.patch(user._id, patch);
-    } else if (currentField === "complete") {
-      await ctx.db.patch(user._id, { status: "active", updatedAt: now });
     }
 
     const existing = await ctx.db
@@ -735,16 +824,23 @@ export const saveOnboarding = internalMutation({
       .withIndex("by_user", (query) => query.eq("userId", user._id))
       .unique();
 
+    // Derived from the rows, not from `currentField`. A model that says
+    // "complete" over an empty profile no longer closes onboarding, and a
+    // gate flow that filled everything in and never sent a closing write no
+    // longer leaves the user open forever. Seven of the 32 users on 6 Sep were
+    // in exactly that second state.
+    const state = await refreshSetupStatus(ctx, user._id);
+
     if (!existing) {
       const onboardingId = await ctx.db.insert("onboarding", {
         userId: user._id,
         currentField,
         completedFields: completedField ? [completedField] : [],
         startedAt: now,
-        completedAt: currentField === "complete" ? now : undefined,
+        completedAt: state.ready ? now : undefined,
         updatedAt: now,
       });
-      return { success: true, created: true, onboardingId };
+      return { success: true, created: true, onboardingId, ...state };
     }
 
     const completedFields = [...existing.completedFields];
@@ -754,11 +850,12 @@ export const saveOnboarding = internalMutation({
     await ctx.db.patch(existing._id, {
       currentField,
       completedFields,
-      completedAt:
-        currentField === "complete" ? (existing.completedAt ?? now) : existing.completedAt,
+      // Kept once earned. A user who completes setup and later has a field
+      // cleared is a user with a gap to close, not someone who never started.
+      completedAt: state.ready ? (existing.completedAt ?? now) : existing.completedAt,
       updatedAt: now,
     });
-    return { success: true, created: false, onboardingId: existing._id };
+    return { success: true, created: false, onboardingId: existing._id, ...state };
   },
 });
 
@@ -802,6 +899,77 @@ export const reportBadReply = internalMutation({
  * Reached only through the shared secret on the HTTP route, never as a model
  * tool, so it cannot become a way for one user's turn to read another's.
  */
+/**
+ * Every user and what setup they are still missing, derived on read.
+ *
+ * Builder read-back, reached with the shared secret and never exposed as a
+ * model tool, for the same reason `listReportedReplies` is not: it crosses
+ * users, so it must never be somewhere one person's turn can reach.
+ *
+ * Read-only on purpose. Seeing the gaps and closing them are separate calls,
+ * so an audit can be run against production without changing it.
+ */
+export const listSetupState = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const users = await ctx.db.query("users").collect();
+    const rows = await Promise.all(
+      users.map(async (user) => {
+        const state = setupStateFor(await buildSetupSnapshot(ctx, user));
+        const onboarding = await ctx.db
+          .query("onboarding")
+          .withIndex("by_user", (query) => query.eq("userId", user._id))
+          .unique();
+        return {
+          whatsappUserId: user.whatsappUserId,
+          name: user.name ?? "",
+          // Echoed so a reconcile can write a profile back without moving
+          // anyone's place in the conversation. Backfilling a weight is not a
+          // reason to restart someone's onboarding at step one.
+          currentField: onboarding?.currentField ?? null,
+          storedStatus: user.status,
+          derivedStatus: state.ready ? "active" : "onboarding",
+          // The whole reason this exists: where the two disagree, the stored
+          // one is the lie and the derived one is the row.
+          disagrees: user.status !== (state.ready ? "active" : "onboarding"),
+          missing: state.missing,
+          blocked: state.blocked,
+          createdAt: user.createdAt,
+        };
+      }),
+    );
+    rows.sort((a, b) => a.missing.length - b.missing.length || a.createdAt - b.createdAt);
+    return { users: rows, total: rows.length };
+  },
+});
+
+/**
+ * Recompute one user's status from the rows, changing no data.
+ *
+ * The whole of step 3 for anyone whose record was already complete and only
+ * looked unfinished. Idempotent by construction: it writes `status` only when
+ * the derived value differs from the stored one, so running it twice is the
+ * same as running it once, and running it on a correct row writes nothing.
+ */
+export const refreshSetup = internalMutation({
+  args: { whatsappUserId: v.string() },
+  handler: async (ctx, { whatsappUserId }) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    // Deliberately does not call ensureUser: an audit or a typo must not be
+    // able to create a user row as a side effect of asking about one.
+    if (!user) return { success: false, error: "No such user" };
+
+    const before = user.status;
+    const state = await refreshSetupStatus(ctx, user._id);
+    return { success: true, before, after: state.ready ? "active" : "onboarding", ...state };
+  },
+});
+
 export const listReportedReplies = internalQuery({
   args: { limit: v.optional(v.number()) },
   handler: async (ctx, { limit }) => {

@@ -764,6 +764,111 @@ examples in context will drift that way every time. Worth a rule rather than
 an adjective, on the evidence of everything else in this file that adjectives
 lost.
 
+## Order 23 — 6 Sep 2026, evening, one definition of "set up"
+
+Started from a cohort read, not a bug report. 42 people have messaged Ted, 32
+have a Convex row, 33 of the 42 showed up on exactly one day. Scheduled nudges
+are not the problem: of 47 old enough to judge, 42 got a reply inside 24 hours.
+People are lost during onboarding, and the record of who was lost was wrong.
+
+### What was actually broken
+
+`users.status` only ever became "active" when the model wrote
+`currentField: "complete"`. "Set up" meant "the model remembered to say so",
+which was wrong in both directions at once:
+
+  * **Seven users had everything on file and were still filed as onboarding.**
+    Ankit, Ayush, Bhatia, Roshan and three unnamed. Name, age, height, weight,
+    goal, a calorie target and a check-in time all present, cron jobs firing,
+    and Convex calling them unfinished because the flow that collected the
+    answers was a gate flow that never sent the closing write.
+  * **Three were filed active on almost nothing.** Pradosh had no age, height,
+    weight or calorie target, and had been coached for three days anyway.
+
+Onboarding changed shape repeatedly during the week — five counted questions,
+then six, then stretches of open conversation — so which flow a person arrived
+through decided which of three stores held their answers: Convex (32 users, 28
+onboarding rows), the gate's own file on this laptop (40 users), and the Hermes
+cron jobs (16 chats). None of the three reconciled with the others.
+
+A flag cannot survive a flow that keeps changing. A function over the stored
+data can, which is also what PRODUCT_BUILD_GUARDRAILS §5 already asked for:
+"completion state ... should be calculated from persisted data".
+
+### What was built
+
+`setupStateFor` in `convex/model.ts` is now the single definition, over eight
+requirements: privacy notice, name, age, height, weight, goal, calorie target,
+check-in time. Everything else in `onboardingFields` is a preference; these
+eight are what Ted needs before "how am I doing" has an answer.
+
+  * `users.status` is derived. `refreshSetupStatus` recomputes it after every
+    write that can close a gap — `saveOnboarding`, `setTarget`, `setReminder` —
+    and is the only thing outside deletion that may move a user between states.
+    `currentField: "complete"` from the model no longer sets anything.
+  * A stated age under 18 returns `blocked: "minor"` rather than a missing
+    field, because re-asking is the one response worse than doing nothing.
+    **Tanishka is 17 with a weight-loss goal**, found by this and not before.
+  * `privacyNoticeSentAt` is a new optional field, deliberately not
+    `consentAcceptedAt`. What Ted sends is a notice with an opt-out, not a
+    request for agreement, and recording delivery in a field named "accepted"
+    is the fake-confidence §1 forbids. The gate had been sending the notice
+    since the first user and writing it only to its own file, so Convex held it
+    for nobody while the gate's record covered 31 of 32.
+    `_mark_disclosure_sent` now tells Convex as well; without that every new
+    user would be permanently one requirement short.
+  * `setupAudit` and `refreshSetup` are builder read-backs, reached with the
+    shared secret and never model tools, listed in `REQUIRED_CONVEX_ACTIONS` so
+    `npm run convex:check` proves production has them.
+
+### The reconcile
+
+`npm run setup:reconcile`, dry run by default, `--apply` to write. It copies
+what the gateway already proved into Convex and asks Convex to recompute. It
+invents nothing: where no local record holds a value the gap stays open and is
+printed as a question a human still has to ask. It creates no users, sends no
+message and touches no cron job, so running it cannot make Ted speak.
+
+Applied to production at 18:50 IST. 31 privacy-notice timestamps, 12 names, one
+age, one weight, one check-in time. **9 of 32 users now active, and all 32
+agree with the derivation** where 5 were labelled active before and only 2
+deserved it. A second `--apply` writes nothing, which is the property that
+makes it a fix rather than a patch.
+
+24 of the 31 notice timestamps come from the user's own `createdAt` rather than
+a delivery record, because `delivery_obligations` only reaches back to 2 Sep.
+The notice goes out on the first turn, so that is the tightest defensible
+bound. The script prints that count rather than hiding it.
+
+### What this does not do
+
+Nothing reads `users.status` — not the gate, not the model, not the site — so
+no user-facing behaviour changed today. This makes the record true, which is
+what the next steps stand on. `npm run submission:report` will now say 9 active
+rather than 5.
+
+23 users still have a real gap, and no local record can close them:
+calorie target 20, check-in time 16, weight 15, goal 14, height 14, age 13.
+Those are questions, which is step 4.
+
+### Still open, agreed but not built
+
+  1. **One asker.** The gate's counted flow is deterministic, capped at three
+     asks and resumable; the model can still write any of 19 `currentField`
+     values in any order. Extend `SETUP_QUESTIONS` to seven with the check-in
+     time and drive it from `missingFor` rather than a hardcoded list.
+  2. **Revival messages, by tier.** Nobody gets "how's it going". Each person
+     is asked for exactly what is missing. Tier 3, the 15 who said hello and
+     left, waits until 1 lands or they die on the same question again.
+  3. **The silence ladder.** Today it is four unanswered nudges, then the break
+     offer, then Ted is silent forever with no way back. Roshan entered that
+     state at 13:00 on 6 Sep. Every stop needs a scheduled return.
+  4. **Five daily reviews failed to deliver** on 5 Sep at 21:01:58 with
+     `WhatsApp send failed` — nagga, Bhatia, Ankit and two others — and
+     `last_status` still reads `ok`. No retry, no alert.
+  5. **`maxPerDay: 3` against 5 enabled items** for three users, 10 `dailyCap`
+     suppressions logged, and two of the five items are both water.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of

@@ -173,6 +173,22 @@ http.route({
         return json({ success: true, ...result });
       }
 
+      // Builder read-back, same rule as "reports": it crosses users, so it is
+      // reached with the shared secret and is never a model tool.
+      if (input.action === "setupAudit") {
+        const result = await ctx.runQuery(internal.ted.listSetupState, {});
+        return json({ success: true, ...result });
+      }
+
+      // Recompute one user's status from their own rows. Writes no new data,
+      // so it is safe to run over everyone: see refreshSetup in ted.ts.
+      if (input.action === "refreshSetup") {
+        const result = await ctx.runMutation(internal.ted.refreshSetup, {
+          whatsappUserId: input.whatsappUserId,
+        });
+        return json(result);
+      }
+
       if (input.action === "onboarding") {
         const result = await ctx.runMutation(internal.ted.saveOnboarding, {
           whatsappUserId: input.whatsappUserId,

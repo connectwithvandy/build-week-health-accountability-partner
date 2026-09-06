@@ -22,6 +22,10 @@ import {
   addLocalDays,
   NUDGES_BEFORE_BREAK_OFFER,
   SAME_MEAL_WINDOW_MINUTES,
+  isSetUp,
+  setupRequirements,
+  setupStateFor,
+  type SetupSnapshot,
 } from "../convex/model";
 
 describe("Convex data model", () => {
@@ -847,5 +851,120 @@ describe("Backing off when someone goes quiet", () => {
       allowed: true,
       reason: "ok",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Setup readiness, derived rather than declared.
+//
+// Every case here is a real row from the 6 Sep production audit. The two that
+// matter most are the ones that used to go wrong in opposite directions: a
+// user with everything on file who was still filed as onboarding because the
+// flow that collected it never sent the closing write, and a user filed active
+// with no age, height, weight or target because the model said so.
+describe("setup readiness", () => {
+  const complete: SetupSnapshot = {
+    privacyNoticeSentAt: 1_788_000_000_000,
+    name: "Ankit",
+    age: 29,
+    heightCm: 175,
+    weightKg: 78,
+    goal: "loseWeight",
+    calories: 1900,
+    dailyReviewTime: "21:00",
+  };
+
+  it("lists the requirements in the order they should be asked", () => {
+    expect(setupRequirements).toEqual([
+      "privacyNotice",
+      "name",
+      "age",
+      "height",
+      "weight",
+      "goal",
+      "calorieTarget",
+      "checkInTime",
+    ]);
+  });
+
+  it("calls a complete record ready", () => {
+    expect(setupStateFor(complete)).toEqual({ missing: [], blocked: null, ready: true });
+    expect(isSetUp(complete)).toBe(true);
+  });
+
+  it("is ready for a record whose onboarding row still says mid-flow", () => {
+    // Ankit on 6 Sep: gate setup done, two cron jobs firing, Convex parked at
+    // "confirmation". Nothing about the stored data justified the label.
+    expect(isSetUp(complete)).toBe(true);
+  });
+
+  it("is not ready for a record the model called complete", () => {
+    // Pradosh on 6 Sep: status "active", nothing to compute a calorie number
+    // from, and three days of coaching already delivered.
+    const pradosh: SetupSnapshot = {
+      privacyNoticeSentAt: 1_788_000_000_000,
+      name: "Pradosh",
+      goal: "loseWeight",
+      dailyReviewTime: "22:00",
+    };
+    const state = setupStateFor(pradosh);
+    expect(state.ready).toBe(false);
+    expect(state.missing).toEqual(["age", "height", "weight", "calorieTarget"]);
+  });
+
+  it("names the next question first", () => {
+    const state = setupStateFor({ ...complete, privacyNoticeSentAt: null, age: null });
+    expect(state.missing[0]).toBe("privacyNotice");
+  });
+
+  it("treats absent, null, empty and zero alike", () => {
+    for (const empty of [undefined, null, 0]) {
+      expect(setupStateFor({ ...complete, calories: empty }).missing).toContain(
+        "calorieTarget",
+      );
+    }
+    for (const empty of [undefined, null, "", "   "]) {
+      expect(setupStateFor({ ...complete, name: empty }).missing).toContain("name");
+    }
+  });
+
+  it("rejects a check-in time that is not a real clock time", () => {
+    for (const bad of ["", "9pm", "25:00", "21:60", "evening"]) {
+      expect(setupStateFor({ ...complete, dailyReviewTime: bad }).missing).toContain(
+        "checkInTime",
+      );
+    }
+    expect(setupStateFor({ ...complete, dailyReviewTime: "07:30" }).ready).toBe(true);
+  });
+
+  it("blocks a minor rather than treating the age as unanswered", () => {
+    const state = setupStateFor({ ...complete, age: 15 });
+    // The age is on file, so it is not missing. What stops them is the block,
+    // and re-asking would be the one response worse than doing nothing.
+    expect(state.missing).not.toContain("age");
+    expect(state.blocked).toBe("minor");
+    expect(state.ready).toBe(false);
+  });
+
+  it("still reports the other gaps for a blocked record", () => {
+    const state = setupStateFor({ age: 15 });
+    expect(state.blocked).toBe("minor");
+    expect(state.missing).toContain("name");
+  });
+
+  it("requires the privacy notice, which was sent but never recorded", () => {
+    // Convex held this for 0 of 32 users on 6 Sep while the gate's own record
+    // covered 31. Sent and written down nowhere the rest of the system can
+    // read is, for every practical purpose, not sent.
+    expect(setupStateFor({ ...complete, privacyNoticeSentAt: null }).missing).toEqual([
+      "privacyNotice",
+    ]);
+  });
+
+  it("does not depend on the onboarding flow that collected the data", () => {
+    // The five-question flow, the six-question flow and open conversation all
+    // produce the same eight facts or they do not. Nothing here can tell which
+    // one ran, which is the point.
+    expect(isSetUp(complete)).toBe(true);
   });
 });

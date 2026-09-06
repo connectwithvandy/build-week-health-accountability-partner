@@ -24,6 +24,21 @@ export default defineSchema({
     goal: v.optional(goalValidator),
     consentAcceptedAt: v.optional(timestamp),
     medicalDisclaimerAcceptedAt: v.optional(timestamp),
+    /**
+     * When the privacy notice was delivered to this user.
+     *
+     * Deliberately not `consentAcceptedAt`. What Ted sends is a notice with an
+     * opt-out ("Ted stores your profile, messages, plans, logs and uploads …
+     * send delete to erase"), not a request for agreement, and nobody has ever
+     * clicked anything. Recording delivery in a field named "accepted" would be
+     * the exact thing PRODUCT_BUILD_GUARDRAILS §1 forbids: turning something
+     * uncertain into a confident record. `consentAcceptedAt` stays unused and
+     * available for a real opt-in if one is ever added.
+     *
+     * The gate had been sending this since the first user and writing it only
+     * to its own file on this laptop, so Convex knew about it for nobody.
+     */
+    privacyNoticeSentAt: v.optional(timestamp),
     createdAt: timestamp,
     updatedAt: timestamp,
   }).index("by_whatsapp_user_id", ["whatsappUserId"]),

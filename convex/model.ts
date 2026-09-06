@@ -763,6 +763,126 @@ export function decideReminderDelivery(
 }
 
 // ---------------------------------------------------------------------------
+// Is this person set up?
+//
+// The bug this replaces: `status` only ever became "active" when the model
+// wrote `currentField: "complete"`, so "set up" meant "the model remembered to
+// say so". On 6 Sep that was wrong in both directions at once. Seven users had
+// a name, age, height, weight, goal, a calorie target and a check-in time on
+// file and were still filed as mid-onboarding, because the flow that collected
+// them was a gate flow that never sent the closing write. Three others were
+// filed active with almost nothing: Pradosh had no age, height, weight or
+// target, and Ted had been coaching him for three days anyway.
+//
+// Onboarding changed shape several times during build week — five counted
+// questions, then six, then stretches of open conversation — so which flow a
+// person happened to arrive through decided which record they ended up in.
+// A flag cannot survive that. A function over the stored data can: it asks the
+// same question of every row no matter what collected it, so a flow change
+// cannot create another cohort, and a backfill is just this function run again.
+//
+// PRODUCT_BUILD_GUARDRAILS §5: "completion state ... should be calculated from
+// persisted data", not reconstructed by the model.
+
+/**
+ * What Ted needs on file before it can do the job it promises.
+ *
+ * Deliberately short. Every entry is load-bearing for the daily loop: the
+ * privacy notice is what makes storing any of the rest of it fair, the
+ * profile four are what a calorie number is computed from, `goal` decides
+ * which direction that number moves, `calorieTarget` is the number a meal is
+ * logged against, and `checkInTime` is the only reason Ted ever speaks first.
+ *
+ * Everything else in `onboardingFields` — steps, water, workouts, custom
+ * commitments, the weekly review, the morning commitment — is a preference.
+ * Missing preferences make Ted less tailored. Missing entries here make Ted
+ * unable to answer "how am I doing", which is the whole product.
+ */
+export const setupRequirements = [
+  "privacyNotice",
+  "name",
+  "age",
+  "height",
+  "weight",
+  "goal",
+  "calorieTarget",
+  "checkInTime",
+] as const;
+
+export type SetupRequirement = (typeof setupRequirements)[number];
+
+/** Beta is adults only, and a calorie number is the thing that must not reach a minor. */
+export const MINIMUM_AGE = 18;
+
+/**
+ * The stored rows this reads, named rather than passed as whole documents so
+ * the function stays testable and callable from the reconcile script, which
+ * holds the same fields as plain JSON rather than as Convex docs.
+ */
+export type SetupSnapshot = {
+  privacyNoticeSentAt?: number | null;
+  name?: string | null;
+  age?: number | null;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  goal?: Goal | null;
+  /** From `targets.calories`. */
+  calories?: number | null;
+  /** From `reminders.dailyReviewTime`. */
+  dailyReviewTime?: string | null;
+};
+
+export type SetupState = {
+  missing: SetupRequirement[];
+  /**
+   * Set when the gap cannot be closed by asking again. A stated age under 18
+   * is not an unanswered question, and re-asking it is the one response that
+   * would be worse than doing nothing.
+   */
+  blocked: "minor" | null;
+  ready: boolean;
+};
+
+function hasText(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasNumber(value: number | null | undefined): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * Which requirements this person is still missing.
+ *
+ * Order follows `setupRequirements`, so the first entry is always the next
+ * thing worth asking for and a caller can take `missing[0]` without sorting.
+ */
+export function setupStateFor(snapshot: SetupSnapshot): SetupState {
+  const missing: SetupRequirement[] = [];
+
+  if (!hasNumber(snapshot.privacyNoticeSentAt)) missing.push("privacyNotice");
+  if (!hasText(snapshot.name)) missing.push("name");
+  if (!hasNumber(snapshot.age)) missing.push("age");
+  if (!hasNumber(snapshot.heightCm)) missing.push("height");
+  if (!hasNumber(snapshot.weightKg)) missing.push("weight");
+  if (!hasText(snapshot.goal)) missing.push("goal");
+  if (!hasNumber(snapshot.calories)) missing.push("calorieTarget");
+  if (!isLocalTimeKey(String(snapshot.dailyReviewTime ?? ""))) missing.push("checkInTime");
+
+  // Checked after the list is built so a minor's record still reports what
+  // else is absent. The block is what stops them, not the missing fields.
+  const blocked =
+    typeof snapshot.age === "number" && snapshot.age < MINIMUM_AGE ? "minor" : null;
+
+  return { missing, blocked, ready: missing.length === 0 && blocked === null };
+}
+
+/** Shorthand for the one thing `users.status` should be derived from. */
+export function isSetUp(snapshot: SetupSnapshot): boolean {
+  return setupStateFor(snapshot).ready;
+}
+
+// ---------------------------------------------------------------------------
 // What the deployed backend claims to support.
 //
 // The gate in hermes/ted_safety_gates talks to this backend over HTTP, and the
@@ -788,4 +908,6 @@ export const TED_HTTP_ACTIONS = [
   "reports",
   "reminderGate",
   "replied",
+  "setupAudit",
+  "refreshSetup",
 ] as const;

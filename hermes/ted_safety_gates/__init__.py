@@ -1052,6 +1052,14 @@ REQUIRED_CONVEX_ACTIONS = frozenset(
         "reports",
         "reminderGate",
         "replied",
+        # Builder read-back and the status recompute behind it. Listed here for
+        # the same reason "reports" is, even though the gate never calls them:
+        # this set is what `npm run convex:check` proves a deployment supports
+        # before the gateway is allowed to restart onto it, and an action the
+        # repo knows about but production does not is exactly the drift that
+        # check exists to catch.
+        "setupAudit",
+        "refreshSetup",
     }
 )
 
@@ -1280,6 +1288,29 @@ def _mark_disclosure_sent(user_key: str, session_id: str = "") -> bool:
         if context is not None:
             context["disclosure_sent"] = True
         _persist_disclosure_state()
+
+    # Tell Convex too. Until 6 Sep this was recorded only in the file above,
+    # which lives on one laptop, so `users.privacyNoticeSentAt` was empty for
+    # every user Ted has ever had while the notice itself had gone out to 31 of
+    # them. `setupStateFor` requires it, so without this line every new user
+    # would be permanently one requirement short of set up — the same class of
+    # bug this replaced, pointed the other way.
+    #
+    # Deliberately outside the lock: it is a network call, and the local
+    # record is what stops the notice being sent twice. A failure here loses
+    # the timestamp, not the notice, and the reconcile can recover it from the
+    # delivery log afterwards. `currentField: "consent"` is where a first-turn
+    # user genuinely is; this only ever runs on the turn the notice first goes
+    # out, because the early return above makes it once-per-user.
+    _convex_write(
+        "onboarding",
+        user_key,
+        session_id,
+        body={
+            "currentField": "consent",
+            "profile": {"privacyNoticeSentAt": int(time.time() * 1000)},
+        },
+    )
     return True
 
 
