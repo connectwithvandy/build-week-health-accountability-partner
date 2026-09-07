@@ -6215,6 +6215,24 @@ _REMINDER_SETTING_PROPERTIES: dict[str, Any] = {
                 "localTime": {"type": "string"},
                 "enabled": {"type": "boolean"},
                 "followUpAfterMinutes": {"type": "number"},
+                "days": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "monday", "tuesday", "wednesday", "thursday",
+                            "friday", "saturday", "sunday",
+                        ],
+                    },
+                    "description": (
+                        "Which days this reminder applies to. Leave it out for "
+                        "every day. Send it whenever the user says something "
+                        "like weekdays, Mondays and Wednesdays, or twice a "
+                        "week on specific days — without it the reminder is "
+                        "scheduled daily and they get nudged on days they did "
+                        "not ask for."
+                    ),
+                },
             },
             "required": ["reminderId", "commitmentId", "localTime", "enabled"],
             "additionalProperties": False,
@@ -7430,12 +7448,35 @@ def _set_target(
 _CRON_TIME = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
-def _cron_expression(local_time: str, zone: ZoneInfo) -> str | None:
-    """A daily cron expression in *machine* time for a user's wall clock.
+# cron numbers its weekdays from Sunday. Written out rather than derived from
+# `weekdays` in convex/model.ts, which starts on Monday, because the two
+# orderings disagreeing silently is exactly the kind of off-by-one that would
+# send someone's Monday reminder on Sunday.
+_CRON_WEEKDAY = {
+    "sunday": 0,
+    "monday": 1,
+    "tuesday": 2,
+    "wednesday": 3,
+    "thursday": 4,
+    "friday": 5,
+    "saturday": 6,
+}
+
+
+def _cron_expression(
+    local_time: str, zone: ZoneInfo, days: list[str] | None = None
+) -> str | None:
+    """A cron expression in *machine* time for a user's wall clock.
 
     The scheduler runs on Vandy's laptop in Asia/Kolkata. Pradosh is in
     London. "10:30" means 10:30 where he is, which is not 10:30 here, and a
     reminder that fires four and a half hours off is worse than none.
+
+    `days` is the list of weekday names it applies to, or None for every day.
+    Converting the time can move the date as well as the clock — 23:30 on a
+    Monday in London is 05:00 on a Tuesday here — so the weekdays shift by the
+    same number of days the conversion moved, or the reminder lands on the
+    wrong one. That is a bug you would only notice a week later.
     """
     match = _CRON_TIME.match(str(local_time or "").strip())
     if not match:
@@ -7446,7 +7487,23 @@ def _cron_expression(local_time: str, zone: ZoneInfo) -> str | None:
     today = datetime.now(zone).date()
     theirs = datetime(today.year, today.month, today.day, hour, minute, tzinfo=zone)
     here = theirs.astimezone()
-    return f"{here.minute} {here.hour} * * *"
+
+    if not days:
+        return f"{here.minute} {here.hour} * * *"
+
+    wanted = [
+        _CRON_WEEKDAY[name]
+        for name in (str(d).strip().lower() for d in days)
+        if name in _CRON_WEEKDAY
+    ]
+    if not wanted:
+        # Named days that were all unreadable. Falling back to every day would
+        # nudge on days they did not ask for, which is the louder mistake.
+        return None
+
+    shift = (here.date() - theirs.date()).days
+    moved = sorted({(day + shift) % 7 for day in wanted})
+    return f"{here.minute} {here.hour} * * {','.join(str(d) for d in moved)}"
 
 
 def _reminder_job_name(user_key: str, reminder_id: str) -> str:
@@ -7524,7 +7581,7 @@ def _sync_reminder_jobs(
     prefix = f"ted:{user_key[-12:]}:"
     existing = _existing_reminder_jobs(prefix)
 
-    wanted: list[tuple[str, str, str]] = []
+    wanted: list[tuple[str, str, str, list[str] | None]] = []
     for item in settings.get("items") or []:
         if not isinstance(item, dict) or item.get("enabled") is False:
             continue
@@ -7532,14 +7589,21 @@ def _sync_reminder_jobs(
         local_time = str(item.get("localTime") or "")
         if reminder_id and local_time:
             label = str(item.get("commitmentId") or reminder_id).replace("_", " ")
-            wanted.append((reminder_id, local_time, label))
+            raw_days = item.get("days")
+            days = (
+                [str(d) for d in raw_days]
+                if isinstance(raw_days, list) and raw_days
+                else None
+            )
+            wanted.append((reminder_id, local_time, label, days))
     review_time = str(settings.get("dailyReviewTime") or "")
     if review_time:
-        wanted.append(("daily_review", review_time, "how their day went"))
+        # The review is every day by definition; it closes the day out.
+        wanted.append(("daily_review", review_time, "how their day went", None))
 
     scheduled: list[str] = []
-    for reminder_id, local_time, label in wanted:
-        expression = _cron_expression(local_time, zone)
+    for reminder_id, local_time, label, days in wanted:
+        expression = _cron_expression(local_time, zone, days)
         if not expression:
             continue
         name = _reminder_job_name(user_key, reminder_id)

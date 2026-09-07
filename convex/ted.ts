@@ -739,6 +739,8 @@ export const setReminder = internalMutation({
           localTime: v.string(),
           enabled: v.boolean(),
           followUpAfterMinutes: v.optional(v.number()),
+          // Absent means every day; see convex/schema.ts.
+          days: v.optional(v.array(weekdayValidator)),
         }),
       ),
     ),

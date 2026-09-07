@@ -5500,6 +5500,63 @@ class RemindersActuallyGetScheduledTest(unittest.TestCase):
                     gates._cron_expression(bad, ZoneInfo("Europe/London"))
                 )
 
+    def test_no_days_still_means_every_day(self) -> None:
+        """Every row written before days existed, and most reminders anyway."""
+        here = datetime.now().astimezone().tzinfo  # no conversion, mapping only
+        for days in (None, []):
+            with self.subTest(days=days):
+                self.assertTrue(
+                    gates._cron_expression("10:30", here, days).endswith("* * *")
+                )
+
+    def test_named_days_reach_the_expression(self) -> None:
+        # Same zone as the machine, so nothing shifts and the mapping is the
+        # only thing under test. cron counts weekdays from Sunday.
+        here = datetime.now().astimezone().tzinfo  # no conversion, mapping only
+        cases = {
+            ("monday", "wednesday"): "1,3",
+            ("tuesday", "thursday"): "2,4",
+            ("monday", "tuesday", "wednesday", "thursday", "friday"): "1,2,3,4,5",
+            ("sunday",): "0",
+            ("saturday", "sunday"): "0,6",
+        }
+        for days, expected in cases.items():
+            with self.subTest(days=days):
+                expression = gates._cron_expression("10:30", here, list(days))
+                self.assertEqual(expression.split()[-1], expected)
+
+    def test_days_are_deduplicated_and_ordered(self) -> None:
+        here = datetime.now().astimezone().tzinfo  # no conversion, mapping only
+        expression = gates._cron_expression(
+            "10:30", here, ["wednesday", "monday", "MONDAY", " wednesday "]
+        )
+        self.assertEqual(expression.split()[-1], "1,3")
+
+    def test_a_timezone_that_crosses_midnight_moves_the_weekday_too(self) -> None:
+        """23:30 Monday in London is Tuesday morning on an IST machine.
+
+        Shifting the clock without shifting the day sends the reminder a day
+        early or late, every week, which is the kind of thing nobody notices
+        for a fortnight.
+        """
+        expression = gates._cron_expression(
+            "23:30", ZoneInfo("Pacific/Kiritimati"), ["monday"]
+        )
+        machine_day = int(expression.split()[-1])
+        # Whatever the machine zone is, the answer must be Monday shifted by
+        # however many days the conversion actually moved, never a bare Monday
+        # assumed without checking.
+        today = datetime.now(ZoneInfo("Pacific/Kiritimati")).date()
+        theirs = datetime(today.year, today.month, today.day, 23, 30,
+                          tzinfo=ZoneInfo("Pacific/Kiritimati"))
+        shift = (theirs.astimezone().date() - theirs.date()).days
+        self.assertEqual(machine_day, (1 + shift) % 7)
+
+    def test_days_nobody_recognises_are_refused_not_widened(self) -> None:
+        """Falling back to every day would nudge on days they did not ask for."""
+        here = datetime.now().astimezone().tzinfo  # no conversion, mapping only
+        self.assertIsNone(gates._cron_expression("10:30", here, ["someday", "funday"]))
+
 
 class ScheduledIsTheOnlyThingThatProvesAReminderTest(unittest.TestCase):
     """"8pm check-in is set" is true only when something will fire at 8pm."""

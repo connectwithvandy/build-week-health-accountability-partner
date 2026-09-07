@@ -133,6 +133,18 @@ export default defineSchema({
         localTime: v.string(),
         enabled: v.boolean(),
         followUpAfterMinutes: v.optional(v.number()),
+        /**
+         * Which days this one applies to. Absent means every day, which is
+         * what every row written before 7 Sep 2026 means and what most
+         * reminders genuinely are.
+         *
+         * Without this a supplement taken on Mondays and Wednesdays could not
+         * be written down at all, so when the owner asked Ted to rebuild her
+         * reminders it recreated all five as daily next to the originals that
+         * were on the right days. Ten scheduled messages on a Monday, five of
+         * them in the same minute, against a cap of 3 that dropped the rest.
+         */
+        days: v.optional(v.array(weekdayValidator)),
       }),
     ),
     createdAt: timestamp,
