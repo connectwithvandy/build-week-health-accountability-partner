@@ -1249,9 +1249,91 @@ def _save_user_facts(
         if not key or not value or len(key) > 80 or len(value) > 500:
             return json.dumps({"success": False, "error": "Invalid fact length"})
         facts.append({"key": key, "value": value})
-    return json.dumps(
-        _convex_write("save", user_key, context_id, facts=facts), ensure_ascii=False
+
+    # A measurement has a column. Saving it here instead puts it somewhere
+    # nothing reads: `setupStateFor` does not look at userFacts, so the field
+    # stays empty and the user gets asked again. On 7 Sep Pallavi answered her
+    # height for the third time in four days and said so — "But you have this
+    # info already. I have answer this before already." Ted had replied "5'4"
+    # noted 📏" and written it to userFacts, where it could never satisfy the
+    # question that prompted it.
+    profile, facts = _profile_fields_from_facts(facts)
+    result = (
+        _convex_write("save", user_key, context_id, facts=facts)
+        if facts
+        else {"success": True, "saved": 0}
     )
+    if profile:
+        written = _convex_write(
+            "onboarding",
+            user_key,
+            context_id,
+            body={"currentField": "confirmation", "profile": profile},
+        )
+        if written.get("success"):
+            result["profileSaved"] = sorted(profile)
+            LOGGER.info(
+                "ted_fact_routed_to_profile user_key=%s fields=%s",
+                user_key,
+                sorted(profile),
+            )
+        else:
+            result["profileError"] = written.get("error") or "Profile not saved"
+    return json.dumps(result, ensure_ascii=False)
+
+
+# Fact keys that name something with a column of its own, and the column.
+# "gender" is here because the model reaches for it about as often as "sex",
+# and six users had their sex only under that key on 7 Sep — which matters,
+# because `calorieFloorFor` is 166 kcal more permissive without it.
+_FACT_KEYS_THAT_ARE_PROFILE = {
+    "height_cm": "heightCm", "height": "heightCm",
+    "weight_kg": "weightKg", "weight": "weightKg",
+    "age": "age",
+    "sex": "sex", "gender": "sex",
+}
+
+_GOALS_BY_WORD = {
+    "lose weight": "loseWeight", "loseweight": "loseWeight",
+    "weight loss": "loseWeight", "fat loss": "loseWeight",
+    "gain weight": "gainWeight", "gainweight": "gainWeight",
+    "maintain": "maintainWeight", "maintain weight": "maintainWeight",
+    "consistency": "improveConsistency",
+}
+
+
+def _profile_fields_from_facts(
+    facts: list[dict[str, str]],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Split a fact list into profile fields and everything else.
+
+    Only values that parse cleanly are moved. A fact whose value cannot be read
+    as the thing its key claims stays a fact, because a half-parsed measurement
+    written to a column is worse than a string somebody can still read.
+    """
+    profile: dict[str, Any] = {}
+    remaining: list[dict[str, str]] = []
+    for fact in facts:
+        field = _FACT_KEYS_THAT_ARE_PROFILE.get(fact["key"].strip().lower())
+        value = fact["value"].strip()
+        if field in ("heightCm", "weightKg", "age"):
+            match = re.search(r"\d+(?:\.\d+)?", value)
+            number = float(match.group()) if match else None
+            if number and number > 0:
+                profile[field] = int(number) if field == "age" else number
+                continue
+        elif field == "sex":
+            lowered = value.lower()
+            if lowered.startswith("m") or lowered.startswith("f"):
+                profile["sex"] = "male" if lowered.startswith("m") else "female"
+                continue
+        elif fact["key"].strip().lower() == "goal":
+            mapped = _GOALS_BY_WORD.get(value.lower())
+            if mapped:
+                profile["goal"] = mapped
+                continue
+        remaining.append(fact)
+    return profile, remaining
 
 
 def _persist_disclosure_state() -> None:

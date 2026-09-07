@@ -23,6 +23,7 @@ import {
   NUDGES_BEFORE_BREAK_OFFER,
   SAME_MEAL_WINDOW_MINUTES,
   calorieFloorFor,
+  countsTowardDay,
   isSetUp,
   restingEnergy,
   setupRequirements,
@@ -1026,5 +1027,43 @@ describe("calorie floor", () => {
     // The mutation refuses `calories < floor`, so the floor itself passes.
     expect(floor < floor).toBe(false);
     expect(2000 < floor).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A correction has to hold in the sentence, not only in the totals.
+describe("what counts toward the day", () => {
+  const entry = (state: string) => ({ state });
+
+  it("counts only confirmed entries", () => {
+    expect(countsTowardDay(entry("confirmed"))).toBe(true);
+    expect(countsTowardDay(entry("corrected"))).toBe(false);
+    expect(countsTowardDay(entry("pendingClarification"))).toBe(false);
+  });
+
+  it("uses the same rule the totals use", () => {
+    // The owner's 7 Sep morning: a masala omelette read from a photo, corrected
+    // to besan chilla, then the portion corrected again. Only the last one is
+    // real, and the two superseded rows must be invisible to anything that
+    // reads the day back in words.
+    const meal = (calories: number, proteinGrams: number) => ({
+      items: ["something"], calories, proteinGrams,
+      carbohydrateGrams: 0, fatGrams: 0, fiberGrams: 0,
+    });
+    const day = [
+      { localDate: "2026-09-07", entryType: "meal" as const,
+        state: "corrected" as const, meal: meal(240, 16) },
+      { localDate: "2026-09-07", entryType: "meal" as const,
+        state: "corrected" as const, meal: meal(240, 14) },
+      { localDate: "2026-09-07", entryType: "meal" as const,
+        state: "confirmed" as const, meal: meal(456, 25) },
+      { localDate: "2026-09-07", entryType: "meal" as const,
+        state: "confirmed" as const, meal: meal(356, 16) },
+    ];
+    const summary = summariseDay("2026-09-07", day);
+    expect(summary.meals).toBe(2);
+    expect(summary.calories).toBe(812);
+    // The same rule, applied to the list rather than the arithmetic.
+    expect(day.filter(countsTowardDay)).toHaveLength(summary.meals);
   });
 });

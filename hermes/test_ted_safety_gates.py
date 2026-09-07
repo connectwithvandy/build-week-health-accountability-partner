@@ -8638,3 +8638,68 @@ class FoodMatchingIsNotGuessingTest(unittest.TestCase):
         for key in gates._FOOD_INDEX:
             with self.subTest(key=key):
                 self.assertIsNotNone(gates._match_food(key))
+
+
+class MeasurementsGoToTheColumnNotTheNotepadTest(unittest.TestCase):
+    """A fact with a column of its own has to reach that column.
+
+    On 7 Sep 2026 Ted answered Pallavi's height with "5'4" noted 📏" and wrote
+    162.6 to userFacts. `setupStateFor` does not read userFacts, so `heightCm`
+    stayed empty and the win-back asked her for it again. She replied: "But you
+    have this info already. I have answer this before already."
+    """
+
+    def test_a_height_fact_becomes_a_profile_field(self) -> None:
+        profile, rest = gates._profile_fields_from_facts(
+            [{"key": "height_cm", "value": "162.6"}]
+        )
+        self.assertEqual(profile, {"heightCm": 162.6})
+        self.assertEqual(rest, [])
+
+    def test_gender_is_read_as_sex(self) -> None:
+        """Six users had their sex only under 'gender' on 7 Sep, and the
+        calorie floor is 166 kcal more permissive without it."""
+        for value in ("male", "Male", "m"):
+            with self.subTest(value=value):
+                profile, _ = gates._profile_fields_from_facts(
+                    [{"key": "gender", "value": value}]
+                )
+                self.assertEqual(profile, {"sex": "male"})
+        profile, _ = gates._profile_fields_from_facts(
+            [{"key": "sex", "value": "Female"}]
+        )
+        self.assertEqual(profile, {"sex": "female"})
+
+    def test_a_number_buried_in_words_is_still_read(self) -> None:
+        profile, rest = gates._profile_fields_from_facts(
+            [{"key": "weight", "value": "63.5 kgs"}, {"key": "age", "value": "31"}]
+        )
+        self.assertEqual(profile, {"weightKg": 63.5, "age": 31})
+        self.assertEqual(rest, [])
+
+    def test_a_goal_in_plain_words_becomes_the_stored_literal(self) -> None:
+        profile, _ = gates._profile_fields_from_facts(
+            [{"key": "goal", "value": "lose weight"}]
+        )
+        self.assertEqual(profile, {"goal": "loseWeight"})
+
+    def test_an_unparseable_value_stays_a_fact(self) -> None:
+        """Half-parsing a measurement into a column is worse than leaving a
+        string somebody can still read."""
+        facts = [
+            {"key": "height_cm", "value": "tall-ish"},
+            {"key": "goal", "value": "meal tracking"},
+            {"key": "sex", "value": "prefer not to say"},
+        ]
+        profile, rest = gates._profile_fields_from_facts(facts)
+        self.assertEqual(profile, {})
+        self.assertEqual(rest, facts)
+
+    def test_ordinary_facts_are_left_alone(self) -> None:
+        facts = [
+            {"key": "prefers_morning_workouts", "value": "yes"},
+            {"key": "activity_level", "value": "sedentary, desk job"},
+        ]
+        profile, rest = gates._profile_fields_from_facts(facts)
+        self.assertEqual(profile, {})
+        self.assertEqual(rest, facts)

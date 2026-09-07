@@ -8,6 +8,7 @@ import {
   addLocalDays,
   buildDedupeKey,
   calorieFloorFor,
+  countsTowardDay,
   dailyEntryStateValidator,
   dailyEntryTypeValidator,
   decideReminderDelivery,
@@ -541,9 +542,15 @@ export const getDaySummary = internalQuery({
       .withIndex("by_user", (query) => query.eq("userId", user._id))
       .unique();
 
+    // Only what actually counts. A corrected row stays in the table for the
+    // audit trail, but handing it to the model is how a correction gets undone
+    // in the next sentence: it names the meal it can see. The count of what was
+    // filtered is returned so nothing is hidden, just not nameable.
+    const counted = entries.filter(countsTowardDay);
     return {
       summary: summariseDay(localDate, entries),
-      entries: entries.map((entry) => ({
+      superseded: entries.length - counted.length,
+      entries: counted.map((entry) => ({
         entryType: entry.entryType,
         state: entry.state,
         occurredAt: entry.occurredAt,

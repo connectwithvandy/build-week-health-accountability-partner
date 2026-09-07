@@ -250,6 +250,20 @@ type SummarisableEntry = {
  * the meal. Entries still waiting on a clarification are excluded too — an
  * unconfirmed guess must never appear in a total Ted reads back.
  */
+/**
+ * Does this entry count as something the user actually did today?
+ *
+ * The one rule, exported so the totals and the list of what was eaten cannot
+ * drift apart. On 7 Sep the owner corrected "masala omelette" to "besan
+ * chilla"; the totals were right, because `summariseDay` skips a corrected
+ * row, but `getDaySummary` handed the model every row including that one and
+ * Ted read her day back as "masala omelette + besan chilla". The correction
+ * held in the database and was undone in the sentence.
+ */
+export function countsTowardDay(entry: { state: string }): boolean {
+  return entry.state === "confirmed";
+}
+
 export function summariseDay(
   localDate: string,
   entries: readonly SummarisableEntry[],
@@ -270,7 +284,7 @@ export function summariseDay(
 
   for (const entry of entries) {
     if (entry.localDate !== localDate) continue;
-    if (entry.state !== "confirmed") continue;
+    if (!countsTowardDay(entry)) continue;
 
     if (entry.entryType === "meal" && entry.meal) {
       summary.meals += 1;
