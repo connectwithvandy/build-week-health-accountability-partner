@@ -763,6 +763,91 @@ export function decideReminderDelivery(
 }
 
 // ---------------------------------------------------------------------------
+// The floor under every calorie target.
+//
+// `_loss_target` in the gate has always refused to go below the body's resting
+// burn, on the grounds that below what you burn asleep is not a deficit, it is
+// under-eating. But that floor only guarded the number the *gate* computed. The
+// model can call ted_set_target with any number at all, and that call lands
+// here, where nothing checked it. Twice now it has written one that is too low:
+//
+//   * Gourav, 5 Sep 2026, asked for "1500 to 1600" and was told "*1,550* it
+//     is" against a resting burn of 1,667.
+//   * UD, 7 Sep 2026, was given 1,850 against a resting burn of 1,956, worked
+//     backwards from a half-kilo-a-week pace he had asked about.
+//
+// Both were agreed in open conversation, after the gate's own target question
+// had closed, so no gate was listening. Putting the floor in the mutation
+// closes it for every caller and every route, which is the only version of
+// this that stays fixed.
+
+/**
+ * Mifflin-St Jeor resting energy: what the body burns doing nothing.
+ *
+ * The same formula as `_resting_energy` in hermes/ted_safety_gates. Duplicated
+ * rather than shared because the two run in different languages on different
+ * machines; the tests pin them to the same numbers.
+ */
+export function restingEnergy(profile: {
+  age: number;
+  heightCm: number;
+  weightKg: number;
+  sex?: string | null;
+}): number {
+  // Unknown sex takes the female adjustment, which is 166 lower. That makes the
+  // floor the most permissive of the two, so a missing answer can never push
+  // somebody's target up on a guess. It only ever refuses what is clearly low.
+  const sexAdjustment = profile.sex === "male" ? 5 : -161;
+  // Rounded DOWN, not to nearest, and that is deliberate. Python's round() is
+  // banker's rounding and JavaScript's Math.round is half-up, so they disagree
+  // on an exact .5: Gourav's 1752.5 is 1752 in the gate and 1753 here. One
+  // kcal sounds harmless until you notice which way it breaks — a floor above
+  // the gate's would reject the gate's own computed target, so the safe number
+  // Ted worked out would be refused when it tried to save. Math.floor is
+  // always at or below Python's round, so this can never be the stricter of
+  // the two.
+  return Math.floor(
+    10 * profile.weightKg + 6.25 * profile.heightCm - 5 * profile.age + sexAdjustment,
+  );
+}
+
+export type CalorieFloor =
+  | { known: false }
+  | { known: true; floor: number; reason: "restingEnergy" };
+
+/**
+ * The lowest calorie target this person may be given, when it can be worked
+ * out at all.
+ *
+ * Returns `known: false` rather than a guess when the profile is incomplete.
+ * Refusing a target on a floor built from missing data would block real users
+ * for no gain, and the setup flow is what fills those fields in.
+ */
+export function calorieFloorFor(profile: {
+  age?: number | null;
+  heightCm?: number | null;
+  weightKg?: number | null;
+  sex?: string | null;
+}): CalorieFloor {
+  const { age, heightCm, weightKg } = profile;
+  if (
+    typeof age !== "number" ||
+    typeof heightCm !== "number" ||
+    typeof weightKg !== "number" ||
+    age <= 0 ||
+    heightCm <= 0 ||
+    weightKg <= 0
+  ) {
+    return { known: false };
+  }
+  return {
+    known: true,
+    floor: restingEnergy({ age, heightCm, weightKg, sex: profile.sex }),
+    reason: "restingEnergy",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Is this person set up?
 //
 // The bug this replaces: `status` only ever became "active" when the model
@@ -825,6 +910,7 @@ export type SetupSnapshot = {
   age?: number | null;
   heightCm?: number | null;
   weightKg?: number | null;
+  sex?: string | null;
   goal?: Goal | null;
   /** From `targets.calories`. */
   calories?: number | null;

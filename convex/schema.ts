@@ -20,6 +20,15 @@ export default defineSchema({
     age: v.optional(v.number()),
     heightCm: v.optional(v.number()),
     weightKg: v.optional(v.number()),
+    /**
+     * "male" or "female", the only two the Mifflin-St Jeor formula takes.
+     *
+     * Stored because `calorieFloorFor` needs it: the male and female
+     * adjustments are 166 kcal apart, and without it the floor has to assume
+     * the lower one. That gap is exactly where UD's 1,850 sat on 7 Sep, so a
+     * floor that did not know his sex would have let it through.
+     */
+    sex: v.optional(v.union(v.literal("male"), v.literal("female"))),
     timeZone: v.optional(v.string()),
     goal: v.optional(goalValidator),
     consentAcceptedAt: v.optional(timestamp),

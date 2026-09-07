@@ -7706,6 +7706,17 @@ def _save_onboarding(
     profile = args.get("profile")
     if isinstance(profile, dict) and profile:
         body["profile"] = _camel(profile)
+
+    # The gate's own answer to question 4 of 6, sent whether or not the model
+    # thought to include it. Convex needs it for `calorieFloorFor`: the male and
+    # female terms in Mifflin-St Jeor are 166 kcal apart, and a floor that has
+    # to assume the lower one would have let UD's 1,850 through on 7 Sep
+    # against his real floor of 1,956. Taken from the gate's record rather than
+    # the model's arguments because the counted question is what actually
+    # collected it.
+    stored_sex = _onboarding(user_key).get("sex")
+    if stored_sex in ("male", "female"):
+        body.setdefault("profile", {}).setdefault("sex", stored_sex)
     result = _convex_write("onboarding", user_key, session_id or task_id, body=body)
     # Keep our own record of which steps really closed. The model's account of
     # how far onboarding got is exactly what cannot be trusted here: on 2 Sep a

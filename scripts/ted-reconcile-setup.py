@@ -215,6 +215,12 @@ PROFILE_FROM_GATE = {
     "weightKg": ("weight_kg", float),
 }
 
+# Not one of the eight requirements, so it never shows as a gap, but Convex
+# needs it for `calorieFloorFor`: without it the floor has to assume the lower
+# female term and is 166 kcal too permissive. Backfilled from the gate's own
+# answer to question 4 of 6 wherever there is one.
+SEX_VALUES = {"male", "female"}
+
 
 def evidence_for(
     row: dict,
@@ -261,6 +267,10 @@ def evidence_for(
             profile[field] = cast(value)
         except (TypeError, ValueError):
             unprovable.append(want)
+
+    stored_sex = record.get("sex")
+    if stored_sex in SEX_VALUES:
+        profile["sex"] = stored_sex
 
     if "goal" in missing:
         goal = record.get("goal")

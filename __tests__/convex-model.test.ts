@@ -22,7 +22,9 @@ import {
   addLocalDays,
   NUDGES_BEFORE_BREAK_OFFER,
   SAME_MEAL_WINDOW_MINUTES,
+  calorieFloorFor,
   isSetUp,
+  restingEnergy,
   setupRequirements,
   setupStateFor,
   type SetupSnapshot,
@@ -966,5 +968,63 @@ describe("setup readiness", () => {
     // produce the same eight facts or they do not. Nothing here can tell which
     // one ran, which is the point.
     expect(isSetUp(complete)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The floor under every calorie target.
+//
+// Pinned against the gate's Python `_resting_energy`, which computes the same
+// formula in another language on another machine. Both real cases below were
+// numbers the model wrote to Convex in open conversation, where the gate's own
+// floor was not listening.
+describe("calorie floor", () => {
+  const gourav = { age: 33, heightCm: 178, weightKg: 80, sex: "male" };
+  const ud = { age: 28, heightCm: 177.8, weightKg: 98, sex: "male" };
+
+  it("matches the gate's resting energy for the real profiles", () => {
+    expect(restingEnergy(gourav)).toBe(1752);
+    expect(restingEnergy(ud)).toBe(1956);
+  });
+
+  it("never rounds above the gate, so a gate-computed target still saves", () => {
+    // Gourav's raw figure is exactly 1752.5. Python's round() is banker's
+    // rounding and gives 1752; Math.round is half-up and gives 1753. A floor of
+    // 1753 would refuse the gate's own 1752, so this rounds down instead.
+    expect(restingEnergy(gourav)).toBeLessThanOrEqual(1752);
+  });
+
+  it("would have caught both targets the model actually wrote", () => {
+    // Gourav, 5 Sep 2026: "*1,550* it is" against a 1,752 floor.
+    expect(1550).toBeLessThan(calorieFloorFor(gourav).known ? restingEnergy(gourav) : 0);
+    // UD, 7 Sep 2026: 1,850 against a 1,956 floor.
+    expect(1850).toBeLessThan(restingEnergy(ud));
+  });
+
+  it("uses the lower female term when sex is unknown, never the higher", () => {
+    const unknown = calorieFloorFor({ age: 28, heightCm: 177.8, weightKg: 98 });
+    const male = calorieFloorFor({ ...ud });
+    expect(unknown.known && male.known && unknown.floor < male.floor).toBe(true);
+    // 166 is the gap between the two Mifflin-St Jeor sex terms, +5 and -161.
+    expect(unknown.known && male.known && male.floor - unknown.floor).toBe(166);
+  });
+
+  it("refuses to guess a floor from an incomplete profile", () => {
+    // Blocking a target on a floor built from missing data would stop real
+    // users for no gain. 20 of 32 users had no calorie target at all on 6 Sep,
+    // and most of them are missing a height or a weight too.
+    expect(calorieFloorFor({ age: 28, heightCm: 177.8 })).toEqual({ known: false });
+    expect(calorieFloorFor({ age: 0, heightCm: 177.8, weightKg: 98 })).toEqual({
+      known: false,
+    });
+    expect(calorieFloorFor({})).toEqual({ known: false });
+  });
+
+  it("allows a target at the floor exactly, and anything above it", () => {
+    const floor = restingEnergy(ud);
+    expect(floor).toBe(1956);
+    // The mutation refuses `calories < floor`, so the floor itself passes.
+    expect(floor < floor).toBe(false);
+    expect(2000 < floor).toBe(false);
   });
 });

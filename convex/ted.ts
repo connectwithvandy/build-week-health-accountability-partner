@@ -7,6 +7,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import {
   addLocalDays,
   buildDedupeKey,
+  calorieFloorFor,
   dailyEntryStateValidator,
   dailyEntryTypeValidator,
   decideReminderDelivery,
@@ -298,6 +299,7 @@ async function buildSetupSnapshot(
     age: user.age ?? null,
     heightCm: user.heightCm ?? null,
     weightKg: user.weightKg ?? null,
+    sex: user.sex ?? null,
     goal: user.goal ?? null,
     calories: target?.calories ?? null,
     dailyReviewTime: reminder?.dailyReviewTime ?? null,
@@ -655,6 +657,30 @@ export const setTarget = internalMutation({
   handler: async (ctx, { whatsappUserId, customCommitments, ...fields }) => {
     const user = await ensureUser(ctx, whatsappUserId);
     const now = Date.now();
+
+    // The floor, enforced here because this is where every calorie target
+    // lands however it was arrived at. The gate's own `_loss_target` has always
+    // refused to go below the body's resting burn, but that only ever guarded
+    // the number the gate computed; a number agreed in open conversation
+    // reached this mutation unchecked. Gourav got 1,550 against a 1,667 floor
+    // on 5 Sep, UD got 1,850 against 1,956 on 7 Sep, and nothing objected.
+    //
+    // Rejected rather than quietly raised. Clamping would leave Ted having
+    // said one number out loud while the row held another, which is the exact
+    // disagreement between stores that caused UD's whole mess. Refusing keeps
+    // the two in step and hands the caller the number it should have used.
+    if (typeof fields.calories === "number") {
+      const floor = calorieFloorFor(user);
+      if (floor.known && fields.calories < floor.floor) {
+        throw new Error(
+          `A calorie target of ${fields.calories} is below this user's resting ` +
+            `energy of ${floor.floor} kcal, which is what their body burns at ` +
+            `rest. Use ${floor.floor} or higher. To lose faster than that ` +
+            `allows, raise their activity rather than lowering the target.`,
+        );
+      }
+    }
+
     const existing = await ctx.db
       .query("targets")
       .withIndex("by_user", (query) => query.eq("userId", user._id))
@@ -791,6 +817,7 @@ export const saveOnboarding = internalMutation({
         age: v.optional(v.number()),
         heightCm: v.optional(v.number()),
         weightKg: v.optional(v.number()),
+        sex: v.optional(v.union(v.literal("male"), v.literal("female"))),
         timeZone: v.optional(v.string()),
         goal: v.optional(goalValidator),
         // The privacy notice the gate already sends every new user. It was
@@ -915,7 +942,8 @@ export const listSetupState = internalQuery({
     const users = await ctx.db.query("users").collect();
     const rows = await Promise.all(
       users.map(async (user) => {
-        const state = setupStateFor(await buildSetupSnapshot(ctx, user));
+        const snapshot = await buildSetupSnapshot(ctx, user);
+        const state = setupStateFor(snapshot);
         const onboarding = await ctx.db
           .query("onboarding")
           .withIndex("by_user", (query) => query.eq("userId", user._id))
@@ -934,6 +962,12 @@ export const listSetupState = internalQuery({
           disagrees: user.status !== (state.ready ? "active" : "onboarding"),
           missing: state.missing,
           blocked: state.blocked,
+          // The two values the gate keeps its own copy of. Returned here, on a
+          // builder read-back, rather than added to getUserMemory, which runs
+          // on every single turn and does not need them. Without these a
+          // drift check has to guess which store is stale.
+          goal: snapshot.goal ?? null,
+          calorieTarget: snapshot.calories ?? null,
           createdAt: user.createdAt,
         };
       }),
