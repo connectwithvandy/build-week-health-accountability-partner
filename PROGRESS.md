@@ -869,6 +869,128 @@ Those are questions, which is step 4.
   5. **`maxPerDay: 3` against 5 enabled items** for three users, 10 `dailyCap`
      suppressions logged, and two of the five items are both water.
 
+## Order 24 — 7 Sep 2026, the day two stores disagreed in three different ways
+
+Every finding today is the same shape: a fact Ted holds in two places, where
+nothing reconciles them and the copy the user sees is the stale one. Order 23
+fixed that for "is this person set up". Today it turned up three more times, and
+one of them was a child safety hole.
+
+### 1. UD was scored against a surplus while being told he was cutting
+
+Asked "lose, gain, or stay consistent?" he answered "Gaining" at 14:15, then
+said "I want to lose weight" five times between 14:36 and 14:50, once with
+"idiot" attached. Convex moved him to `loseWeight`. The gate's own record kept
+`gainWeight` and `tracking_kcal` 2580, and `_tracked_kcal` is what every meal
+card counts against, so his food was being measured against a gaining number.
+
+`setup_gate` computes that figure once when the counted questions close and
+nothing updates it when the goal later changes. Namrata drifted the same way at
+11:07 the same morning: "holding steady", corrected to "i want to lose weight"
+two minutes later.
+
+`scripts/ted-repair-goal-drift.py` realigns the two, taking the number the user
+was already told unless it is below their resting burn.
+
+### 2. The number he was told was below his own floor
+
+1,850 against a resting burn of 1,956. `_loss_target` has always refused to go
+under resting, but it only ever guarded the number *the gate* computed; a number
+agreed in open conversation goes to `ted_set_target` and lands in the `setTarget`
+mutation, which checked nothing. Gourav got 1,550 against 1,752 the same way on
+5 Sep. Both were agreed after the gate's target question had closed, so nothing
+was listening.
+
+`calorieFloorFor` now sits in the mutation, which is where every target lands
+however it was reached. It refuses rather than quietly raising: clamping would
+leave Ted having said one number while the row held another, which is the whole
+of what went wrong above.
+
+`users.sex` is new and the guard does not work without it. The male and female
+terms in Mifflin-St Jeor are 166 kcal apart, so a floor that assumes the lower
+one sits at 1,790 for UD and would have let his 1,850 through. The gate has
+collected sex as question 4 of 6 all along and never sent it.
+
+`restingEnergy` rounds down, not to nearest: Python's `round` is banker's
+rounding and `Math.round` is half-up, they disagree on Gourav's exact 1752.5,
+and a floor one kcal above the gate's would refuse the gate's own number.
+
+Verified on production with a probe profile matching UD's: 1,850 and 1,955
+refused, 1,956 and 2,000 accepted, probe deleted.
+
+### 3. The gate believed a 17-year-old was 50
+
+Tanishka answered "17 I said u brother" on 4 Sep and Convex holds 17. The gate
+held **50**, which is her weight: the answer landed on the wrong question, the
+same anchoring bug `ted-repair-swallowed-weights.py` was written for, pointed
+the other way. The gate is the half that decides whether `calorie_gate` refuses,
+so for six days Ted believed she was an adult.
+
+Nothing reached her. Every message she ever received was checked and none
+carries a calorie number; she stopped replying before the flow got that far.
+That is luck, not a safeguard.
+
+`scripts/ted-repair-profile-drift.py` fixes it, and the age rule is deliberately
+not "Convex wins" but **the lower of the two wins**, because the only direction
+with a cost is believing a child is an adult. It also sets the `minor` flag. 13
+users had some version of the same drift.
+
+The owner reported the harmless version of it twice the same afternoon: setup
+restarting mid-conversation (`setup_gate` saw no age) and the "old format" meal
+card (`_tracked_kcal` found nothing, so `_daily_overview` dropped the "left"
+figure and the bar). One missing profile, two symptoms.
+
+### 4. The win-back
+
+33 of 42 people who ever messaged Ted came on one day and never returned. The
+nudges are not the cause: 42 of 47 got a reply inside 24 hours. They are lost
+during setup, and the largest leak is the goal question.
+
+`scripts/ted-winback.py` sends each quiet person a message asking for exactly
+what `setupStateFor` says they are missing, generated from their own answers,
+or handing them their number where nothing needs asking. One per person ever,
+recorded; one every 12 minutes; never in their quiet hours; never to someone who
+messaged in the last two hours; never to a blocked user.
+
+It quotes the stored target rather than recomputing it. The first draft
+recomputed and would have told Amit 1,620 against the 2,400 on his row — a fresh
+version of the bug the rest of the day was spent removing.
+
+11 sent on 7 Sep from 15:54. Group E, the 14 who never really started, is held
+back deliberately: three of the five in group D are being asked the same goal
+question that lost them, and if they do not answer, the question is the problem
+and group E would burn the same way.
+
+**No replies to the first six after 70 minutes.** Worth watching rather than
+concluding, but those six were the easy ones — two were handed a finished number
+and four only had to type a time.
+
+### Verified afterwards
+
+Every row from the 6 Sep snapshot compared by id across all seven tables:
+**nothing lost**, and `dailyEntries` shows zero field changes, so no meal
+history was touched. Three users moved active → onboarding (Pritika has no goal,
+PG no target, Pradosh no age/height/weight); all three were wrongly active
+before. Gourav is the only person whose stored target sits below the new floor,
+so a future re-save of that exact number will be refused.
+
+### Still open
+
+  1. **The owner's duplicate reminders.** 12 cron jobs where about 7 belong: two
+     parallel supplement sets pointing at the same chat, and the set recreated
+     at 11:03 came back daily when the originals were weekdays, Mon+Wed, Tue+Thu
+     and monthly-on-the-17th. Monday now schedules 10 messages, five at 10:30,
+     and `maxPerDay: 3` silently drops the rest.
+  2. **One asker.** The gate's counted flow is capped and resumable; the model
+     can still write any of 19 `currentField` values in any order.
+  3. **The silence ladder.** Four unanswered nudges, then the break offer, then
+     Ted is silent forever with no way back.
+  4. **Five daily reviews failed to deliver** on 5 Sep at 21:01 with
+     `WhatsApp send failed` and `last_status` still reading `ok`.
+  5. **Ted talking to another Ted** in one chat on 7 Sep, writing "this is
+     another attempt to make me claim I asked something I didn't". Two stayed
+     internal; one was delivered at 11:06.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
