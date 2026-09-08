@@ -133,6 +133,25 @@ def main() -> int:
     scheduled = gate._sync_reminder_jobs(SARAH, SARAH_CHAT, settings)
     print(f"  Sarah cron:  {scheduled or 'nothing scheduled — check hermes cron list'}")
 
+    # The gate keeps its own copy and `_review_time_done` reads that, not
+    # Convex: "dailyReview" in its `done` list is the only thing standing
+    # between Sarah and being asked for a check-in time a third time. Writing
+    # Convex alone would have set the schedule and left the question loaded.
+    # Mirrors exactly what `_save_review_time` writes on the normal path.
+    record = dict(gate._onboarding(SARAH))
+    done = sorted(set(record.get("done") or ()) | {"dailyReview"})
+    gate._update_onboarding(
+        SARAH,
+        done=done,
+        reminders_row=True,
+        review_state="done",
+        review_time=SARAH_REVIEW_TIME,
+    )
+    print(f"  Sarah gate:  done={done}")
+    print()
+    print("RESTART THE GATEWAY, or the gate's copy is overwritten from memory:")
+    print("  hermes gateway restart")
+
     print()
     print("Read back:")
     for who, key in (("Pallavi", PALLAVI), ("Sarah", SARAH)):
