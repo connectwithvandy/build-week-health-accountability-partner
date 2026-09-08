@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Land two answers people gave that no store ever recorded.
+Land answers people gave that no store ever recorded.
 
     ~/.hermes/hermes-agent/venv/bin/python scripts/ted-land-missed-answers.py
     ~/.hermes/hermes-agent/venv/bin/python scripts/ted-land-missed-answers.py --apply
 
-Not a general tool. Two named users, two fields, each quoted from their own
-messages in `~/.hermes/state.db`, because both were about to be asked a
-question they had already answered — which is the thing that made a beta user
-write "But you have this info already. I have answer this before already."
+Not a general tool. Named users, named fields, each one quoted from where it
+was actually said, because every one of them was about to be asked a question
+they had already answered — which is the thing that made a beta user write
+"But you have this info already. I have answer this before already."
 
 PALLAVI, `sex`. She answered "Fenale" at 09:03:56 and "Female" at 09:04:37 on
 4 Sep 2026. Neither landed: Convex holds her age, height, weight and goal, and
@@ -22,12 +22,34 @@ it as her working late and answered "working late tonight?", so nothing saved
 it. Her setup is otherwise complete: `setupAudit` reports `checkInTime` as the
 only missing piece and her calorie target is already 1,430.
 
+VANDY, `sex` and `activity`. She onboarded on 4 Sep, when the counted flow was
+five questions and sex was not one of them, so she was never asked. At 15:50:53
+on 8 Sep `_missing_profile_reply` asked her mid-meal, uncounted: "one more for
+the formula: male or female?". She answered "Female" at 15:51:00, quoting the
+question. Nothing stored it. Unlike the counted questions, that one records no
+`setup_asking`, so there was nothing listening for the answer, and the model's
+"noted, vandy" was stripped by `action_claim_gate` as a claim no tool backed.
+Her `activity` was never asked for at all and is the next question in that same
+uncounted list.
+
+Her sex is her own word in `~/.hermes/state.db`. Her activity is not: she gave
+it to the builder session on 8 Sep as "4 5 days gym", not to Ted. It is written
+here because she asked for it to be, and it is recorded that way rather than
+dressed up as a WhatsApp answer she never sent.
+
 WHAT IT WRITES, and nothing else:
 
   * Pallavi  sex             -> "female"
   * Sarah    dailyReviewTime -> "21:00", then her `ted:<key>:daily_review`
                                 cron job, which is what actually makes the
                                 check-in happen
+  * Vandy    sex             -> "female", in Convex and in the gate's file
+             activity        -> "active", in the gate's file only
+
+`active` is not a value anybody typed. It is what the gate's own
+`_find_activity` returns for "4 5 days gym", asserted below so this script and
+the live path can never drift apart. There is no `activity` column in Convex:
+`_estimated_maintenance` reads the gate's file, so that is where it goes.
 
 `currentField` is echoed back unchanged on the profile write, the same way
 `ted-reconcile-setup.py` does it, so neither write moves anybody's place in
@@ -59,6 +81,13 @@ SARAH = (
 )
 SARAH_CHAT = "86483545419925@lid"
 SARAH_REVIEW_TIME = "21:00"
+VANDY = (
+    "whatsapp:sha256:cbf8ffc790890dc7ffa6f11d91a70647fca0cf4c119ec238ed5827b6eabe8c71"
+)
+# Her words, and the value the gate reads them as. The second is asserted
+# against `_find_activity` at apply time rather than trusted here.
+VANDY_ACTIVITY_SAID = "4 5 days gym"
+VANDY_ACTIVITY = "active"
 
 
 def _convex_module():
@@ -88,6 +117,16 @@ def _audit_row(convex, key: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--apply", action="store_true")
+    # Every write below is idempotent except Sarah's cron sync, and a second
+    # copy of a reminder is its own bug — see `ted-dedupe-reminders.py`. Once
+    # someone's answer has landed there is no reason to replay it, so a later
+    # addition to this script can be applied on its own.
+    parser.add_argument(
+        "--only",
+        choices=("pallavi", "sarah", "vandy"),
+        action="append",
+        help="apply just these people (default: all of them)",
+    )
     args = parser.parse_args()
 
     recon = _convex_module()
@@ -95,8 +134,9 @@ def main() -> int:
 
     pallavi = _audit_row(convex, PALLAVI)
     sarah = _audit_row(convex, SARAH)
-    if not pallavi or not sarah:
-        print("could not read both users back from setupAudit; nothing written")
+    vandy = _audit_row(convex, VANDY)
+    if not pallavi or not sarah or not vandy:
+        print("could not read all three users back from setupAudit; nothing written")
         return 1
 
     print("=" * 78)
@@ -113,15 +153,40 @@ def main() -> int:
     print(f"            plus the daily_review cron job that makes it fire")
     print(f"            still missing before this: {sarah.get('missing')}")
     print()
+    print(f"  Vandy     sex -> female")
+    print(f"            her word, 8 Sep 15:51:00, replying to the gate's own question")
+    print(f"            activity -> {VANDY_ACTIVITY} (from {VANDY_ACTIVITY_SAID!r},")
+    print(f"            said to the builder session, not to Ted)")
+    print(f"            currentField stays {vandy.get('currentField')!r}")
+    print(f"            still missing before this: {vandy.get('missing')}")
+    print()
+
+    chosen = set(args.only or ("pallavi", "sarah", "vandy"))
+    if args.only:
+        print(f"  applying only: {', '.join(sorted(chosen))}")
+        print()
 
     if not args.apply:
         print("Dry run. Re-run with --apply.")
         return 0
 
-    field = str(pallavi.get("currentField") or "confirmation")
-    result = convex("onboarding", PALLAVI, currentField=field, profile={"sex": "female"})
-    print(f"  Pallavi sex: {'ok' if result.get('success') else result.get('error')}")
+    if "pallavi" in chosen:
+        field = str(pallavi.get("currentField") or "confirmation")
+        result = convex(
+            "onboarding", PALLAVI, currentField=field, profile={"sex": "female"}
+        )
+        print(f"  Pallavi sex: {'ok' if result.get('success') else result.get('error')}")
 
+    if "sarah" in chosen:
+        if _apply_sarah(convex, sarah) != 0:
+            return 1
+
+    if "vandy" not in chosen:
+        return 0
+    return _apply_vandy(convex, vandy)
+
+
+def _apply_sarah(convex, sarah: dict) -> int:
     result = convex("reminder", SARAH, dailyReviewTime=SARAH_REVIEW_TIME)
     print(f"  Sarah time:  {'ok' if result.get('success') else result.get('error')}")
     if not result.get("success"):
@@ -148,17 +213,45 @@ def main() -> int:
         review_time=SARAH_REVIEW_TIME,
     )
     print(f"  Sarah gate:  done={done}")
+    return 0
+
+
+def _apply_vandy(convex, vandy: dict) -> int:
+    gate = _gate_module()
+    # The gate's file is the load-bearing half of this one, not Convex:
+    # `_with_stored_profile_fields` and `_setup_profile` both read the file,
+    # and `_estimated_maintenance` builds the number from what they return. A
+    # Convex-only write would leave the uncounted question loaded, which is the
+    # lesson from Sarah's check-in time directly above.
+    read_as = gate._find_activity([VANDY_ACTIVITY_SAID])
+    if read_as != VANDY_ACTIVITY:
+        print(
+            f"  Vandy:       ABORTED — the gate reads {VANDY_ACTIVITY_SAID!r} as "
+            f"{read_as!r}, not {VANDY_ACTIVITY!r}. Nothing written for her."
+        )
+        return 1
+
+    field = str(vandy.get("currentField") or "confirmation")
+    result = convex("onboarding", VANDY, currentField=field, profile={"sex": "female"})
+    print(f"  Vandy sex:   {'ok' if result.get('success') else result.get('error')}")
+
+    gate._update_onboarding(VANDY, sex="female", activity=VANDY_ACTIVITY)
+    record = gate._onboarding(VANDY)
+    print(
+        f"  Vandy gate:  sex={record.get('sex')!r} "
+        f"activity={record.get('activity')!r}"
+    )
     print()
     print("RESTART THE GATEWAY, or the gate's copy is overwritten from memory:")
     print("  hermes gateway restart")
 
     print()
     print("Read back:")
-    for who, key in (("Pallavi", PALLAVI), ("Sarah", SARAH)):
+    for who, key in (("Pallavi", PALLAVI), ("Sarah", SARAH), ("Vandy", VANDY)):
         row = _audit_row(convex, key)
         print(f"  {who:9} status={row.get('derivedStatus')!r} missing={row.get('missing')}")
     print()
-    print("No message was sent to either of them. Both still need a human reply.")
+    print("No message was sent to anybody. They still need a human reply.")
     return 0
 
 
