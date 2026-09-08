@@ -176,6 +176,28 @@
           ]
         }
       ]
+    },
+    {
+      "file": "12-no-stale-redelivery-to-users.patch",
+      "what": "a reply that missed its moment being dropped instead of sent hours later, and the inactivity watchdog's diagnostics reaching users",
+      "checks": [
+        {
+          "path": "gateway/delivery_ledger.py",
+          "present": [
+            "STALE_AFTER_SECONDS = 10 * 60"
+          ],
+          "absent": [
+            "STALE_AFTER_SECONDS = 24 * 60 * 60"
+          ]
+        },
+        {
+          "path": "gateway/run.py",
+          "present": [
+            "agent\\s+inactive\\s+for\\s+\\d+\\s+min"
+          ],
+          "absent": []
+        }
+      ]
     }
   ]
 }

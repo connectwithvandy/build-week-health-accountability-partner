@@ -1,0 +1,44 @@
+diff --git a/gateway/delivery_ledger.py b/gateway/delivery_ledger.py
+--- a/gateway/delivery_ledger.py
++++ b/gateway/delivery_ledger.py
+@@ -57,7 +57,21 @@
+ # Redelivery policy knobs (module constants; deliberately not config — the
+ # ledger itself is gated by ``gateway.delivery_ledger`` and these bounds
+ # only matter in the rare recovery path).
+ MAX_ATTEMPTS = 3
+-STALE_AFTER_SECONDS = 24 * 60 * 60
++# Ted patch 12. Was 24 hours, which is a sensible bound for an outbox and the
++# wrong one for a conversation. On 8 Sep 2026 the WhatsApp account was logged
++# out at 10:05; it was re-paired at 12:33 and the gateway, on boot, delivered
++# three obligations that had been waiting since 00:28, 05:03 and 09:52. One
++# user received two stall notices twelve hours late, and a second was asked
++# their height three hours after answering the question before it.
++#
++# A reply is worth sending while the person is still in the conversation it
++# belongs to, and not after. Ten minutes covers a gateway restart, a bridge
++# reconnect and a brief network drop, which are the cases redelivery exists
++# for. Anything older is moved to 'failed' by ``sweep_recoverable`` and stays
++# in the table, so the row is still readable afterwards. It is just never
++# sent. A message that still matters is better written fresh than arriving
++# stale with no explanation.
++STALE_AFTER_SECONDS = 10 * 60
+ _RETENTION_SECONDS = 7 * 24 * 60 * 60
+ _MAX_ROWS = 500
+diff --git a/gateway/run.py b/gateway/run.py
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -556,7 +556,13 @@
+     r"|stream\s+repeatedly\s+dropped\s+mid\s+tool-?call"
+     r"|incomplete\s+REASONING_SCRATCHPAD"
+     r"|response\s+remained\s+incomplete\s+after\s+\d+\s+continuation"
+     r"|invalid\s+API\s+response\s+after\s+\d+\s+retries"
+-    r"|no\s+fallback\s+provider\s+available",
++    r"|no\s+fallback\s+provider\s+available"
++    # Ted patch 12. The gateway's own inactivity watchdog builds this one, and
++    # the comment above it in run.py reads "Construct a user-facing message
++    # with diagnostic context", which is why patch 11 never covered it. It
++    # names the iteration count, the seconds since last activity and the
++    # config key to edit. Aditya received two of them on 8 Sep 2026.
++    r"|agent\s+inactive\s+for\s+\d+\s+min",
+     re.IGNORECASE,
+ )

@@ -1,6 +1,6 @@
 # Hermes patches
 
-Eleven fixes now live *below* Ted's plugin, in the Hermes gateway
+Twelve fixes now live *below* Ted's plugin, in the Hermes gateway
 itself (`~/.hermes/hermes-agent`). A plugin cannot reach them: the strings are
 emitted by Hermes' own retry machinery, and `VALID_HOOKS` has no hook for
 outbound gateway status messages.
@@ -13,7 +13,7 @@ destroyed, but the gateway silently goes back to leaking model names into
 WhatsApp and charging laptop sleep to the provider — which is why this is
 checked rather than remembered.
 
-`npm run gates:guard` reports whether all eleven patches are still applied, alongside
+`npm run gates:guard` reports whether all twelve patches are still applied, alongside
 its existing gate checks. It treats a missing patch as a warning, not a stop:
 an unpatched Ted is noisy, but he still refuses under-18s, still never returns a
 deficit, and still keeps users' memories apart.
@@ -218,6 +218,31 @@ empty string suppresses it.
 
 The raw sentinel still reaches `agent.log` at every emission site. Only the
 chat copy changes.
+
+## 12 — no stale redelivery, and no watchdog diagnostics to users
+
+Two halves of the same morning. On 8 Sep 2026 the WhatsApp Business account was
+logged out; the bridge exited at 10:05, the gateway retried every five minutes
+and failed twenty-two times, and re-pairing at 12:33 brought it back. On the
+next boot the gateway delivered three obligations it had been holding: two
+`⏱️ Agent inactive for 30 min` notices from 00:28 and 05:03, and a `*2/6* how
+tall are you?` from 09:52 that landed three hours after the answer it followed.
+
+`STALE_AFTER_SECONDS` in `gateway/delivery_ledger.py` was 24 hours, which is a
+reasonable bound for an outbox and the wrong one for a conversation. It is now
+ten minutes: long enough to cover a gateway restart, a bridge reconnect and a
+brief network drop, which are the cases the ledger exists for. Older rows move
+to `failed` and stay readable in the table, so nothing is hidden. They are just
+never sent.
+
+The stall notice itself is now matched by patch 11's
+`_GATEWAY_INTERNAL_FAILURE_RE`, so a user gets Ted's one-line "that didn't
+save, send it again?" instead of an iteration count and a config key. Patch 11
+missed it because it is not a `conversation_loop` sentinel: `gateway/run.py`
+builds it under a comment that reads "Construct a user-facing message with
+diagnostic context", which is exactly the assumption being corrected here.
+
+The raw text still reaches `agent.log`, as with patch 11.
 
 ## Where the checks live
 
