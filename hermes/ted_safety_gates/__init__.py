@@ -4528,6 +4528,7 @@ def transform_response(
     logged_meals: list[dict[str, Any]] | None = None,
     unmatched_foods: list[str] | None = None,
     day_summary: dict[str, Any] | None = None,
+    reviewed_day: dict[str, Any] | None = None,
     reminder_set: dict[str, Any] | None = None,
     stale_turn: bool = False,
     context_id: str = "",
@@ -4682,6 +4683,33 @@ def transform_response(
             meals=logged_meals,
             unmatched=unmatched_foods,
         )
+    # No meal landed this turn, but Ted just read the day out loud, so the
+    # same block goes out under whatever Ted said about it.
+    #
+    # Until now the numbers were attached only when `ted_log_entry` ran in the
+    # same turn, which made "what's my total today?" the one question entirely
+    # about the numbers that never showed them. On 8 Sep 2026 a user asked
+    # three times in a row: the first answer carried two figures the model
+    # retyped from the tool result, the second carried none at all, and the
+    # third was Ted saying "I can't send a formatted breakdown like that, my
+    # numbers just show up under my message automatically" — which was true of
+    # every meal turn and false of the one she was on.
+    #
+    # Ted's own sentence is kept exactly as written here, and this is the one
+    # place in the file where that is the rule. `_with_meal_breakdown` cuts
+    # figures out of the prose because the card is naming a plate the user can
+    # see and the words only have to carry the warmth. A summary answer is
+    # different: the figures are the answer to a direct question, and
+    # `words_without_figures` on "1068 cal, 53g protein, still some room to hit
+    # 90g target tonight" leaves an empty string. Cutting them would answer
+    # "what's my total today?" with silence and a table.
+    if reviewed_day and not storage_failed:
+        block = _daily_overview(reviewed_day, user_key)
+        if block:
+            said = strip_assistant_speak(
+                cleaned if cleaned is not None else response_text
+            )
+            return f"{said}\n\n{block}" if said else block
     # Last, over everything above and over the model's own reply when nothing
     # above touched it. The gates before this decide *what* Ted is allowed to
     # say; this only decides that it does not arrive dressed as a chatbot.
@@ -5863,6 +5891,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         logged_meals=context.get("logged_meals"),
         unmatched_foods=context.get("unmatched_foods"),
         day_summary=context.get("day_summary"),
+        reviewed_day=context.get("reviewed_day"),
         reminder_set=context.get("reminder_set"),
         stale_turn=_turn_is_stale(user_key, int(context.get("turn_seq") or 0)),
         context_id=session_id,
@@ -7514,6 +7543,22 @@ def _day_summary(
     result = _convex_request("day", user_key, body=body)
     if result.get("storage_error"):
         _note_storage_failure(session_id or task_id)
+        return json.dumps(result, ensure_ascii=False)
+    # Held for the reply gate, the same way a logged meal is, so the answer to
+    # "what's my total today?" carries the block instead of describing it.
+    #
+    # Today only, and deliberately. `_daily_overview` counts against the number
+    # this user is tracked against right now and writes "(282 left)", which is
+    # an answer to how today is going and a wrong answer to "what did I eat on
+    # Saturday". A past date gets Ted's words and no block, which is what it
+    # got before this existed.
+    if result.get("success") and body["localDate"] == _today(user_key):
+        day = result.get("summary")
+        if isinstance(day, dict) and day:
+            with _TURN_LOCK:
+                turn = _TURN_CONTEXT.get(session_id or task_id)
+                if turn is not None:
+                    turn["reviewed_day"] = day
     return json.dumps(result, ensure_ascii=False)
 
 

@@ -8703,3 +8703,142 @@ class MeasurementsGoToTheColumnNotTheNotepadTest(unittest.TestCase):
         profile, rest = gates._profile_fields_from_facts(facts)
         self.assertEqual(profile, {})
         self.assertEqual(rest, facts)
+
+
+class DaySummaryCarriesTheBlockTest(unittest.TestCase):
+    """Asking for the day gets the day, not a sentence about it.
+
+    The numbers block was attached only when `ted_log_entry` ran in the same
+    turn, so the one question that is entirely about the numbers was the one
+    question that never showed them. On 8 Sep 2026 a user asked three times in
+    a row and got three different answers: two figures the model had retyped
+    from the tool result, then no figures at all, then "I can't send a
+    formatted breakdown like that, my numbers just show up under my message
+    automatically" — true of every meal turn she had ever had, and false of the
+    one she was on.
+    """
+
+    KEY = "whatsapp:sha256:daysummary"
+
+    DAY = {
+        "calories": 1068,
+        "proteinGrams": 52.8,
+        "fatGrams": 55.6,
+        "carbohydrateGrams": 90.4,
+        "fiberGrams": 10.4,
+    }
+
+    def setUp(self) -> None:
+        self.addCleanup(reset_user, self.KEY)
+        self.history = [message("assistant", DISCLOSURE_MESSAGE)]
+        gates._update_onboarding(self.KEY, tracking_kcal=1350, weight_kg=58)
+
+    def transform(self, reply: str, day=None, **kw):
+        return gates.transform_response(
+            history=self.history,
+            user_message="Whats the total for today??",
+            response_text=reply,
+            user_key=self.KEY,
+            reviewed_day=self.DAY if day is None else day,
+            **kw,
+        )
+
+    def test_the_day_block_goes_out_under_ted_s_answer(self) -> None:
+        out = self.transform("palak paneer plus that upma, two solid meals in 🙌")
+        self.assertIn("Daily Overview", out)
+        self.assertIn("Calories: 1,068 (282 left)", out)
+        self.assertIn("Protein: 53g", out)
+        self.assertIn("Fat: 56g (18 over)", out)
+        self.assertIn("Carbs: 90g", out)
+        self.assertIn("Fiber: 10g", out)
+
+    def test_the_green_bar_comes_with_it(self) -> None:
+        """The share of the target, as a bar and a percentage."""
+        out = self.transform("two meals in")
+        bar = [line for line in out.splitlines() if "%" in line]
+        self.assertTrue(bar, f"no percentage line in {out!r}")
+        self.assertIn("🟢", bar[0])
+
+    def test_ted_s_own_words_are_kept_verbatim_and_come_first(self) -> None:
+        """The chosen rule, and the opposite of `_with_meal_breakdown`.
+
+        The figures here are the answer to a direct question, not a caption on
+        a plate the user can see. `words_without_figures` on this exact reply
+        returns an empty string, so cutting them would answer "what's my total
+        today?" with silence and a table.
+        """
+        said = "two solid meals in 🙌 1068 cal, 53g protein, room to hit 90g tonight."
+        out = self.transform(said)
+        self.assertTrue(out.startswith(said), out)
+        self.assertLess(out.index("meals in"), out.index("Daily Overview"))
+
+    def test_an_empty_day_gets_no_block(self) -> None:
+        """Nothing logged yet is a sentence, not a table of zeroes."""
+        out = self.transform("clean slate today, nothing logged yet 👀", day={"calories": 0})
+        self.assertNotIn("Daily Overview", out or "")
+
+    def test_a_failed_read_never_reports_a_day(self) -> None:
+        out = self.transform("two meals in", storage_failed=True)
+        self.assertNotIn("Daily Overview", out)
+        self.assertIn(gates.STORAGE_NOT_SAVED, out)
+
+    def test_a_logged_meal_still_wins_so_the_block_is_never_doubled(self) -> None:
+        """Log and summarise in one turn: one block, the meal's."""
+        out = self.transform(
+            "sprouts bowl in",
+            logged_meal={"calories": 220, "proteinGrams": 14},
+            day_summary=self.DAY,
+            action_succeeded=True,
+        )
+        self.assertEqual(out.count("Daily Overview"), 1)
+        self.assertIn("Calories: 220 kcal", out)
+
+
+class DaySummaryReachesTheReplyGateTest(unittest.TestCase):
+    """The tool half: `ted_day_summary` has to hand the day to the gate.
+
+    `ted_log_entry` already did this and `ted_day_summary` did not, which is
+    the whole reason a summary answer arrived without its numbers.
+    """
+
+    SESSION = "day-summary-session"
+    SENDER = "daysummary@s.whatsapp.net"
+
+    DAY = {"calories": 900, "proteinGrams": 40}
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        with patch.object(gates, "_convex_request", return_value={"success": False}):
+            _capture_turn(
+                platform="whatsapp",
+                session_id=self.SESSION,
+                sender_id=self.SENDER,
+                conversation_history=[message("assistant", DISCLOSURE_MESSAGE)],
+                user_message="what's my total today?",
+            )
+        self.addCleanup(gates._TURN_CONTEXT.pop, self.SESSION, None)
+        self.user_key = gates._TURN_CONTEXT[self.SESSION]["user_key"]
+        self.addCleanup(reset_user, self.user_key)
+
+    def read(self, **result):
+        payload = {"success": True, "summary": self.DAY, **result}
+        with patch.object(gates, "_convex_request", return_value=payload):
+            gates._day_summary({}, session_id=self.SESSION)
+        with gates._TURN_LOCK:
+            return gates._TURN_CONTEXT[self.SESSION].get("reviewed_day")
+
+    def test_the_day_is_held_for_the_reply(self) -> None:
+        self.assertEqual(self.read(), self.DAY)
+
+    def test_a_failed_read_holds_nothing(self) -> None:
+        self.assertIsNone(self.read(success=False, storage_error=True))
+
+    def test_yesterday_is_not_reported_as_today(self) -> None:
+        """"(282 left)" answers how today is going, never what Saturday was."""
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True, "summary": self.DAY}
+        ):
+            gates._day_summary({"local_date": "2026-09-06"}, session_id=self.SESSION)
+        with gates._TURN_LOCK:
+            self.assertIsNone(gates._TURN_CONTEXT[self.SESSION].get("reviewed_day"))
