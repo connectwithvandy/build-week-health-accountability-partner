@@ -587,6 +587,60 @@ describe("Reminder delivery decision (milestone 12)", () => {
     }
   });
 
+  it("lets the evening check-in through inside quiet hours", () => {
+    // Shruthi, 7 Sep 2026. Ted's setup question offers "something like 9pm or
+    // 10:30pm", she picked 10:30pm and was told "that's when your day gets
+    // added up". The job ran at 22:30:20 and was dropped with reason
+    // quietHours, because quiet hours start at 22:00. Nine of nineteen people
+    // with a check-in time were inside their own quiet window.
+    expect(
+      decideReminderDelivery(base, "22:30", "2026-09-02", now, "dailyReview"),
+    ).toEqual({ allowed: true, reason: "ok" });
+    for (const clock of ["22:00", "23:00", "02:00", "06:30"]) {
+      expect(
+        decideReminderDelivery(base, clock, "2026-09-02", now, "dailyReview")
+          .allowed,
+      ).toBe(true);
+    }
+  });
+
+  it("still silences an ordinary nudge at the same hour", () => {
+    // The exemption is for the time the user named, not for the whole night.
+    for (const clock of ["22:00", "22:30", "23:00", "02:00", "06:30"]) {
+      expect(
+        decideReminderDelivery(base, clock, "2026-09-02", now, "nudge").reason,
+      ).toBe("quietHours");
+      // Absent a kind, a caller gets the stricter of the two answers.
+      expect(decideReminderDelivery(base, clock, "2026-09-02", now).reason).toBe(
+        "quietHours",
+      );
+    }
+  });
+
+  it("exempts the check-in from quiet hours with no stored settings too", () => {
+    expect(
+      decideReminderDelivery(null, "23:30", "2026-09-02", now, "dailyReview"),
+    ).toEqual({ allowed: true, reason: "ok" });
+    expect(
+      decideReminderDelivery(null, "23:30", "2026-09-02", now, "nudge").reason,
+    ).toBe("quietHours");
+  });
+
+  it("keeps pause and the daily cap over the check-in", () => {
+    // The hour of the day is not what pause or the cap are answering, so the
+    // exemption must not reach either of them.
+    const paused = { ...base, pausedUntil: now + 60_000 };
+    expect(
+      decideReminderDelivery(paused, "22:30", "2026-09-02", now, "dailyReview")
+        .reason,
+    ).toBe("paused");
+    const capped = { ...base, sentCount: 3 };
+    expect(
+      decideReminderDelivery(capped, "22:30", "2026-09-02", now, "dailyReview")
+        .reason,
+    ).toBe("dailyCap");
+  });
+
   it("never caps a user who has not asked for a cap", () => {
     // Ten pings on a day with no stored preferences must all be allowed.
     for (let i = 0; i < 10; i += 1) {

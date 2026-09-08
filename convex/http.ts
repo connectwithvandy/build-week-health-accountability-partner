@@ -139,10 +139,17 @@ http.route({
       }
 
       if (input.action === "reminderGate") {
+        // Only the two known kinds are forwarded. Anything else, including a
+        // missing value from an older gateway, is treated as an ordinary nudge:
+        // the stricter of the two paths, so a garbled field can never be the
+        // thing that lets a 3am water ping through.
+        const rawKind = String(payload.kind ?? "");
+        const kind = rawKind === "dailyReview" ? "dailyReview" : "nudge";
         const result = await ctx.runMutation(internal.ted.gateReminderDelivery, {
           whatsappUserId: input.whatsappUserId,
           nowLocalTime: String(payload.nowLocalTime ?? ""),
           today: String(payload.today ?? ""),
+          kind,
         });
         return json(result);
       }

@@ -1098,6 +1098,9 @@ export const gateReminderDelivery = internalMutation({
     whatsappUserId: v.string(),
     nowLocalTime: v.string(),
     today: v.string(),
+    // Optional so an older gateway, which does not send it, still gets the
+    // previous behaviour rather than an argument-validation error mid-nudge.
+    kind: v.optional(v.union(v.literal("dailyReview"), v.literal("nudge"))),
   },
   handler: async (ctx, args) => {
     if (!isLocalTimeKey(args.nowLocalTime)) {
@@ -1118,6 +1121,7 @@ export const gateReminderDelivery = internalMutation({
       args.nowLocalTime,
       args.today,
       now,
+      args.kind ?? "nudge",
     );
     if (!decision.allowed) {
       return { success: true, ...decision, sentToday: 0 };

@@ -716,18 +716,49 @@ export function isPaused(now: number, pausedUntil?: number | null): boolean {
 }
 
 /**
+ * What kind of scheduled message is asking to go out.
+ *
+ * "dailyReview" is the evening check-in, at the time the user themselves named
+ * when Ted asked "what time works for your evening check-in?". Everything else
+ * — water, meals, supplements, movement, the morning ping — is Ted deciding to
+ * speak, and only Ted's own decisions are what quiet hours exist to silence.
+ */
+export type ReminderKind = "dailyReview" | "nudge";
+
+/**
  * May this reminder go out right now?
  *
  * Order matters for the answer the user gets back: an explicit pause is a
  * thing they chose and should be reported as such, ahead of quiet hours, which
  * is a standing setting, ahead of the cap, which is a limit they may not know
  * about.
+ *
+ * QUIET HOURS DO NOT APPLY TO THE DAILY REVIEW. Ted's own setup question
+ * offers "something like 9pm or 10:30pm", and quiet hours default to 22:00, so
+ * a person who picks either of the two times Ted suggested can land inside a
+ * window Ted then enforces against them. On 7 Sep 2026 Shruthi chose 10:30pm
+ * and was told "10:30pm it is ✅ that's when your day gets added up"; the job
+ * ran at 22:30:20 and was suppressed with `reason=quietHours` before anything
+ * reached her. Nine of nineteen people with a check-in time were in that hole,
+ * at 22:00, 22:30 and 23:00, and none of them had ever received the one thing
+ * the product promises.
+ *
+ * The alternative was to move quiet hours to start after the chosen time, and
+ * it is worse: it silently edits a setting the user never touched in order to
+ * honour one they did. `PRODUCT_BUILD_GUARDRAILS.md` already draws this line —
+ * "proactive messages and reactive chat are separate controls" — and a check-in
+ * somebody asked for at a named hour is not Ted arriving uninvited.
+ *
+ * Pause, the daily cap and the break offer still apply. Those are about
+ * whether Ted should be talking at all, which the hour of the day does not
+ * answer.
  */
 export function decideReminderDelivery(
   policy: ReminderPolicy | null,
   nowLocalTime: string,
   today: string,
   now: number,
+  kind: ReminderKind = "nudge",
 ): ReminderDecision {
   // No row means the user has never set reminder preferences — which is not
   // the same as having no reminders. Vandy's five vitamin pings are Hermes
@@ -740,11 +771,12 @@ export function decideReminderDelivery(
   // hours still apply, from the defaults above, because 3am is 3am whether or
   // not anyone has saved a row.
   if (!policy) {
-    return isWithinQuietHours(
-      nowLocalTime,
-      DEFAULT_QUIET_HOURS_START,
-      DEFAULT_QUIET_HOURS_END,
-    )
+    return kind !== "dailyReview" &&
+      isWithinQuietHours(
+        nowLocalTime,
+        DEFAULT_QUIET_HOURS_START,
+        DEFAULT_QUIET_HOURS_END,
+      )
       ? { allowed: false, reason: "quietHours" }
       : { allowed: true, reason: "ok" };
   }
@@ -760,7 +792,10 @@ export function decideReminderDelivery(
   if (policy.awaitingBreakReply) {
     return { allowed: false, reason: "awaitingReply" };
   }
-  if (isWithinQuietHours(nowLocalTime, policy.quietHoursStart, policy.quietHoursEnd)) {
+  if (
+    kind !== "dailyReview" &&
+    isWithinQuietHours(nowLocalTime, policy.quietHoursStart, policy.quietHoursEnd)
+  ) {
     return { allowed: false, reason: "quietHours" };
   }
   const sentToday = policy.sentLocalDate === today ? (policy.sentCount ?? 0) : 0;

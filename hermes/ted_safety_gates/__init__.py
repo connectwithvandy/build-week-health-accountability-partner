@@ -6537,7 +6537,29 @@ def _cron_whatsapp_recipient(session_id: str) -> str | None:
     return None
 
 
-def _reminder_allowed(user_key: str) -> tuple[bool, str, bool]:
+def _cron_job_kind(session_id: str) -> str:
+    """``dailyReview`` for the evening check-in, ``nudge`` for everything else.
+
+    Read from the job name, which is the only place the distinction is written
+    down: ``ted:<user>:daily_review`` against ``:water_1``, ``:supplements``,
+    ``:movement``, ``:meals`` and the morning and midday pings. It decides one
+    thing only — whether quiet hours apply — and the reasoning for that lives
+    on ``decideReminderDelivery`` in ``convex/model.ts``.
+
+    Unknown shapes fall back to ``nudge``, the stricter answer, so a renamed or
+    hand-made job cannot become the one thing that arrives at 3am.
+    """
+    job_id = _cron_job_id(session_id)
+    if not job_id:
+        return "nudge"
+    for job in _load_cron_jobs():
+        if job.get("id") == job_id:
+            name = str(job.get("name") or "")
+            return "dailyReview" if name.rsplit(":", 1)[-1] == "daily_review" else "nudge"
+    return "nudge"
+
+
+def _reminder_allowed(user_key: str, kind: str = "nudge") -> tuple[bool, str, bool]:
     """May a reminder go out right now, and should it be the break offer?"""
     result = _convex_request(
         "reminderGate",
@@ -6545,6 +6567,7 @@ def _reminder_allowed(user_key: str) -> tuple[bool, str, bool]:
         body={
             "nowLocalTime": _now_local_time(user_key),
             "today": _today(user_key),
+            "kind": kind,
         },
     )
     if not result.get("success"):
@@ -6560,7 +6583,14 @@ def _reminder_allowed(user_key: str) -> tuple[bool, str, bool]:
             result.get("error"),
         )
         now = _now_local_time(user_key)
-        quiet = now >= DEFAULT_QUIET_HOURS_START or now < DEFAULT_QUIET_HOURS_END
+        # The evening check-in is exempt here for the same reason it is exempt
+        # in Convex: the user named this hour themselves. Keeping the two paths
+        # in step matters most on this one, because a Convex blip during
+        # somebody's 22:30 check-in would otherwise silently restore the exact
+        # bug this exemption was written for.
+        quiet = kind != "dailyReview" and (
+            now >= DEFAULT_QUIET_HOURS_START or now < DEFAULT_QUIET_HOURS_END
+        )
         # No break offer on this path: the count lives in the row we could not
         # read, and guessing at someone's engagement is worse than nudging.
         return (not quiet), ("quietHours" if quiet else "defaultsOnly"), False
@@ -6593,12 +6623,14 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
         )
         return CRON_SILENT
 
-    allowed, reason, offer_break = _reminder_allowed(user_key)
+    kind = _cron_job_kind(session_id)
+    allowed, reason, offer_break = _reminder_allowed(user_key, kind)
     if not allowed:
         LOGGER.info(
-            "ted_reminder_suppressed user_key=%s reason=%s session=%s",
+            "ted_reminder_suppressed user_key=%s reason=%s kind=%s session=%s",
             user_key,
             reason,
+            kind,
             session_id,
         )
         return CRON_SILENT
