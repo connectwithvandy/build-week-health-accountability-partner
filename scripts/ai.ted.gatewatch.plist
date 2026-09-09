@@ -5,13 +5,17 @@
   <key>Label</key>
   <string>ai.ted.gatewatch</string>
 
-  <!-- Checks every 15 minutes that Ted's safety gates are actually loaded,
-       and sends one WhatsApp message when that changes. Never stops the
-       gateway: see the header of ted-watch.py for why an unattended stop is
-       worse than an alert. -->
+  <!-- Checks every 15 minutes that Ted's safety gates are loaded AND that
+       WhatsApp is still linked, and raises a macOS notification when either
+       changes. The alert is not a WhatsApp message any more: WhatsApp is the
+       only platform Hermes has, so on 8 Sep 2026 a logout ran 17 hours with
+       nothing able to report it. A WhatsApp copy still goes out, but only
+       when the link is up to carry it. Never stops the gateway: see the
+       header of ted-watch.py for why an unattended stop is worse than an
+       alert. Install it by running ted-watch.py with the install flag. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
+    <string>/Users/vandana.agarwal/.hermes/hermes-agent/venv/bin/python3</string>
     <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-watch.py</string>
   </array>
 
