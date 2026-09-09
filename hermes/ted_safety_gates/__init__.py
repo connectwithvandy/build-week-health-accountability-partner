@@ -1659,6 +1659,26 @@ _NAME_DODGE = re.compile(
 )
 
 
+# Greetings people put in front of their name. Repeated (`)+`) so "hi hey"
+# collapses, and the optional trailing "ted" catches the very common
+# "hi ted, i'm X". Every alternative is \b-bounded so real names that merely
+# start with these letters survive.
+_GREETING_PREFIX = re.compile(
+    r"^(?:(?:hi+|hey+|hello+|heyy+|heya|yo|hola|namaste|namaskar|"
+    r"good\s+(?:morning|afternoon|evening|day))\b[\s,.!\u2019']*)+"
+    r"(?:ted\b[\s,.!]*)?",
+    flags=re.IGNORECASE,
+)
+
+
+# Lead-ins that survive the prefix strip only when the name after them is
+# missing. Held apart from the greeting pattern because these are answers that
+# ran out, not decorations on an answer.
+_NOT_NAMES_ON_THEIR_OWN = frozenset(
+    {"im", "i'm", "i\u2019m", "i am", "its", "it's", "it\u2019s", "my name", "name"}
+)
+
+
 def _looks_like_a_name(name: str) -> bool:
     """Whether this is a name, rather than whatever else they typed.
 
@@ -1695,17 +1715,48 @@ def _clean_name(text: str) -> str | None:
     greeted them that way forever, and cut a 300-character message to 40
     characters mid-word without ever saying so.
     """
+    # A greeting in front of the answer used to hide it completely. On 9 Sep
+    # 2026 Arpit replied "Hi ted, I'm Arpith" to the name question and was
+    # asked it again, because the prefix strip below is anchored at ^ and
+    # "Hi ted, " is not one of its prefixes — so the whole sentence reached
+    # `_looks_like_a_name`, which rightly rejected it. He answered twice and
+    # got the same question back twice. Saying hello before your name is the
+    # most ordinary way to answer a chatbot, so it cannot be the thing that
+    # locks someone out of onboarding.
+    #
+    # Stripped, never trusted: whatever is left still has to get past
+    # `_looks_like_a_name`, so this widens what reaches the check and loosens
+    # nothing about the check itself. "hey Can I send you voice notes 🙂" —
+    # a real message that once went out inside a privacy notice — is still
+    # rejected, now on its word count rather than on its "hey".
+    #
+    # \b matters on every alternative: it is what keeps "Hiral" and "Yousuf"
+    # from being read as a greeting and thrown away.
+    name = _GREETING_PREFIX.sub("", text.strip())
     name = re.sub(
+        # "im" with no apostrophe, and the curly \u2019 that iOS and WhatsApp
+        # substitute for ' as you type, are both ordinary ways to write this.
+        # Neither was matched, so "good morning ted, im Ayush" kept the "im"
+        # and "I\u2019m Ayush" kept the lot. Both then failed the name check.
+        # "im" is required to be followed by whitespace, which is what keeps
+        # "Imran" from being read as "i'm" plus "ran".
         r"^(?:just\s+|you\s+can\s+|u\s+can\s+|pls\s+|please\s+)*"
-        r"(?:i(?:'m| am)|my name is|name(?:'s| is)|call me|its|it's)\s+",
+        r"(?:i(?:['\u2019]m| am)|im|my name is|name(?:['\u2019]s| is)"
+        r"|call me|its|it['\u2019]s)\s+",
         "",
-        text.strip(),
+        name,
         flags=re.IGNORECASE,
     )
     name = re.sub(r"\s+", " ", name).strip(" .,!?")
     name = _EMOJI_EDGE.sub("", name).strip(" .,!?")
     if not name:
         # Emoji-only, or nothing but punctuation. Ask again.
+        return None
+    if name.casefold() in _NOT_NAMES_ON_THEIR_OWN:
+        # The lead-in with the name missing. "im" on its own passes every
+        # shape check — two letters, one word, all alphabetic — and Ted would
+        # have called them "im" from then on. Same class as the greeting
+        # above: the filler is not the answer.
         return None
     if not _looks_like_a_name(name):
         # Too long, too many words, or a sentence about Ted rather than an
@@ -1848,6 +1899,14 @@ def _is_first_contact(history: Iterable[dict[str, Any]], user_key: str) -> bool:
     # Onboarding steps recorded against this key mean they have been here,
     # even if the transcript in front of us is empty after a session reset.
     if _onboarding(user_key).get("done"):
+        return False
+    # Having been asked the name is the same evidence, one step earlier. The
+    # `done` check above only covers people who finished; somebody reset
+    # between the greeting and their first answer still had the greeting. On
+    # 8 Sep the gateway crashed at 16:38 and reset four DMs, and Arpit — who
+    # had the opening message and had not yet answered — would have been
+    # greeted a second time, his name swallowed by the turn that asked for it.
+    if _name_asks(user_key):
         return False
     return True
 
@@ -6477,6 +6536,52 @@ _CRON_SESSION = re.compile(r"^cron_([0-9a-zA-Z]+)_\d{8}_\d{6}$")
 # cron/scheduler.py drops a response that is exactly this token.
 CRON_SILENT = "[SILENT]"
 
+# Whether Ted can actually speak, read from the state file the gateway writes
+# about itself.
+#
+# WHY A REMINDER ASKS THIS FIRST. `unansweredNudges` is incremented in
+# convex/ted.ts the moment a nudge is *cleared to send*, which is not the same
+# as delivered. On 8 Sep 2026 WhatsApp logged the device out at 18:00; for the
+# next seventeen hours cron jobs ran, the gate cleared them, the counter
+# climbed, and every one of them then died at the delivery step. The next
+# morning Vandy was offered a break from a conversation Ted was the absent
+# half of, for ignoring four messages that never reached her phone.
+#
+# Counting delivery properly would mean the scheduler reporting failures back
+# into Convex, which it has no path for. Refusing to start is the same
+# correction one step earlier and needs no new path: a nudge that cannot
+# arrive is not sent, so it is never counted, so nobody is marked silent for
+# it. It also stops seventeen hours of model calls that had nowhere to go.
+# Overridable for the same reason _STATE_DIR is: a test run must read a fixture
+# and never this machine's live gateway, or the suite passes or fails according
+# to whether WhatsApp happens to be connected right now.
+_GATEWAY_STATE_PATH = Path(
+    os.environ.get(
+        "TED_GATES_GATEWAY_STATE",
+        str(Path.home() / ".hermes" / "gateway_state.json"),
+    )
+)
+
+
+def _whatsapp_can_deliver() -> bool:
+    """True unless the gateway says WhatsApp is down.
+
+    Fails open. An unreadable or unfamiliar state file must not silence every
+    reminder Ted has: the failure this guards against is rare and loud, and
+    suppressing on a read error would be a far quieter, far worse outage.
+    """
+    try:
+        state = json.loads(_GATEWAY_STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return True
+    platforms = state.get("platforms")
+    if not isinstance(platforms, dict):
+        return True
+    whatsapp = platforms.get("whatsapp")
+    if not isinstance(whatsapp, dict) or "state" not in whatsapp:
+        return True
+    return whatsapp.get("state") == "connected"
+
 # Mirrors DEFAULT_QUIET_HOURS_* in convex/model.ts. Used only when the stored
 # policy cannot be read, so a database blip degrades to the documented default
 # rather than to silence.
@@ -6648,6 +6753,17 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             "ted_reminder_suppressed user_key=%s reason=paused_until:%s session=%s",
             user_key,
             paused,
+            session_id,
+        )
+        return CRON_SILENT
+
+    # Above _reminder_allowed, because that is the call that increments the
+    # unanswered-nudge counter in Convex. Asking it anything while the link is
+    # down is what marched a present user towards a break offer.
+    if not _whatsapp_can_deliver():
+        LOGGER.info(
+            "ted_reminder_suppressed user_key=%s reason=linkDown session=%s",
+            user_key,
             session_id,
         )
         return CRON_SILENT

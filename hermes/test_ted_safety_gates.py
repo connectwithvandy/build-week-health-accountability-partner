@@ -8842,3 +8842,221 @@ class DaySummaryReachesTheReplyGateTest(unittest.TestCase):
             gates._day_summary({"local_date": "2026-09-06"}, session_id=self.SESSION)
         with gates._TURN_LOCK:
             self.assertIsNone(gates._TURN_CONTEXT[self.SESSION].get("reviewed_day"))
+
+
+class NudgesThatCannotArriveAreNotCountedTest(unittest.TestCase):
+    """8 Sep 2026, 18:00 to 10:57 the next morning.
+
+    WhatsApp logged the linked device out. The gateway stayed up and retried
+    the bridge sixty-five times. Cron jobs ran the whole night, the gate
+    cleared every one, `unansweredNudges` climbed on each — it is incremented
+    in convex/ted.ts when a nudge is *cleared to send* — and then delivery
+    failed at the last step. In the morning Vandy was offered a break for
+    ignoring four messages that had never reached her phone.
+
+    Ted was the absent half of that conversation. The count has to mean
+    "messages they did not answer", never "messages we tried to compose".
+    """
+
+    SESSION = "cron_linkdown_20260908_230100"
+
+    def state_file(self, tmp: Path, payload) -> object:
+        path = tmp / "gateway_state.json"
+        if payload is not None:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        return patch.object(gates, "_GATEWAY_STATE_PATH", path)
+
+    def connected(self, link: str) -> dict:
+        return {
+            "gateway_state": "running",
+            "platforms": {"whatsapp": {"state": link}},
+        }
+
+    def test_a_disconnected_link_cannot_deliver(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.state_file(Path(tmp), self.connected("disconnected")):
+                self.assertFalse(gates._whatsapp_can_deliver())
+
+    def test_a_connected_link_can(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.state_file(Path(tmp), self.connected("connected")):
+                self.assertTrue(gates._whatsapp_can_deliver())
+
+    def test_a_missing_file_fails_open(self) -> None:
+        """Silencing every reminder on a read error is the worse outage."""
+        with TemporaryDirectory() as tmp:
+            with self.state_file(Path(tmp), None):
+                self.assertTrue(gates._whatsapp_can_deliver())
+
+    def test_unreadable_json_fails_open(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gateway_state.json"
+            path.write_text("{not json", encoding="utf-8")
+            with patch.object(gates, "_GATEWAY_STATE_PATH", path):
+                self.assertTrue(gates._whatsapp_can_deliver())
+
+    def test_a_state_file_of_another_shape_fails_open(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.state_file(Path(tmp), {"gateway_state": "running"}):
+                self.assertTrue(gates._whatsapp_can_deliver())
+
+    def gate_with_link(self, link: str):
+        """Run the cron gate, recording whether Convex was asked anything."""
+        asked: list[str] = []
+
+        def responder(action, user_key, context_id="", body=None, **_):
+            asked.append(action)
+            return {"success": True, "allowed": True, "reason": "ok"}
+
+        jobs = [
+            {
+                "id": "linkdown",
+                "name": "ted:whoever:supplements",
+                "origin": {"platform": "whatsapp", "chat_id": "000000000000000@lid"},
+            }
+        ]
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "jobs.json"
+            path.write_text(json.dumps(jobs), encoding="utf-8")
+            with self.state_file(Path(tmp), self.connected(link)), patch.object(
+                gates, "_CRON_JOBS_PATH", path
+            ), patch.object(gates, "_convex_request", side_effect=responder):
+                reply = gates._cron_reminder_gate(
+                    session_id=self.SESSION, response_text="vitamin d time"
+                )
+        return reply, asked
+
+    def test_the_nudge_is_dropped_while_the_link_is_down(self) -> None:
+        reply, _ = self.gate_with_link("disconnected")
+        self.assertEqual(reply, gates.CRON_SILENT)
+
+    def test_convex_is_never_asked_while_the_link_is_down(self) -> None:
+        """The ask is the increment. Not asking is the whole fix."""
+        _, asked = self.gate_with_link("disconnected")
+        self.assertNotIn("reminderGate", asked)
+
+
+class AGreetedUserIsNotAStrangerTest(unittest.TestCase):
+    """A session reset between the greeting and the first answer.
+
+    On 8 Sep 2026 the gateway crashed at 16:38 and reset four DMs. Arpit had
+    had the opening message at 13:39 and had not answered yet, so his
+    transcript came back empty with no name and no disclosure on file. Every
+    condition for "never been spoken to" was true of somebody who had been
+    spoken to. His next message — most likely his name — would have been met
+    with the name question a second time.
+
+    `done` already covers people who finished. This covers the ones caught
+    mid-flight, which is the only stretch where the greeting has gone out and
+    nothing else has been recorded yet.
+    """
+
+    KEY = "whatsapp:sha256:greeted-then-reset"
+
+    def test_a_first_message_still_gets_the_greeting(self) -> None:
+        with patch.object(gates, "_ONBOARDING_STATE", {}):
+            self.assertTrue(gates._is_first_contact([], "whatsapp:sha256:brand-new"))
+
+    def test_being_asked_the_name_counts_as_having_been_here(self) -> None:
+        with patch.object(gates, "_ONBOARDING_STATE", {self.KEY: {"name_asks": 1}}):
+            self.assertFalse(gates._is_first_contact([], self.KEY))
+
+    def test_an_empty_record_is_still_a_stranger(self) -> None:
+        with patch.object(gates, "_ONBOARDING_STATE", {self.KEY: {}}):
+            self.assertTrue(gates._is_first_contact([], self.KEY))
+
+
+class SayingHelloBeforeYourNameTest(unittest.TestCase):
+    """9 Sep 2026, 11:12. Arpit answered the name question and was asked it again.
+
+    He wrote "Hi ted, I'm Arpith". The prefix strip in `_clean_name` is
+    anchored at ^ and knows "i'm", "call me", "just" — but not a greeting. So
+    nothing was stripped, the whole sentence went to `_looks_like_a_name`,
+    which correctly refused to call anybody "Hi ted, I'm Arpith", and the gate
+    asked a second time. He answered twice and got the question back twice.
+
+    Greeting first is how people talk to a chatbot. It cannot be the thing
+    that locks them out of onboarding. The greeting is stripped, never
+    trusted: whatever is left still has to satisfy `_looks_like_a_name`.
+    """
+
+    def parses(self, text: str, expected: str) -> None:
+        self.assertEqual(gates._clean_name(text), expected, f"from {text!r}")
+
+    def refuses(self, text: str) -> None:
+        self.assertIsNone(gates._clean_name(text), f"from {text!r}")
+
+    def test_arpits_actual_message(self) -> None:
+        self.parses("Hi ted, I'm Arpith", "Arpith")
+
+    def test_the_greetings_people_actually_use(self) -> None:
+        for text, expected in (
+            ("Hey, I'm Sarah", "Sarah"),
+            ("Hello, my name is Gourav", "Gourav"),
+            ("hii ted, call me PG", "PG"),
+            ("hi ted, i'm arpit", "arpit"),
+            ("Hi ted, I am Arpith", "Arpith"),
+            ("good morning ted, im Ayush", "Ayush"),
+        ):
+            with self.subTest(text=text):
+                self.parses(text, expected)
+
+    def test_the_curly_apostrophe_a_phone_types(self) -> None:
+        """iOS and WhatsApp substitute ’ for ' as you type."""
+        self.parses("I’m Arpith", "Arpith")
+        self.parses("hi ted, I’m Sarah", "Sarah")
+
+    def test_a_name_that_merely_starts_like_a_greeting_survives(self) -> None:
+        """\\b on every alternative is what protects these."""
+        # "Hola" is deliberately absent: it is in the greeting list, so a bare
+        # "Hola" is read as hello and costs one more question. That is the
+        # cheap direction, and the same one `_looks_like_a_name` already errs
+        # in.
+        for name in ("Hiral", "Yousuf", "Imran", "Imran Khan", "Heyansh"):
+            with self.subTest(name=name):
+                self.parses(name, name)
+
+    def test_a_greeting_with_no_name_after_it_is_still_not_a_name(self) -> None:
+        for text in ("Hi", "Hi ted", "Hey Ted", "hello"):
+            with self.subTest(text=text):
+                self.refuses(text)
+
+    def test_the_lead_in_alone_is_not_a_name(self) -> None:
+        """"im" is one word of letters, so every shape check passes it."""
+        for text in ("im", "i'm", "I’m", "its", "my name"):
+            with self.subTest(text=text):
+                self.refuses(text)
+
+    def test_nothing_the_check_used_to_refuse_now_gets_through(self) -> None:
+        """The greeting is stripped; the name check is not loosened.
+
+        "hey Can I send you voice notes 🙂" is a real message that once went
+        out inside a privacy notice. It is still refused, now on its word
+        count rather than on its "hey".
+        """
+        for text in (
+            "hey Can I send you voice notes \U0001f642",
+            "hi ted, can i send you voice notes?",
+            "[image received]",
+            "Kuch bi yaar",
+            "31",
+            "and 20 min run",
+            "\U0001fae1",
+        ):
+            with self.subTest(text=text):
+                self.refuses(text)
+
+    def test_the_gate_now_moves_him_past_the_name(self) -> None:
+        """End to end: the answer he gave produces the disclosure, not a re-ask."""
+        key = "whatsapp:sha256:greeting-then-name"
+        history = [
+            {"role": "assistant", "content": gates.OPENING_MESSAGE},
+            {"role": "user", "content": "Hi ted, I'm Arpith"},
+        ]
+        with patch.object(gates, "_ONBOARDING_STATE", {key: {"name_asks": 1}}), \
+             patch.object(gates, "_persist_onboarding_state", lambda: None), \
+             patch.object(gates, "_disclosure_was_sent", lambda *a, **k: False):
+            reply = gates.consent_gate(history, "hey Arpith!", key)
+        self.assertIsNotNone(reply)
+        self.assertIn("Arpith", reply)
+        self.assertNotIn("what should i call you", reply.lower())

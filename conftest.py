@@ -33,6 +33,11 @@ _SANDBOX = Path(tempfile.mkdtemp(prefix="ted-gates-tests-"))
 
 os.environ["TED_GATES_STATE_DIR"] = str(_SANDBOX / "state")
 os.environ["TED_GATES_AGENT_LOG"] = str(_SANDBOX / "logs" / "agent.log")
+# The reminder gate reads the gateway's own state file to decide whether Ted
+# can currently deliver anything. Pointed at the sandbox so the suite does not
+# pass or fail according to whether this laptop's WhatsApp is linked. The file
+# is deliberately absent by default, and the gate fails open on that.
+os.environ["TED_GATES_GATEWAY_STATE"] = str(_SANDBOX / "gateway_state.json")
 
 # Reminders are real Hermes cron jobs, created by shelling out to the CLI. A
 # test run must not schedule, reschedule or cancel anything on this machine —
