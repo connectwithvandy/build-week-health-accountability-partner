@@ -296,15 +296,66 @@ def install() -> int:
     return 0
 
 
+def test_alert() -> int:
+    """Prove the phone alert works, without waiting for something to break.
+
+    A channel nobody has ever seen fire is not a channel anybody trusts, and
+    the failure this exists to report is exactly the moment you cannot afford
+    to be discovering a typo in a key. Touches no user, no WhatsApp and no
+    saved state: it sends one notification down both roads and says what each
+    one did.
+    """
+    configured = pushover_credentials() is not None
+    print(f"phone channel: {'configured' if configured else 'NOT configured'}")
+    if not configured:
+        print()
+        print("  Set these two, then run this again:")
+        for name in PUSHOVER_KEYS:
+            print(f"    {name}")
+        print(f"  Either as environment variables, or as lines in {HERMES_ENV}.")
+        print("  Both come from pushover.net: the user key is on the dashboard")
+        print("  after you sign in, the token is from Create an Application.")
+        print()
+        print("  Until they are set the desk notification still fires, so")
+        print("  nothing is broken while this is pending.")
+        return 1
+
+    title = "🔔 Ted alert test"
+    body = (
+        "If you are reading this on your phone, the alarm can now reach you "
+        "away from the laptop. Nothing is wrong."
+    )
+    result = push(title, body, urgent=False, dry_run=False)
+    print(f"phone: {result}")
+    if result != "sent":
+        print()
+        print("  Pushover refused it. Check the two keys are the right way")
+        print("  round: the user key is yours, the token belongs to the")
+        print("  application you created.")
+        return 1
+    print()
+    print("  Sent. Your phone should buzz within a few seconds.")
+    print("  Sent at normal priority, so a real failure will be louder.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--install", action="store_true")
+    parser.add_argument(
+        "--test-alert",
+        action="store_true",
+        help="send one harmless alert to prove the phone channel works",
+    )
     args = parser.parse_args()
 
     if args.install:
         return install()
+
+    if args.test_alert:
+        return test_alert()
 
     gates_ok, output = run_guard()
     link_ok, link_detail, needs_human = check_link()
