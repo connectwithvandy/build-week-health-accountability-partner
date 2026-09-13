@@ -54,11 +54,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -68,6 +71,7 @@ PLIST_DST = Path.home() / "Library" / "LaunchAgents" / "ai.ted.gatewatch.plist"
 LABEL = "ai.ted.gatewatch"
 
 HERMES = Path.home() / ".hermes"
+HERMES_ENV = HERMES / ".env"
 STATE = HERMES / "state" / "ted-watch-state.json"
 GATEWAY_STATE = HERMES / "gateway_state.json"
 BRIDGE_LOG = HERMES / "whatsapp" / "bridge.log"
@@ -159,14 +163,91 @@ def check_link() -> tuple[bool, str, bool]:
     return False, f"WhatsApp is {link!r}", False
 
 
-def notify(title: str, body: str, dry_run: bool) -> None:
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+PUSHOVER_KEYS = ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")
+
+
+def pushover_credentials() -> tuple[str, str] | None:
+    """The user key and app token, from the environment or ~/.hermes/.env.
+
+    Returns None when either is missing, and the caller treats that as "this
+    channel is not set up" rather than as an error. An unconfigured phone
+    alert must never stop the desk alert from going out, because a half
+    configured watcher that refuses to run is worse than the one channel it
+    already had.
+    """
+    found: dict[str, str] = {}
+    for name in PUSHOVER_KEYS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            found[name] = value
+    if len(found) < len(PUSHOVER_KEYS):
+        try:
+            for line in HERMES_ENV.read_text().splitlines():
+                name, _, value = line.partition("=")
+                name = name.strip()
+                if name in PUSHOVER_KEYS and name not in found:
+                    cleaned = value.strip().strip("'\"")
+                    if cleaned:
+                        found[name] = cleaned
+        except OSError:
+            pass
+    if len(found) < len(PUSHOVER_KEYS):
+        return None
+    return found["PUSHOVER_USER_KEY"], found["PUSHOVER_API_TOKEN"]
+
+
+def push(title: str, body: str, urgent: bool, dry_run: bool) -> str:
+    """Send the alert to a phone that is not this laptop and not WhatsApp.
+
+    This is the channel the 8 Sep 2026 outage needed and did not have. The
+    gateway was logged out for seventeen hours; the only alarm was a macOS
+    notification popping up to an empty room, and Ted could not report it over
+    WhatsApp because WhatsApp was the thing that was down.
+
+    Pushover is a plain HTTPS POST with no SDK, so the watcher keeps its only
+    dependency being Python itself. Every failure here is swallowed on
+    purpose: this function exists to add a road, never to remove one.
+    """
+    credentials = pushover_credentials()
+    if credentials is None:
+        return "not configured"
+    user_key, api_token = credentials
+    if dry_run:
+        return "would send"
+    payload = urllib.parse.urlencode(
+        {
+            "token": api_token,
+            "user": user_key,
+            "title": title,
+            "message": " ".join(body.split())[:1024],
+            # 1 shows on the phone as a high-priority alert that bypasses a
+            # quiet period. Recoveries go out at 0 so good news never wakes
+            # anybody up.
+            "priority": "1" if urgent else "0",
+        }
+    ).encode()
+    request = urllib.request.Request(PUSHOVER_URL, data=payload)
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status == 200:
+                return "sent"
+            return f"refused (HTTP {response.status})"
+    except Exception as exc:  # noqa: BLE001 - a phone alert may never crash the watcher
+        return f"failed ({exc})"
+
+
+def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
     """The alert that does not depend on the thing being watched.
 
-    osascript is used rather than a Hermes send precisely because it reaches
-    the screen without a network, a token or a linked device.
+    Two roads, on purpose. osascript reaches the screen without a network, a
+    token or a linked device, which is what makes it worth keeping; Pushover
+    reaches her when she is not at the screen, which is the half that was
+    missing all of this week. Neither is WhatsApp.
     """
     if dry_run:
         print(f"--- would notify --- {title}: {body}")
+        print(f"--- phone --- {push(title, body, urgent, dry_run=True)}")
         return
     # A notification body is one line on screen, so the newlines that read well
     # in WhatsApp are flattened here rather than silently truncated.
@@ -179,6 +260,9 @@ def notify(title: str, body: str, dry_run: bool) -> None:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"notify failed: {exc}", file=sys.stderr)
+    result = push(title, body, urgent, dry_run=False)
+    if result != "sent":
+        print(f"phone alert: {result}", file=sys.stderr)
 
 
 # NO WHATSAPP COPY. An earlier version of this file sent the alert to Vandy's
