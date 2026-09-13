@@ -2527,6 +2527,26 @@ _EXERCISE_CUE = re.compile(
     re.IGNORECASE,
 )
 
+# "training" was here and "trains" was not, so "desk job, trains daily" read as
+# a pure desk day. That is not a cosmetic miss: the activity factor is what
+# maintenance is built from, so calling a person who trains every day sedentary
+# understates their burn and hands them a target below the one their day earns.
+# Namrata is the live case, and someone else answered "desk most of the day,
+# trains about 6 hours per week" to the same effect.
+#
+# Kept apart from _EXERCISE_CUE because "train" has a second meaning that is
+# very common here: "the train", "by train", "local train" are a commute, and
+# reading a commute as exercise would make the opposite mistake.
+_TRAINS_AS_EXERCISE = re.compile(
+    r"(?<!\bthe )(?<!\ba )(?<!\bby )(?<!\blocal )(?<!\bmetro )\btrains?\b",
+    re.IGNORECASE,
+)
+
+
+def _names_exercise(text: str) -> bool:
+    """Whether this describes moving, in either vocabulary."""
+    return bool(_EXERCISE_CUE.search(text) or _TRAINS_AS_EXERCISE.search(text))
+
 
 # Four or more sessions a week, or every day. Below that an unstated
 # frequency is not evidence of one.
@@ -2547,11 +2567,11 @@ def _find_activity(texts: list[str]) -> str | None:
     # what the calorie number is built from, and guessing high hands somebody a
     # larger number than their day earns.
     if _DESK_ANCHOR.search(joined):
-        return "light" if _EXERCISE_CUE.search(joined) else "sedentary"
+        return "light" if _names_exercise(joined) else "sedentary"
     # On your feet, weighed the same way: a standing day that also names
     # training is a step up, and one that does not is the middle option.
     if _ON_FEET_ANCHOR.search(joined):
-        return "moderate" if _EXERCISE_CUE.search(joined) else "light"
+        return "moderate" if _names_exercise(joined) else "light"
     for phrase, activity in _ACTIVITY_PHRASES:
         if re.search(rf"\b{re.escape(phrase)}\b", joined):
             return activity
@@ -2563,7 +2583,7 @@ def _find_activity(texts: list[str]) -> str | None:
     # A named high frequency earns the high factor. Without one, "moderate"
     # — below what the table gives the question's own "training regularly"
     # option, because an unstated frequency should not buy the larger number.
-    if _EXERCISE_CUE.search(joined):
+    if _names_exercise(joined):
         return "active" if _TRAINS_OFTEN.search(joined) else "moderate"
     # "normal", "average", "theek hai". A self-assessment rather than a
     # description, and the commonest answer that used to read as nothing.

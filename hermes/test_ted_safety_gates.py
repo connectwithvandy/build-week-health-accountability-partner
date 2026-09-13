@@ -7331,6 +7331,34 @@ class TheCountedFiveTest(unittest.TestCase):
             with self.subTest(plain=plain):
                 self.assertEqual(gates._find_activity([plain]), "sedentary")
 
+    def test_trains_is_exercise_even_though_training_was_the_only_word_listed(self) -> None:
+        """"training" was in the cue list and "trains" was not.
+
+        Namrata's stored activity is "desk job, trains daily" and it read as a
+        pure desk day. The factor is what maintenance is built from, so calling
+        somebody who trains every day sedentary understates their burn and
+        hands them a target below what their day earns. Someone else answered
+        "desk most of the day, trains about 6 hours per week" to the same end.
+        """
+        self.assertEqual(gates._find_activity(["desk job, trains daily"]), "light")
+        self.assertEqual(
+            gates._find_activity(["desk most of the day, trains about 6 hours per week"]),
+            "light",
+        )
+        self.assertEqual(gates._find_activity(["i train 5 days a week"]), "active")
+
+    def test_the_train_you_catch_is_not_the_training_you_do(self) -> None:
+        """Reading a commute as exercise is the same mistake pointing the
+        other way, and here a train is far more often a commute."""
+        for commute in (
+            "desk job, take the train to work",
+            "desk job, by train every day",
+            "local train commute, desk all day",
+            "metro train then desk",
+        ):
+            with self.subTest(commute=commute):
+                self.assertEqual(gates._find_activity([commute]), "sedentary")
+
     def test_the_guess_is_conservative(self) -> None:
         """Light, not moderate. The factor is what the number is built from,
         and guessing high hands somebody more than their day earns."""
