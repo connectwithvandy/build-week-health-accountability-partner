@@ -36,6 +36,10 @@ THE RULES IT WILL NOT BREAK.
   * Never inside someone's quiet hours, computed in their own timezone.
   * Never to someone who has messaged Ted in the last two hours, so a campaign
     can never talk over a live conversation.
+  * Never to someone who has logged anything in the last week. Missing setup
+    fields do not make somebody lapsed: Ankie had thirteen meals logged and a
+    conversation going that morning, and still qualified for "we stopped
+    halfway". Whatever she is missing gets asked in the chat she is already in.
   * Never about calories to a user `setupStateFor` reports as blocked. The one
     person that applies to is 17.
 
@@ -71,6 +75,24 @@ DEFAULT_QUIET_START, DEFAULT_QUIET_END = "22:00", "07:00"
 
 # Someone mid-conversation must never be interrupted by a campaign.
 LIVE_CONVERSATION_HOURS = 2
+
+# Somebody who is logging meals is not lapsed, whatever the setup flags say.
+#
+# On 13 Sep Ankie qualified for a win-back reading "we stopped halfway and that
+# was my fault, I never asked you the one thing I needed." She had logged
+# thirteen meals, sent a photo of her snack plate the day before, and messaged
+# Ted that morning to apologise for a bad day. Her only gap was `goal`, so
+# `setupStateFor` called her incomplete and this script agreed.
+#
+# Setup completeness is the wrong question to ask about lapsing. It answers
+# "has Ted got what it needs", not "is this person still here", and the two
+# come apart exactly for the people worth keeping. The last inbound message
+# cannot separate them either: GT and Shabs also wrote two days ago, and they
+# really are stalled. What separates them is that one of them is using Ted.
+#
+# So: a logged entry inside this window means leave them alone. Whatever is
+# missing can be asked in the conversation they are already having.
+STILL_USING_IT_DAYS = 7
 
 
 def user_key(sender_id: str) -> str:
@@ -182,9 +204,42 @@ def their_number(user: dict) -> tuple[int, int] | None:
     return maintenance, target
 
 
+# Words that are a wave, not a name, whatever the users table says.
+#
+# One user opened with "Hi" on 5 Sep and it was stored as their name. Ted spotted
+# it at the time and asked, "hi's just what you typed na, or is that actually
+# your name? 😄" — they never answered, and the guess was kept anyway.
+#
+# `_looks_like_a_name` passes it, correctly: "Hi" is a perfectly plausible short
+# name and that function cannot know this one came from a greeting. But opening a
+# win-back with "Hi, we got everything sorted" spends the one message on
+# cementing a name Ted already doubted in writing. So these names are dropped
+# from the salutation and asked for instead.
+_GREETING_NAMES = {
+    "hi", "hii", "hiii", "hey", "heyy", "hello", "helo", "hlo", "yo",
+    "hola", "namaste", "namaskar", "salaam", "start", "ok", "okay", "test",
+}
+
+
+def real_name(user: dict) -> str | None:
+    """Their name, or None when what is stored is really a greeting."""
+    name = (user.get("name") or "").strip()
+    if not name or name.lower().strip("!?., ") in _GREETING_NAMES:
+        return None
+    return name
+
+
 def compose(plan: dict, user: dict, group: str) -> str | None:
-    name = (user.get("name") or "").strip() or "hey"
+    known = real_name(user)
+    name = known or "hey"
     missing = list(plan["missing"])
+    # Asked at the end rather than instead, because the question this message
+    # exists for is still the one worth asking. Nobody is blocked on a name.
+    name_question = (
+        "" if known
+        else "\n\nAlso, I never caught your actual name, I've just had \"hi\" "
+             "written down this whole time 😅 what should I call you?"
+    )
 
     if group == "B":
         numbers = their_number(user)
@@ -227,6 +282,7 @@ def compose(plan: dict, user: dict, group: str) -> str | None:
             f"{number_line}"
             "What time suits a daily check in? Something like 9pm or 10:30pm.\n\n"
             "Give me a time and I'll close out each day with you."
+            f"{name_question}"
         )
 
     if group == "D":
@@ -292,6 +348,24 @@ def main() -> int:
     # between what Ted says and what the row holds, which is the exact bug this
     # whole day has been spent removing. A win-back message quotes, it does not
     # recalculate.
+    # Who has actually logged something lately. Read from dailyEntries rather
+    # than inferred from the setup flags, for the reason at STILL_USING_IT_DAYS.
+    entries = subprocess.run(
+        ["npx", "convex", "data", "dailyEntries", "--deployment", "hardy-scorpion-901",
+         "--limit", "16000", "--format", "jsonl"],
+        capture_output=True, text=True, cwd=str(REPO),
+    )
+    cutoff_ms = (time.time() - STILL_USING_IT_DAYS * 86400) * 1000
+    logging_lately: set[str] = set()
+    for line in entries.stdout.splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        when = row.get("occurredAt") or row.get("createdAt") or 0
+        owner = by_id.get(row.get("userId"))
+        if owner and isinstance(when, (int, float)) and when >= cutoff_ms:
+            logging_lately.add(owner["whatsappUserId"])
+
     targets = subprocess.run(
         ["npx", "convex", "data", "targets", "--deployment", "hardy-scorpion-901",
          "--limit", "16000", "--format", "jsonl"],
@@ -322,6 +396,21 @@ def main() -> int:
             continue
         if key in last_in and (now - last_in[key]) < LIVE_CONVERSATION_HOURS * 3600:
             skipped.append((plan["name"], "messaged Ted in the last 2 hours, leave them alone"))
+            continue
+        if key in logging_lately:
+            skipped.append((
+                plan["name"],
+                f"logged something in the last {STILL_USING_IT_DAYS} days, not lapsed",
+            ))
+            continue
+        # A pause is the clearest thing a person can say about being messaged,
+        # and a campaign is exactly the kind of thing that walks straight past
+        # it. The gate honours it for reminders; nothing made this file honour
+        # it too, and both people paused on 13 Sep were only spared because
+        # they happened to be in the already-messaged list.
+        paused = gates._paused_until(key)
+        if paused:
+            skipped.append((plan["name"], f"asked to be left alone until {paused}"))
             continue
         if quiet_now(user):
             skipped.append((plan["name"], "inside their quiet hours right now"))
