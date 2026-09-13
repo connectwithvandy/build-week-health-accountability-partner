@@ -119,23 +119,62 @@ def last_gateway_start() -> float | None:
         return None
 
 
-def last_registration() -> float | None:
-    """When register() last announced itself, as an epoch second."""
+def _rotation_index(path: Path) -> int:
+    """Sort key for a rotated log: agent.log.1 before agent.log.2.
+
+    Anything without a numeric suffix sorts last, so an oddly named sibling
+    can never be read ahead of a real rotation.
+    """
+    suffix = path.name[len(AGENT_LOG.name) + 1 :]
+    return int(suffix) if suffix.isdigit() else sys.maxsize
+
+
+def registration_logs() -> list[Path]:
+    """The live agent.log first, then its rotated copies, newest to oldest.
+
+    Rotation is the whole reason this is a list. On 11 Sep 2026 agent.log
+    rolled over at 00:23 and carried the only ted_safety_gates_registered
+    line with it into agent.log.1. The gateway had not restarted since 9 Sep,
+    so no replacement line was ever written, and reading the live file alone
+    made the gates look like they had never loaded. This check then reported
+    Ted as serving ungated every fifteen minutes for two and a half days,
+    158 times, while the gates were demonstrably running and rewriting
+    replies. A line that scrolled out of the current file is not a missing
+    line, and the most serious alarm this script can raise must not fire on
+    log housekeeping.
+    """
     try:
-        handle = AGENT_LOG.open("r", errors="replace")
+        rotated = sorted(AGENT_LOG.parent.glob(AGENT_LOG.name + ".*"), key=_rotation_index)
     except OSError:
-        return None
-    stamp = None
-    with handle:
-        for line in handle:
-            if REGISTERED not in line:
-                continue
-            matched = LOG_STAMP.match(line)
-            if matched:
-                stamp = datetime.strptime(
-                    matched.group(1), "%Y-%m-%d %H:%M:%S"
-                ).timestamp()
-    return stamp
+        rotated = []
+    return [AGENT_LOG, *rotated]
+
+
+def last_registration() -> float | None:
+    """When register() last announced itself, as an epoch second.
+
+    Files are searched newest first and the search stops at the first one
+    that has the line, because a rotated copy is always older than the live
+    log by construction.
+    """
+    for path in registration_logs():
+        try:
+            handle = path.open("r", errors="replace")
+        except OSError:
+            continue
+        stamp = None
+        with handle:
+            for line in handle:
+                if REGISTERED not in line:
+                    continue
+                matched = LOG_STAMP.match(line)
+                if matched:
+                    stamp = datetime.strptime(
+                        matched.group(1), "%Y-%m-%d %H:%M:%S"
+                    ).timestamp()
+        if stamp is not None:
+            return stamp
+    return None
 
 
 def missing_env() -> list[str]:
