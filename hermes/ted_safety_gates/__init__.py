@@ -1302,6 +1302,24 @@ _GOALS_BY_WORD = {
 }
 
 
+# What a human measurement can actually be. Anything outside these stays a
+# fact rather than becoming a column.
+#
+# `> 0` used to be the whole test, which is how one user's height was stored
+# as 4cm on 4 Sep 2026 and sat there for nine days. Her calorie target was
+# only safe because she had given it herself; the moment anything recomputed
+# a maintenance estimate from that profile it would have produced a number
+# from a body 4cm tall. The age bounds are the ones the age gate already
+# uses, so a number refused in one place is not accepted in the other.
+#
+# These are deliberately generous. The job here is to catch a value that
+# cannot be a person, not to argue with an unusual one.
+_PROFILE_RANGES: dict[str, tuple[float, float]] = {
+    "heightCm": (90.0, 250.0),
+    "weightKg": (20.0, 400.0),
+}
+
+
 def _profile_fields_from_facts(
     facts: list[dict[str, str]],
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -1309,7 +1327,9 @@ def _profile_fields_from_facts(
 
     Only values that parse cleanly are moved. A fact whose value cannot be read
     as the thing its key claims stays a fact, because a half-parsed measurement
-    written to a column is worse than a string somebody can still read.
+    written to a column is worse than a string somebody can still read. A value
+    that parses but cannot describe a person is the same problem wearing a
+    number, and takes the same exit.
     """
     profile: dict[str, Any] = {}
     remaining: list[dict[str, str]] = []
@@ -1319,9 +1339,16 @@ def _profile_fields_from_facts(
         if field in ("heightCm", "weightKg", "age"):
             match = re.search(r"\d+(?:\.\d+)?", value)
             number = float(match.group()) if match else None
-            if number and number > 0:
+            low, high = _PROFILE_RANGES.get(field, (float(_MIN_AGE), float(_MAX_AGE)))
+            if number is not None and low <= number <= high:
                 profile[field] = int(number) if field == "age" else number
                 continue
+            if number is not None:
+                LOGGER.info(
+                    "ted_profile_value_out_of_range field=%s value=%s",
+                    field,
+                    number,
+                )
         elif field == "sex":
             lowered = value.lower()
             if lowered.startswith("m") or lowered.startswith("f"):

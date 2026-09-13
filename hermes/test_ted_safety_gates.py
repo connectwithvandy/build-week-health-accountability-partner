@@ -8695,6 +8695,53 @@ class MeasurementsGoToTheColumnNotTheNotepadTest(unittest.TestCase):
         self.assertEqual(profile, {})
         self.assertEqual(rest, facts)
 
+    def test_a_measurement_no_person_could_have_stays_a_fact(self) -> None:
+        """One user's height was stored as 4cm on 4 Sep 2026 and stayed there
+        nine days, because `> 0` was the whole test. A number that parses but
+        cannot describe a body takes the same exit as one that does not parse:
+        it stays a readable fact and the column keeps its last good value."""
+        for key, value in (
+            ("height_cm", "4"),
+            ("height_cm", "300"),
+            ("weight_kg", "3"),
+            ("weight_kg", "900"),
+            ("age", "4"),
+            ("age", "150"),
+        ):
+            with self.subTest(key=key, value=value):
+                facts = [{"key": key, "value": value}]
+                profile, rest = gates._profile_fields_from_facts(facts)
+                self.assertEqual(profile, {})
+                self.assertEqual(rest, facts)
+
+    def test_unusual_but_possible_measurements_are_still_accepted(self) -> None:
+        """The range catches what cannot be a person, it does not argue with
+        someone short, tall, light or heavy."""
+        for key, value, expected in (
+            ("height_cm", "91", {"heightCm": 91.0}),
+            ("height_cm", "249", {"heightCm": 249.0}),
+            ("weight_kg", "21", {"weightKg": 21.0}),
+            ("weight_kg", "399", {"weightKg": 399.0}),
+            ("age", "17", {"age": 17}),
+            ("age", "99", {"age": 99}),
+        ):
+            with self.subTest(key=key, value=value):
+                profile, rest = gates._profile_fields_from_facts(
+                    [{"key": key, "value": value}]
+                )
+                self.assertEqual(profile, expected)
+                self.assertEqual(rest, [])
+
+    def test_a_rejected_measurement_does_not_take_its_neighbours_with_it(self) -> None:
+        facts = [
+            {"key": "height_cm", "value": "4"},
+            {"key": "weight_kg", "value": "71"},
+            {"key": "age", "value": "38"},
+        ]
+        profile, rest = gates._profile_fields_from_facts(facts)
+        self.assertEqual(profile, {"weightKg": 71.0, "age": 38})
+        self.assertEqual(rest, [{"key": "height_cm", "value": "4"}])
+
     def test_ordinary_facts_are_left_alone(self) -> None:
         facts = [
             {"key": "prefers_morning_workouts", "value": "yes"},
