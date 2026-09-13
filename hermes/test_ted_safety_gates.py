@@ -6377,6 +6377,84 @@ class LaterMeansLaterTest(unittest.TestCase):
         self.assertIsNone(gates._paused_until(key, date(2026, 9, 15)))
         self.assertIsNone(gates._paused_until(key, date(2026, 9, 20)))
 
+    def test_the_word_the_break_offer_asks_for_is_heard(self) -> None:
+        """BREAK_OFFER says "say pause and i'll stop". Nothing read it.
+
+        Ram answered "Pause" on 11 Sep and was told his tone preference was
+        locked in, then nudged again the next evening. Khusha answered "Pause"
+        on 12 Sep and was asked whether she meant it. Neither was paused.
+        """
+        self.assertIn("say pause", gates.BREAK_OFFER.lower())
+        for text in (
+            "Pause", "pause", "PAUSE", "pause.", "Stop", "stop", "snooze", "mute",
+            "pause the nudges", "stop the reminders", "stop pinging me",
+            "nudges band karo", "please stop the notifications",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(gates._asks_to_pause(text))
+                self.assertTrue(gates._asks_to_defer(text))
+
+    def test_stopping_a_food_is_not_stopping_ted(self) -> None:
+        """"stop" is a word people use about eating. Pausing a user because
+        they gave up sugar would be the gate inventing a request."""
+        for text in (
+            "i stopped eating sugar",
+            "stopped rice at night",
+            "I stopped my supplements last week",
+            "i had to stop midway through my run",
+            "bus stop ke paas se samosa liya",
+            "non stop working today",
+            "pause karke soch raha tha ki kya khau",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(gates._asks_to_pause(text))
+
+    def test_a_duration_is_understood_not_just_a_date(self) -> None:
+        """Asking when they want Ted back and then not understanding "2 weeks"
+        is the same bug wearing a question."""
+        today = date(2026, 9, 13)
+        for text, expected in (
+            ("2 weeks", date(2026, 9, 27)),
+            ("10 days", date(2026, 9, 23)),
+            ("a month", date(2026, 10, 13)),
+            ("couple of weeks", date(2026, 9, 27)),
+            ("ek mahina", date(2026, 10, 13)),
+            ("do hafte", date(2026, 9, 27)),
+            ("teen din", date(2026, 9, 16)),
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(gates._names_a_time(text, today))
+                self.assertEqual(gates._defer_until_date(text, today), expected)
+
+    def test_hindi_numbers_do_not_bind_to_english_words(self) -> None:
+        """"do" is a verb far more often than it is two."""
+        today = date(2026, 9, 13)
+        for text in ("do this week", "do i need to log dinner", "what do i eat"):
+            with self.subTest(text=text):
+                self.assertFalse(gates._names_a_time(text, today))
+
+    def test_agreement_is_not_a_date(self) -> None:
+        """"ok" must not quietly become the seven day default as if chosen."""
+        today = date(2026, 9, 13)
+        for text in ("ok", "sure", "haan", "thanks", "idk", "whatever", ""):
+            with self.subTest(text=text):
+                self.assertFalse(gates._names_a_time(text, today))
+
+    def test_a_named_date_still_gets_no_question(self) -> None:
+        """The Jaya rule survives: if they said when, there is nothing to ask."""
+        today = date(2026, 9, 13)
+        self.assertTrue(gates._names_a_time("lets talk next week", today))
+        self.assertNotIn("?", gates._deferral_reply(date(2026, 9, 20)))
+
+    def test_the_open_ended_reply_stops_first_and_asks_second(self) -> None:
+        """Khusha was asked instead of being paused, so when she did not reply
+        nothing was recorded. The stop must already be true as they read it."""
+        reply = gates._open_ended_pause_reply(date(2026, 9, 20))
+        self.assertIn("off from right now", reply)
+        self.assertIn("?", reply)
+        self.assertIn("20th Sep", reply)
+        self.assertNotIn("breakup.", reply.split("this is a break")[0])
+
 
 class APromiseWithATimeInItTest(unittest.TestCase):
     """A confirmation carrying a time is a scheduling claim.

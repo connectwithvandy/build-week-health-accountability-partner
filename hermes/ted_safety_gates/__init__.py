@@ -400,10 +400,49 @@ _DEFER_LATER = re.compile(
 )
 
 
+# The word BREAK_OFFER puts in their mouth: "say pause and i'll stop." Nothing
+# read it. On 11 Sep Ram answered "Pause" and was told his tone preference was
+# locked in; he was nudged again the next evening. On 12 Sep Khusha answered
+# "Pause" two minutes after a nudge and was asked whether she meant it, which
+# she never replied to, so nothing was recorded and her 19:00 job stayed armed.
+#
+# _asks_to_defer could not see either, because it wants a verb AND a "later"
+# word, and a person doing exactly as they were told supplies neither. Asking
+# someone to say a word and then not listening for it is worse than never
+# offering.
+_PAUSE_BARE = re.compile(r"^\W*(?:pause|stop|mute|snooze)\W*$", re.IGNORECASE)
+
+# An imperative aimed at the nudges, in either order: "pause the reminders",
+# "stop pinging me", "nudges band karo".
+_PAUSE_TARGET = r"nudg\w*|remind\w*|ping\w*|messag\w*|check[\s-]?ins?|notification\w*"
+_PAUSE_ACTION = r"pause|stop|mute|snooze|band\s*kar\w*|bandh?\s*kar\w*|rok\w*"
+_PAUSE_PHRASE = re.compile(
+    rf"\b(?:{_PAUSE_ACTION})\b[^.!?\n]{{0,24}}?\b(?:{_PAUSE_TARGET})\b"
+    rf"|\b(?:{_PAUSE_TARGET})\b[^.!?\n]{{0,24}}?\b(?:{_PAUSE_ACTION})\b",
+    re.IGNORECASE,
+)
+
+
+def _asks_to_pause(text: str) -> bool:
+    """A direct request to stop the nudges, with no date attached.
+
+    Deliberately narrow. "stop" is a word people use about food — "i stopped
+    eating sugar" is a log, not a request — so the bare form has to be the
+    whole message, and the phrase form has to name the thing being stopped.
+    Past tense never matches, because \\bstop\\b does not catch "stopped".
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    return bool(_PAUSE_BARE.match(text) or _PAUSE_PHRASE.search(text))
+
+
 def _asks_to_defer(text: str) -> bool:
     """Whether they are asking to pick this up another time."""
     text = text or ""
     if re.search(r"\bnot\s+(?:right\s+)?now\b", text, re.IGNORECASE):
+        return True
+    if _asks_to_pause(text):
         return True
     return bool(_DEFER_VERB.search(text) and _DEFER_LATER.search(text))
 
@@ -418,12 +457,30 @@ _DEFAULT_PAUSE_DAYS = 7
 
 
 def _defer_until_date(text: str, today: date | None = None) -> date:
-    """The day they meant, as a real date.
+    """The day they meant, as a real date, or the default when they named none.
 
     Stored as a date and not as the words they used, because a pause held as
     "15th sept" never ends — nothing can compare it to today, so the person is
     silently dropped instead of paused.
     """
+    named = _parse_time_reference(text, today)
+    if named is not None:
+        return named
+    return (today or datetime.now().date()) + timedelta(days=_DEFAULT_PAUSE_DAYS)
+
+
+def _names_a_time(text: str, today: date | None = None) -> bool:
+    """Whether they actually named a when, rather than just said something.
+
+    The difference matters twice. It decides whether an open "pause" gets the
+    follow-up question, and it stops "ok" or "sure" being read as an answer to
+    that question and silently becoming the seven day default.
+    """
+    return _parse_time_reference(text, today) is not None
+
+
+def _parse_time_reference(text: str, today: date | None = None) -> date | None:
+    """The day they named, or None when they named none."""
     today = today or datetime.now().date()
     lowered = (text or "").lower()
 
@@ -469,7 +526,41 @@ def _defer_until_date(text: str, today: date | None = None) -> date:
         return today + timedelta(days=7)
     if "next month" in lowered:
         return today + timedelta(days=30)
-    return today + timedelta(days=_DEFAULT_PAUSE_DAYS)
+
+    # "2 weeks", "10 days", "a month". Asking someone when they want Ted back
+    # and then not understanding "2 weeks" is the Khusha failure again: a
+    # question whose answer lands nowhere. Read after the named dates above,
+    # so "the 15th" still wins over a stray number.
+    # Hindi numerals only ever bind to Hindi units. "do hafte" is two weeks;
+    # "do this week" is not, and an English unit after "do" must stay a verb.
+    _HINDI_COUNTS = {"ek": 1, "do": 2, "teen": 3, "char": 4, "paanch": 5, "panch": 5}
+    span = re.search(
+        rf"\b({'|'.join(_HINDI_COUNTS)})\s*(din|hafte|hafta|mahine|mahina)\b", lowered
+    )
+    if span:
+        return today + timedelta(
+            days=min(
+                _HINDI_COUNTS[span.group(1)]
+                * (1 if span.group(2).startswith("din") else 7 if span.group(2).startswith("haft") else 30),
+                365,
+            )
+        )
+
+    span = re.search(
+        r"\b(?:(\d{1,3})|a|an|one|couple\s+of|few)\s*"
+        r"(day|days|week|weeks|month|months|din|hafte|hafta|mahine|mahina)\b",
+        lowered,
+    )
+    if span:
+        word = span.group(1)
+        count = int(word) if word else (2 if "couple" in span.group(0) else 3 if "few" in span.group(0) else 1)
+        unit = span.group(2)
+        per = 1 if unit.startswith(("day", "din")) else 7 if unit.startswith(("week", "haft")) else 30
+        days = min(count * per, 365)
+        if days >= 1:
+            return today + timedelta(days=days)
+
+    return None
 
 
 def _paused_until(user_key: str, today: date | None = None) -> str | None:
@@ -511,10 +602,43 @@ def _deferral_reply(until: date) -> str:
     actually for" and then "koi na, we'll sort the details on the 15th 🙌
     what'd you last eat today?" Acknowledging and then asking anyway is not
     acknowledging.
+
+    That rule is about questions that carry on the coaching. A question about
+    the break itself is not one of those, and it gets its own reply below.
     """
     return (
         f"{_spoken_date(until)}, locked 📌 i'll leave you alone till then. "
         "message me any time before that if you need anything."
+    )
+
+
+def _open_ended_pause_reply(until: date) -> str:
+    """They said "pause" and named no date. Stop first, then ask when back.
+
+    The order is the safety property. Khusha said "pause" on 12 Sep and was
+    asked "by 'pause', you want reminders paused right now?" instead of being
+    paused. She never answered, nothing was recorded, and her 19:00 job stayed
+    armed. A pause that waits on a reply is not a pause.
+
+    So the stop is already in effect by the time this is read, and the default
+    runs out on its own. The question only moves the date, and an answer that
+    never comes costs nothing.
+
+    It asks in the register the offer was made in: a break, not a breakup.
+    """
+    return (
+        "done, nudges off from right now 🤝 this is a break, not a breakup.\n\n"
+        "roughly when do you want me back in your life? "
+        f"say a week, a month, a date, whatever. if you'd rather not decide, "
+        f"i'll come knocking around {_spoken_date(until)}."
+    )
+
+
+def _pause_updated_reply(until: date) -> str:
+    """Their answer to the question above, taken as given."""
+    return (
+        f"{_spoken_date(until)} it is 📌 see you then. "
+        "shout before that if you want me back early."
     )
 
 
@@ -4669,9 +4793,34 @@ def transform_response(
     # Somebody asking to pick this up another time gets that, and nothing
     # else. Below the disclosure because consent is owed either way; above
     # every question below, because the questions are the problem.
+    # Their answer to "when do you want me back". Above _asks_to_defer because
+    # "2 weeks" is an answer, not a fresh request, and below nothing that would
+    # swallow it: an answer to a question Ted asked has to land somewhere, or
+    # this is the Khusha bug with an extra step.
+    if user_key and _onboarding(user_key).get("pause_return_asked"):
+        if _paused_until(user_key) and _names_a_time(user_text):
+            until = _defer_until_date(user_text)
+            _mark_paused(user_key, until)
+            _update_onboarding(user_key, pause_return_asked=None)
+            LOGGER.info(
+                "ted_pause_return_set user_key=%s until=%s", user_key, until
+            )
+            return _pause_updated_reply(until)
+        # Anything else means they are talking again, which is its own answer.
+        # The pause stays until they say otherwise; only the question closes.
+        _update_onboarding(user_key, pause_return_asked=None)
+
     if user_key and _asks_to_defer(user_text):
         until = _defer_until_date(user_text)
         _mark_paused(user_key, until)
+        # A named date needs no question. An open "pause" does, and the stop is
+        # already recorded on the line above either way.
+        if _asks_to_pause(user_text) and not _names_a_time(user_text):
+            _update_onboarding(user_key, pause_return_asked=True)
+            LOGGER.info(
+                "ted_pause_return_asked user_key=%s default=%s", user_key, until
+            )
+            return _open_ended_pause_reply(until)
         return _deferral_reply(until)
     # The name question, when Ted has already asked it or already has the
     # answer. It sits above the early return rather than beside the other
