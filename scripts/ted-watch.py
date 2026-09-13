@@ -57,12 +57,17 @@ import json
 import os
 import plistlib
 import shutil
+import smtplib
+import socket
+import ssl
 import subprocess
 import sys
 import time
 import urllib.parse
 import urllib.request
+from email.message import EmailMessage
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 GUARD = REPO / "scripts" / "ted-gate-guard.py"
@@ -166,35 +171,105 @@ def check_link() -> tuple[bool, str, bool]:
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 PUSHOVER_KEYS = ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")
 
+EMAIL_KEYS = ("TED_ALERT_EMAIL_TO", "TED_ALERT_SMTP_USER", "TED_ALERT_SMTP_PASSWORD")
+EMAIL_DEFAULT_HOST = "smtp.gmail.com"
+EMAIL_DEFAULT_PORT = 465
+
+
+def setting(name: str) -> str:
+    """One config value, from the environment or ~/.hermes/.env, else "".
+
+    Both are read because the watcher runs under launchd, which inherits
+    almost nothing, while a person testing it by hand has a shell full of
+    exports. A value that works when you try it and vanishes at 3am is the
+    kind of thing this whole file exists to stop.
+    """
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        for line in HERMES_ENV.read_text().splitlines():
+            key, _, raw = line.partition("=")
+            if key.strip() == name:
+                cleaned = raw.strip().strip("'\"")
+                if cleaned:
+                    return cleaned
+    except OSError:
+        pass
+    return ""
+
 
 def pushover_credentials() -> tuple[str, str] | None:
-    """The user key and app token, from the environment or ~/.hermes/.env.
+    """The user key and app token, or None when either is missing.
 
-    Returns None when either is missing, and the caller treats that as "this
-    channel is not set up" rather than as an error. An unconfigured phone
-    alert must never stop the desk alert from going out, because a half
+    None means "this channel is not set up", never an error. An unconfigured
+    remote alert must not stop the desk alert going out, because a half
     configured watcher that refuses to run is worse than the one channel it
     already had.
     """
-    found: dict[str, str] = {}
-    for name in PUSHOVER_KEYS:
-        value = os.environ.get(name, "").strip()
-        if value:
-            found[name] = value
-    if len(found) < len(PUSHOVER_KEYS):
-        try:
-            for line in HERMES_ENV.read_text().splitlines():
-                name, _, value = line.partition("=")
-                name = name.strip()
-                if name in PUSHOVER_KEYS and name not in found:
-                    cleaned = value.strip().strip("'\"")
-                    if cleaned:
-                        found[name] = cleaned
-        except OSError:
-            pass
-    if len(found) < len(PUSHOVER_KEYS):
+    found = {name: setting(name) for name in PUSHOVER_KEYS}
+    if not all(found.values()):
         return None
     return found["PUSHOVER_USER_KEY"], found["PUSHOVER_API_TOKEN"]
+
+
+def email_config() -> dict[str, Any] | None:
+    """Where to mail an alert, or None when it is not set up.
+
+    Gmail needs an app password rather than the account password, which means
+    2-Step Verification has to be on first. That is a real step and the
+    --test-alert output says so, because a silently refused login here looks
+    identical to nothing being wrong.
+    """
+    found = {name: setting(name) for name in EMAIL_KEYS}
+    if not all(found.values()):
+        return None
+    port = setting("TED_ALERT_SMTP_PORT")
+    return {
+        "to": found["TED_ALERT_EMAIL_TO"],
+        "user": found["TED_ALERT_SMTP_USER"],
+        "password": found["TED_ALERT_SMTP_PASSWORD"],
+        "sender": setting("TED_ALERT_EMAIL_FROM") or found["TED_ALERT_SMTP_USER"],
+        "host": setting("TED_ALERT_SMTP_HOST") or EMAIL_DEFAULT_HOST,
+        "port": int(port) if port.isdigit() else EMAIL_DEFAULT_PORT,
+    }
+
+
+def send_email(title: str, body: str, urgent: bool, dry_run: bool) -> str:
+    """Mail the alert somewhere that is not this laptop and not WhatsApp.
+
+    Free, which is why it is here: the channel that gets used is the one
+    nobody has to pay for on the day they set it up.
+
+    Subject carries the whole headline, because a phone lock screen shows the
+    subject and little else, and an alert you have to open to understand is an
+    alert you will open later.
+    """
+    config = email_config()
+    if config is None:
+        return "not configured"
+    if dry_run:
+        return f"would email {config['to']}"
+    message = EmailMessage()
+    message["From"] = config["sender"]
+    message["To"] = config["to"]
+    message["Subject"] = f"{'[Ted] ' if urgent else '[Ted ok] '}{title}"
+    message.set_content(
+        f"{body}\n\n"
+        f"Sent by ted-watch.py on {socket.gethostname()} at "
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
+        "This is Ted's watchdog, not Ted. It never messages users.\n"
+    )
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(config["host"], config["port"], context=context, timeout=20) as server:
+            server.login(config["user"], config["password"])
+            server.send_message(message)
+        return "sent"
+    except smtplib.SMTPAuthenticationError:
+        return "refused the login (app password wrong, or 2-Step not on)"
+    except Exception as exc:  # noqa: BLE001 - an alert channel may never crash the watcher
+        return f"failed ({exc})"
 
 
 def push(title: str, body: str, urgent: bool, dry_run: bool) -> str:
@@ -237,17 +312,33 @@ def push(title: str, body: str, urgent: bool, dry_run: bool) -> str:
         return f"failed ({exc})"
 
 
+REMOTE_CHANNELS = (("email", send_email), ("pushover", push))
+
+
+def remote_alerts(title: str, body: str, urgent: bool, dry_run: bool) -> list[tuple[str, str]]:
+    """Every configured channel that is not this screen, and what each did.
+
+    All of them fire, rather than the first that works. They are cheap, they
+    fail independently, and the whole point of this file is that one road
+    being out is not a reason to be uninformed. Channels that are not set up
+    say so and cost nothing.
+    """
+    return [(name, send(title, body, urgent, dry_run)) for name, send in REMOTE_CHANNELS]
+
+
 def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
     """The alert that does not depend on the thing being watched.
 
-    Two roads, on purpose. osascript reaches the screen without a network, a
-    token or a linked device, which is what makes it worth keeping; Pushover
-    reaches her when she is not at the screen, which is the half that was
-    missing all of this week. Neither is WhatsApp.
+    Two kinds of road, on purpose. osascript reaches the screen without a
+    network, a token or a linked device, which is what makes it worth keeping
+    even though it is useless when she is out; the remote channels reach her
+    when she is not at the screen, which is the half that was missing all of
+    this week. None of them is WhatsApp.
     """
     if dry_run:
         print(f"--- would notify --- {title}: {body}")
-        print(f"--- phone --- {push(title, body, urgent, dry_run=True)}")
+        for name, result in remote_alerts(title, body, urgent, dry_run=True):
+            print(f"--- {name} --- {result}")
         return
     # A notification body is one line on screen, so the newlines that read well
     # in WhatsApp are flattened here rather than silently truncated.
@@ -260,9 +351,9 @@ def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"notify failed: {exc}", file=sys.stderr)
-    result = push(title, body, urgent, dry_run=False)
-    if result != "sent":
-        print(f"phone alert: {result}", file=sys.stderr)
+    for name, result in remote_alerts(title, body, urgent, dry_run=False):
+        if result != "sent":
+            print(f"{name} alert: {result}", file=sys.stderr)
 
 
 # NO WHATSAPP COPY. An earlier version of this file sent the alert to Vandy's
@@ -305,38 +396,55 @@ def test_alert() -> int:
     saved state: it sends one notification down both roads and says what each
     one did.
     """
-    configured = pushover_credentials() is not None
-    print(f"phone channel: {'configured' if configured else 'NOT configured'}")
-    if not configured:
+    ready = {
+        "email": email_config() is not None,
+        "pushover": pushover_credentials() is not None,
+    }
+    for name, ok in ready.items():
+        print(f"{name:9s} {'configured' if ok else 'not configured'}")
+
+    if not any(ready.values()):
         print()
-        print("  Set these two, then run this again:")
-        for name in PUSHOVER_KEYS:
+        print("  No channel can reach you away from the laptop yet.")
+        print()
+        print("  For email, set these three:")
+        for name in EMAIL_KEYS:
             print(f"    {name}")
         print(f"  Either as environment variables, or as lines in {HERMES_ENV}.")
-        print("  Both come from pushover.net: the user key is on the dashboard")
-        print("  after you sign in, the token is from Create an Application.")
         print()
-        print("  Until they are set the desk notification still fires, so")
+        print("  With Gmail, TED_ALERT_SMTP_PASSWORD is an app password, not")
+        print("  your normal one. Turn on 2-Step Verification first, then make")
+        print("  one at myaccount.google.com/apppasswords. The normal password")
+        print("  will simply be refused, which looks like nothing happening.")
+        print()
+        print("  Optional: TED_ALERT_EMAIL_FROM, TED_ALERT_SMTP_HOST,")
+        print(f"  TED_ALERT_SMTP_PORT (default {EMAIL_DEFAULT_HOST}:{EMAIL_DEFAULT_PORT}).")
+        print()
+        print("  Until one is set the desk notification still fires, so")
         print("  nothing is broken while this is pending.")
         return 1
 
-    title = "🔔 Ted alert test"
+    title = "Ted alert test"
     body = (
-        "If you are reading this on your phone, the alarm can now reach you "
-        "away from the laptop. Nothing is wrong."
+        "If you are reading this away from the laptop, the alarm can now "
+        "reach you. Nothing is wrong, this is a test you asked for."
     )
-    result = push(title, body, urgent=False, dry_run=False)
-    print(f"phone: {result}")
-    if result != "sent":
-        print()
-        print("  Pushover refused it. Check the two keys are the right way")
-        print("  round: the user key is yours, the token belongs to the")
-        print("  application you created.")
-        return 1
+    results = remote_alerts(title, body, urgent=False, dry_run=False)
     print()
-    print("  Sent. Your phone should buzz within a few seconds.")
-    print("  Sent at normal priority, so a real failure will be louder.")
-    return 0
+    worked = False
+    for name, result in results:
+        if result == "not configured":
+            continue
+        print(f"  {name}: {result}")
+        worked = worked or result == "sent"
+
+    print()
+    if worked:
+        print("  Sent. Check the device you expect to be alerted on.")
+        print("  This went out as a recovery, so a real failure will be louder.")
+        return 0
+    print("  Nothing got through. The line above says why.")
+    return 1
 
 
 def main() -> int:
