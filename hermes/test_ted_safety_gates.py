@@ -3777,6 +3777,34 @@ class MinorFlagDurabilityTest(unittest.TestCase):
         self.assertIsNone(gates.calorie_gate([], "check my meal", self.LEAK))
 
 
+class PhotoMealHonestyTest(unittest.TestCase):
+    """The two rules that came out of the 15 Sep grilled sandwich.
+
+    Vandy sent a photo. `grilled vegetable sandwich` is not one of the 64 foods
+    in the table, so the model priced it as bread, butter, potato, capsicum and
+    cheese to reach 360 kcal, then told her it had counted "a regular veg
+    grilled sandwich with potato filling". She had never said potato. The
+    number was defensible and the sentence was not.
+
+    The older rule keyed `pendingClarification` on whether the dish could be
+    named, which is why nothing held back Vishnu's banana leaf meal on 5 Sep:
+    the dish was obvious, the rice portion was a guess worth 200 kcal, it went
+    in as confirmed at 746 kcal and he never replied.
+    """
+
+    def test_state_description_keys_on_the_size_of_the_unknown(self) -> None:
+        state = gates.TED_LOG_ENTRY_SCHEMA["parameters"]["properties"]["state"]
+        self.assertEqual(state["enum"], ["confirmed", "pendingClarification"])
+        description = state["description"]
+        self.assertIn("100 kcal", description)
+        self.assertIn("not whether you can name the dish", description)
+
+    def test_soul_forbids_naming_what_the_photo_does_not_show(self) -> None:
+        soul = (Path(__file__).resolve().parent / "SOUL.md").read_text()
+        self.assertIn("does not license naming what I cannot", soul)
+        self.assertIn("pendingClarification", soul)
+
+
 class TedIsMaleTest(unittest.TestCase):
     """Line 12 called Hinglish "her native tongue".
 

@@ -6459,8 +6459,13 @@ TED_LOG_ENTRY_SCHEMA = {
                 "type": "string",
                 "enum": ["confirmed", "pendingClarification"],
                 "description": (
-                    "pendingClarification when you are not sure yet and are "
-                    "about to ask. It is kept out of the day's totals."
+                    "pendingClarification when the thing you are unsure about "
+                    "could move this entry by more than roughly 100 kcal, such "
+                    "as a rice or oil portion you cannot see. It is kept out of "
+                    "the day's totals until they answer. Use confirmed when the "
+                    "unknown is small, such as the filling of a sandwich, and "
+                    "ask in the same message anyway. Judge the size of the "
+                    "unknown, not whether you can name the dish."
                 ),
             },
             "corrects_dedupe_key": {"type": "string"},
