@@ -26,6 +26,9 @@ def watch(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "HERMES_ENV", tmp_path / ".env")
+    # Real backoff belongs in production, not in a test run. Attempts are left
+    # alone so the retry itself is still exercised.
+    monkeypatch.setattr(module, "EMAIL_RETRY_SECONDS", 0)
     for name in (*module.EMAIL_KEYS, *module.PUSHOVER_KEYS):
         monkeypatch.delenv(name, raising=False)
     for name in (
@@ -163,3 +166,254 @@ class TestRemoteAlerts:
         results = dict(watch.remote_alerts("t", "b", urgent=True, dry_run=False))
         assert results["email"].startswith("failed (")
         assert results["pushover"] == "not configured"
+
+
+class TestCheckModel:
+    """The failure that hid for ten days.
+
+    The Anthropic balance ran dry on 5 Sep 2026. Every call since failed and
+    fell back to OpenRouter, so users kept getting answers and every existing
+    check stayed green. The fallback working is what made it invisible, so this
+    reads the failure and not the outcome.
+    """
+
+    def _log(self, watch, tmp_path, monkeypatch, lines):
+        log = tmp_path / "agent.log"
+        log.write_text("\n".join(lines) + "\n")
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+        return log
+
+    def _stamp(self, watch, hours_ago):
+        from datetime import timedelta
+
+        return (watch.datetime.now() - timedelta(hours=hours_ago)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+
+    def test_missing_log_is_not_a_failure(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "AGENT_LOG", tmp_path / "nope.log")
+        ok, detail = watch.check_model()
+        assert ok is True
+        assert "no agent log" in detail
+
+    def test_quiet_log_reads_healthy(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, [
+            f"{self._stamp(watch, 1)},001 INFO agent: API call #1 model=claude-sonnet-5",
+        ])
+        ok, _ = watch.check_model()
+        assert ok is True
+
+    def test_empty_balance_is_caught(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, [
+            f"{self._stamp(watch, 2)},001 INFO agent: Error code: 400 - "
+            "{'message': 'Your credit balance is too low to access the Anthropic API.'}",
+        ])
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert "credit balance is empty" in detail
+
+    def test_a_dropped_connection_is_left_alone(self, watch, tmp_path, monkeypatch):
+        """The fallback exists for these. Waking someone for one is noise."""
+        self._log(watch, tmp_path, monkeypatch, [
+            f"{self._stamp(watch, 1)},001 WARNING agent: API call failed "
+            "error_type=APIConnectionError provider=anthropic",
+        ])
+        ok, _ = watch.check_model()
+        assert ok is True
+
+    def test_an_old_failure_that_stopped_does_not_keep_alerting(
+        self, watch, tmp_path, monkeypatch
+    ):
+        self._log(watch, tmp_path, monkeypatch, [
+            f"{self._stamp(watch, watch.MODEL_WINDOW_HOURS + 6)},001 INFO agent: "
+            "Your credit balance is too low to access the Anthropic API.",
+        ])
+        ok, _ = watch.check_model()
+        assert ok is True
+
+    def test_a_rejected_key_is_caught_too(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, [
+            f"{self._stamp(watch, 1)},001 ERROR agent: authentication_error",
+        ])
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert "rejected" in detail
+
+
+class TestCheckDropped:
+    """Patch 12 drops a reply that missed its moment. Nothing noticed.
+
+    GT sent "All" on 11 Sep 2026 and the reply died with the link. Ankiita
+    asked at 00:29 on 15 Sep why replies were slow, the agent hung, and the
+    apology could not send either. Both kept getting scheduled nudges while
+    neither got an answer.
+    """
+
+    def _ledger(self, watch, tmp_path, monkeypatch, rows):
+        import sqlite3
+
+        db = tmp_path / "state.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE delivery_obligations ("
+            "obligation_id TEXT PRIMARY KEY, chat_id TEXT, state TEXT, created_at REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO delivery_obligations VALUES (?,?,?,?)",
+            [(str(i), c, s, w) for i, (c, s, w) in enumerate(rows)],
+        )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        return db
+
+    def test_no_ledger_is_not_a_failure(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "STATE_DB", tmp_path / "nope.db")
+        ok, detail = watch.check_dropped()
+        assert ok is True
+        assert "no delivery ledger" in detail
+
+    def test_everything_delivered_reads_clear(self, watch, tmp_path, monkeypatch):
+        import time
+
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("ankiita", "delivered", time.time() - 3600),
+        ])
+        ok, detail = watch.check_dropped()
+        assert ok is True
+        assert "nobody is waiting" in detail
+
+    def test_a_dropped_reply_is_reported(self, watch, tmp_path, monkeypatch):
+        import time
+
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("gt", "abandoned", time.time() - 4 * 24 * 3600),
+        ])
+        ok, detail = watch.check_dropped()
+        assert ok is False
+        assert "1 person" in detail
+        assert "4 days" in detail
+
+    def test_answering_them_later_closes_it(self, watch, tmp_path, monkeypatch):
+        """Shreya was dropped on 14 Sep at 14:22 and answered that evening."""
+        import time
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("shreya", "abandoned", now - 8 * 3600),
+            ("shreya", "delivered", now - 2 * 3600),
+        ])
+        ok, detail = watch.check_dropped()
+        assert ok is True
+        assert "nobody is waiting" in detail
+
+    def test_an_earlier_delivery_does_not_close_it(self, watch, tmp_path, monkeypatch):
+        """Only a message sent *after* the drop counts. Ankiita's last good
+        reply was 14 Sep 09:56, hours before the 15 Sep 01:02 drop."""
+        import time
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("ankiita", "delivered", now - 30 * 3600),
+            ("ankiita", "abandoned", now - 11 * 3600),
+        ])
+        ok, detail = watch.check_dropped()
+        assert ok is False
+        assert "11h" in detail
+
+    def test_two_people_waiting_reads_as_people(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("gt", "abandoned", now - 4 * 24 * 3600),
+            ("ankiita", "abandoned", now - 11 * 3600),
+        ])
+        ok, detail = watch.check_dropped()
+        assert ok is False
+        assert "2 people" in detail
+
+    def test_an_ancient_drop_falls_out_of_the_window(self, watch, tmp_path, monkeypatch):
+        import time
+
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("someone", "abandoned", time.time() - 30 * 24 * 3600),
+        ])
+        ok, _ = watch.check_dropped()
+        assert ok is True
+
+
+class TestEmailRetry:
+    """A blip used to lose the alert outright.
+
+    At 11:52 on 15 Sep 2026 the watcher caught the WhatsApp link going down,
+    tried to mail it, and got "Connection unexpectedly closed: The read
+    operation timed out". The same credentials worked by hand an hour later,
+    so a real outage went unreported because of one bad moment on the wire.
+    """
+
+    def _configured(self, watch):
+        _write_env(
+            watch,
+            TED_ALERT_EMAIL_TO="her@example.com",
+            TED_ALERT_SMTP_USER="ted@example.com",
+            TED_ALERT_SMTP_PASSWORD="app-password",
+        )
+
+    def test_a_blip_is_retried_and_can_still_get_through(self, watch, monkeypatch):
+        self._configured(watch)
+        calls = {"n": 0}
+
+        class Server:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def login(self, *a):
+                pass
+
+            def send_message(self, *a):
+                pass
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise OSError("read operation timed out")
+            return Server()
+
+        monkeypatch.setattr(watch.smtplib, "SMTP_SSL", flaky)
+        assert watch.send_email("t", "b", urgent=True, dry_run=False) == "sent"
+        assert calls["n"] == 3
+
+    def test_a_wrong_password_is_never_retried(self, watch, monkeypatch):
+        """It will be refused again. Three goes only delays the report."""
+        self._configured(watch)
+        calls = {"n": 0}
+
+        def refuse(*args, **kwargs):
+            calls["n"] += 1
+            raise watch.smtplib.SMTPAuthenticationError(535, b"nope")
+
+        monkeypatch.setattr(watch.smtplib, "SMTP_SSL", refuse)
+        result = watch.send_email("t", "b", urgent=True, dry_run=False)
+        assert "refused the login" in result
+        assert calls["n"] == 1
+
+    def test_notify_says_whether_anything_actually_reached_her(
+        self, watch, monkeypatch
+    ):
+        """The desk notification does not count. On 8 Sep 2026 it popped up to
+        an empty room for seventeen hours."""
+        monkeypatch.setattr(watch.subprocess, "run", lambda *a, **k: None)
+
+        monkeypatch.setattr(
+            watch, "remote_alerts", lambda *a, **k: [("email", "failed (down)")]
+        )
+        assert watch.notify("t", "b", dry_run=False) is False
+
+        monkeypatch.setattr(
+            watch, "remote_alerts", lambda *a, **k: [("email", "sent")]
+        )
+        assert watch.notify("t", "b", dry_run=False) is True

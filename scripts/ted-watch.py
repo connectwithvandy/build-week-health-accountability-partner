@@ -56,8 +56,10 @@ import argparse
 import json
 import os
 import plistlib
+import re
 import shutil
 import smtplib
+import sqlite3
 import socket
 import ssl
 import subprocess
@@ -65,6 +67,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -80,6 +83,7 @@ HERMES_ENV = HERMES / ".env"
 STATE = HERMES / "state" / "ted-watch-state.json"
 GATEWAY_STATE = HERMES / "gateway_state.json"
 BRIDGE_LOG = HERMES / "whatsapp" / "bridge.log"
+AGENT_LOG = HERMES / "logs" / "agent.log"
 
 # The exact line the bridge prints when the saved session is dead. Matched as a
 # substring because the bridge decorates it with an emoji.
@@ -168,12 +172,140 @@ def check_link() -> tuple[bool, str, bool]:
     return False, f"WhatsApp is {link!r}", False
 
 
+# Errors that never heal on their own. A connection reset is worth a retry and
+# not a 3am notification; a bill is not going to pay itself, and the retry
+# quietly succeeds against the fallback so nothing downstream ever looks wrong.
+MODEL_DEAD_ENDS = (
+    ("credit balance is too low", "the Anthropic credit balance is empty"),
+    ("insufficient_quota", "the provider quota is used up"),
+    ("invalid_api_key", "the API key is not valid"),
+    ("authentication_error", "the API key was rejected"),
+    ("permission_error", "the API key is not allowed to use that model"),
+)
+MODEL_WINDOW_HOURS = 24
+LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def check_model() -> tuple[bool, str]:
+    """Whether Ted is still talking to the model it is supposed to be.
+
+    Nothing watched this, and it is the failure that hid the longest. The
+    Anthropic balance ran dry on 5 Sep 2026 and every turn since has failed and
+    silently fallen back to openai/gpt-5.3-codex through OpenRouter. Users kept
+    getting answers, the gates stayed green, the link stayed connected, and by
+    15 Sep that was 1,070 failed calls over ten days that nobody had seen.
+
+    A working fallback is exactly what makes this invisible, so the check reads
+    the failure rather than the outcome. Only dead ends count. A timeout or a
+    dropped connection is the fallback doing its job and is not worth waking
+    anybody for.
+    """
+    if not AGENT_LOG.exists():
+        return True, "no agent log yet"
+
+    cutoff = datetime.now() - timedelta(hours=MODEL_WINDOW_HOURS)
+    hits = 0
+    reason = ""
+    first_seen = ""
+    try:
+        with AGENT_LOG.open(errors="replace") as handle:
+            for line in handle:
+                found = next((why for mark, why in MODEL_DEAD_ENDS if mark in line), "")
+                if not found:
+                    continue
+                stamp = LOG_STAMP.match(line)
+                if not stamp:
+                    continue
+                when = datetime.strptime(stamp.group(1), "%Y-%m-%d %H:%M:%S")
+                if not first_seen:
+                    first_seen = stamp.group(1)
+                if when >= cutoff:
+                    hits += 1
+                    reason = found
+    except OSError as exc:
+        return True, f"cannot read agent.log: {exc}"
+
+    if not hits:
+        return True, "primary model answering"
+
+    # first_seen is a floor, not the truth: the log rotates, so the real start
+    # may be older than anything still on disk.
+    return False, (
+        f"{reason}, {hits} failed calls in the last {MODEL_WINDOW_HOURS}h "
+        f"(seen from at least {first_seen})"
+    )
+
+
+STATE_DB = HERMES / "state.db"
+DROPPED_WINDOW_DAYS = 7
+
+
+def check_dropped() -> tuple[bool, str]:
+    """Anyone still waiting on a reply that was written and never sent.
+
+    Patch 12 decided, correctly, that a reply which missed its moment should be
+    dropped rather than delivered hours late. What it did not add was anybody
+    noticing. The row goes to 'abandoned' and sits there, and the person is
+    simply never answered.
+
+    On 11 Sep 2026 GT sent "All" and the reply died with the link. On 15 Sep at
+    00:29 Ankiita sent a photo and asked why the responses were late; the agent
+    hung for thirty minutes and the apology it finally wrote could not be sent
+    either. Neither of them heard anything again. GT went four days, and both
+    kept receiving scheduled nudges the whole time, which reads as being
+    ignored rather than being failed.
+
+    A later successful message to the same person closes it: Shreya was dropped
+    on 14 Sep at 14:22 and answered that evening, so she is not owed anything.
+    """
+    if not STATE_DB.exists():
+        return True, "no delivery ledger yet"
+
+    cutoff = time.time() - DROPPED_WINDOW_DAYS * 24 * 60 * 60
+    try:
+        database = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return True, f"cannot open the delivery ledger: {exc}"
+    try:
+        rows = database.execute(
+            """
+            SELECT a.chat_id, MIN(a.created_at)
+            FROM delivery_obligations a
+            WHERE a.state IN ('abandoned', 'failed')
+              AND a.created_at > ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM delivery_obligations d
+                  WHERE d.chat_id = a.chat_id
+                    AND d.state = 'delivered'
+                    AND d.created_at > a.created_at
+              )
+            GROUP BY a.chat_id
+            """,
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return True, f"cannot read the delivery ledger: {exc}"
+    finally:
+        database.close()
+
+    if not rows:
+        return True, "nobody is waiting"
+
+    oldest = min(when for _, when in rows if when)
+    hours = (time.time() - oldest) / 3600
+    waited = f"{hours:.0f}h" if hours < 48 else f"{hours / 24:.0f} days"
+    people = "person" if len(rows) == 1 else "people"
+    return False, f"{len(rows)} {people} never got a reply, longest waiting {waited}"
+
+
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 PUSHOVER_KEYS = ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")
 
 EMAIL_KEYS = ("TED_ALERT_EMAIL_TO", "TED_ALERT_SMTP_USER", "TED_ALERT_SMTP_PASSWORD")
 EMAIL_DEFAULT_HOST = "smtp.gmail.com"
 EMAIL_DEFAULT_PORT = 465
+EMAIL_ATTEMPTS = 3
+EMAIL_RETRY_SECONDS = 5
 
 
 def setting(name: str) -> str:
@@ -260,16 +392,30 @@ def send_email(title: str, body: str, urgent: bool, dry_run: bool) -> str:
         f"{time.strftime('%Y-%m-%d %H:%M:%S')}.\n"
         "This is Ted's watchdog, not Ted. It never messages users.\n"
     )
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(config["host"], config["port"], context=context, timeout=20) as server:
-            server.login(config["user"], config["password"])
-            server.send_message(message)
-        return "sent"
-    except smtplib.SMTPAuthenticationError:
-        return "refused the login (app password wrong, or 2-Step not on)"
-    except Exception as exc:  # noqa: BLE001 - an alert channel may never crash the watcher
-        return f"failed ({exc})"
+    # One timeout used to lose the alert outright. At 11:52 on 15 Sep 2026 the
+    # watcher correctly caught the WhatsApp link going down, tried to mail it,
+    # got "Connection unexpectedly closed: The read operation timed out", and
+    # that was the end of it. The same credentials worked by hand an hour
+    # later, so the alert was lost to a blip and not to a misconfiguration.
+    # A refused login is different and is never retried: it will be refused
+    # again, and three attempts at a wrong password only delays the report.
+    last = ""
+    for attempt in range(EMAIL_ATTEMPTS):
+        try:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(
+                config["host"], config["port"], context=context, timeout=20
+            ) as server:
+                server.login(config["user"], config["password"])
+                server.send_message(message)
+            return "sent"
+        except smtplib.SMTPAuthenticationError:
+            return "refused the login (app password wrong, or 2-Step not on)"
+        except Exception as exc:  # noqa: BLE001 - an alert channel may never crash the watcher
+            last = f"failed ({exc})"
+            if attempt + 1 < EMAIL_ATTEMPTS:
+                time.sleep(EMAIL_RETRY_SECONDS)
+    return last
 
 
 def push(title: str, body: str, urgent: bool, dry_run: bool) -> str:
@@ -326,7 +472,7 @@ def remote_alerts(title: str, body: str, urgent: bool, dry_run: bool) -> list[tu
     return [(name, send(title, body, urgent, dry_run)) for name, send in REMOTE_CHANNELS]
 
 
-def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
+def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> bool:
     """The alert that does not depend on the thing being watched.
 
     Two kinds of road, on purpose. osascript reaches the screen without a
@@ -339,7 +485,7 @@ def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
         print(f"--- would notify --- {title}: {body}")
         for name, result in remote_alerts(title, body, urgent, dry_run=True):
             print(f"--- {name} --- {result}")
-        return
+        return True
     # A notification body is one line on screen, so the newlines that read well
     # in WhatsApp are flattened here rather than silently truncated.
     flat = " ".join(body.split())[:240]
@@ -351,9 +497,17 @@ def notify(title: str, body: str, dry_run: bool, urgent: bool = True) -> None:
         subprocess.run(["osascript", "-e", script], capture_output=True, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"notify failed: {exc}", file=sys.stderr)
+    # Whether anything reached her away from this screen. The desk notification
+    # does not count: on 8 Sep 2026 it popped up to an empty room for seventeen
+    # hours. The caller uses this to decide whether the alert may be written
+    # down as delivered.
+    reached = False
     for name, result in remote_alerts(title, body, urgent, dry_run=False):
-        if result != "sent":
+        if result == "sent":
+            reached = True
+        else:
             print(f"{name} alert: {result}", file=sys.stderr)
+    return reached
 
 
 # NO WHATSAPP COPY. An earlier version of this file sent the alert to Vandy's
@@ -467,6 +621,8 @@ def main() -> int:
 
     gates_ok, output = run_guard()
     link_ok, link_detail, needs_human = check_link()
+    model_ok, model_detail = check_model()
+    dropped_ok, dropped_detail = check_dropped()
 
     state = read_state()
     now = time.time()
@@ -477,6 +633,8 @@ def main() -> int:
     components = [
         ("gates", gates_ok, "Ted's safety gates"),
         ("link", link_ok, "Ted's WhatsApp"),
+        ("model", model_ok, "Ted's model"),
+        ("dropped", dropped_ok, "Someone Ted never answered"),
     ]
 
     for key, ok, label in components:
@@ -503,19 +661,44 @@ def main() -> int:
                 "your phone. On the laptop: mv ~/.hermes/whatsapp/session aside, "
                 "hermes whatsapp, scan the QR, hermes gateway restart."
             )
+        elif key == "model":
+            title = f"⚠️ {label} has been failing over"
+            body = (
+                f"{model_detail}.\n\n"
+                "Ted is still replying, on the fallback model, so nothing looks "
+                "broken from the outside. Top up the primary provider."
+            )
+        elif key == "dropped":
+            title = f"⚠️ {label}"
+            body = (
+                f"{dropped_detail}.\n\n"
+                "Their reply was written and dropped for being stale, which is "
+                "deliberate. Writing them something fresh is not. On the "
+                "laptop: npm run reports"
+            )
         else:
             title = f"⚠️ {label} is down"
             body = f"{link_detail} at {stamp}. Ted cannot send or receive."
 
-        print(f"{key}: {'ok' if ok else 'FAILING'} ({link_detail if key == 'link' else stamp})")
+        detail = {
+            "link": link_detail,
+            "model": model_detail,
+            "dropped": dropped_detail,
+        }.get(key, stamp)
+        print(f"{key}: {'ok' if ok else 'FAILING'} ({detail})")
         if not ok and key == "gates":
             print(failing_lines(output))
 
         # Nothing is announced on the very first healthy run: a watcher that
         # says hello the moment it is installed trains you to ignore it.
         if should_alert and not (ok and was is None):
-            notify(title, body, args.dry_run)
-            if not args.dry_run:
+            # Only a delivered alert resets the repeat clock. Stamping it
+            # regardless meant a single failed send bought four hours of
+            # silence about a thing that was still broken, which is the exact
+            # shape of the failure this whole file exists to prevent. If
+            # nothing got through, the next run in fifteen minutes tries again.
+            reached = notify(title, body, args.dry_run)
+            if not args.dry_run and reached:
                 state[f"{key}_last_alert_at"] = now
         state[key] = ok
 
