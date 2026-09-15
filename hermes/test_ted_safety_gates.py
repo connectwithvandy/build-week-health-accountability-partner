@@ -3777,6 +3777,26 @@ class MinorFlagDurabilityTest(unittest.TestCase):
         self.assertIsNone(gates.calorie_gate([], "check my meal", self.LEAK))
 
 
+class TedIsMaleTest(unittest.TestCase):
+    """Line 12 called Hinglish "her native tongue".
+
+    Every other mention of Ted in SOUL.md is first person, so that was the only
+    pronoun ever attached to him anywhere, and the model picked a gender per
+    message. It got it right about three times in four. The other times it sent
+    "kar dungi" to Pranjul on 4 Sep 2026, to Ankiita on 11 Sep twice, and to
+    Shreya on 14 Sep.
+    """
+
+    def test_no_female_pronoun_is_attached_to_ted(self) -> None:
+        soul = (Path(__file__).resolve().parent / "SOUL.md").read_text()
+        self.assertNotIn("Hinglish is her native tongue", soul)
+
+    def test_his_own_verbs_are_spelled_out_as_masculine(self) -> None:
+        soul = (Path(__file__).resolve().parent / "SOUL.md").read_text()
+        self.assertIn("I am male", soul)
+        self.assertIn("kar dunga", soul)
+
+
 if __name__ == "__main__":
     unittest.main()
 
