@@ -288,6 +288,11 @@ def check_dropped() -> tuple[bool, str]:
     finally:
         database.close()
 
+    rows = [
+        (chat, when)
+        for chat, when in rows
+        if when and not _reached_by_cron_since(str(chat), float(when))
+    ]
     if not rows:
         return True, "nobody is waiting"
 
@@ -297,6 +302,40 @@ def check_dropped() -> tuple[bool, str]:
     people = "person" if len(rows) == 1 else "people"
     return False, f"{len(rows)} {people} never got a reply, longest waiting {waited}"
 
+
+def _reached_by_cron_since(chat_id: str, since: float) -> bool:
+    """Whether a scheduled job delivered to this chat after `since`.
+
+    The ledger only knows about replies the agent sends through the normal
+    path. A cron job hands its text straight to the live adapter and writes no
+    obligation row at all, so answering somebody that way left them looking
+    unanswered forever. GT was reached at 18:40 on 15 Sep 2026 by exactly that
+    route and this check went on reporting him as four days unanswered.
+
+    Read from agent.log rather than the job file, because a job's last_status
+    says the run succeeded and not whether it actually said anything: a run
+    that the reminder gate silences returns SILENT and delivers nothing.
+
+    The log rotates, so a delivery older than the current file cannot be seen.
+    That only ever fails towards reporting somebody who has in fact been
+    answered, which is the safe direction for this to be wrong in.
+    """
+    if not chat_id or not AGENT_LOG.exists():
+        return False
+    marker = f"delivered to whatsapp:{chat_id} via live adapter"
+    try:
+        with AGENT_LOG.open(errors="replace") as handle:
+            for line in handle:
+                if marker not in line:
+                    continue
+                stamp = LOG_STAMP.match(line)
+                if stamp and datetime.strptime(
+                    stamp.group(1), "%Y-%m-%d %H:%M:%S"
+                ).timestamp() > since:
+                    return True
+    except OSError:
+        return False
+    return False
 
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 PUSHOVER_KEYS = ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")

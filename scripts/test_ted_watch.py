@@ -333,6 +333,74 @@ class TestCheckDropped:
         assert ok is False
         assert "2 people" in detail
 
+
+    def test_being_answered_by_a_cron_job_closes_it(self, watch, tmp_path, monkeypatch):
+        """A cron job hands its text to the live adapter and writes no ledger
+        row, so GT stayed on this list for five minutes after being answered."""
+        import time
+        from datetime import datetime
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("124575694233831@lid", "abandoned", now - 4 * 24 * 3600),
+        ])
+        stamp = datetime.fromtimestamp(now - 3600).strftime("%Y-%m-%d %H:%M:%S")
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{stamp},001 INFO cron.scheduler: Job 'x': delivered to "
+            "whatsapp:124575694233831@lid via live adapter\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+        ok, detail = watch.check_dropped()
+        assert ok is True
+        assert "nobody is waiting" in detail
+
+    def test_a_cron_delivery_from_before_the_drop_does_not_close_it(
+        self, watch, tmp_path, monkeypatch
+    ):
+        """Only a message after the drop counts. GT was getting nudges the
+        whole four days he was waiting, which is the thing that made it read
+        as being ignored rather than failed."""
+        import time
+        from datetime import datetime
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("124575694233831@lid", "abandoned", now - 4 * 24 * 3600),
+        ])
+        stamp = datetime.fromtimestamp(now - 6 * 24 * 3600).strftime("%Y-%m-%d %H:%M:%S")
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{stamp},001 INFO cron.scheduler: Job 'x': delivered to "
+            "whatsapp:124575694233831@lid via live adapter\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+        ok, detail = watch.check_dropped()
+        assert ok is False
+        assert "1 person" in detail
+
+    def test_a_silent_cron_run_does_not_count_as_reaching_them(
+        self, watch, tmp_path, monkeypatch
+    ):
+        """A run the reminder gate silences returns SILENT and delivers
+        nothing, which is why this reads the delivery and not the job status."""
+        import time
+        from datetime import datetime
+
+        now = time.time()
+        self._ledger(watch, tmp_path, monkeypatch, [
+            ("124575694233831@lid", "abandoned", now - 4 * 24 * 3600),
+        ])
+        stamp = datetime.fromtimestamp(now - 3600).strftime("%Y-%m-%d %H:%M:%S")
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{stamp},001 INFO cron.scheduler: Job 'x': agent returned "
+            "[SILENT] — skipping delivery\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+        ok, _ = watch.check_dropped()
+        assert ok is False
+
     def test_an_ancient_drop_falls_out_of_the_window(self, watch, tmp_path, monkeypatch):
         import time
 
