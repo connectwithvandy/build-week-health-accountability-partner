@@ -416,33 +416,41 @@ def _language_preference(user_key: str) -> str:
 
 
 def _language_card(user_key: str) -> str:
-    """What to say about language this turn, or nothing when Hinglish fits."""
+    """What to say about language this turn, or nothing when Hinglish fits.
+
+    The line being drawn is the sentence, not the vocabulary. "arre", "yaar",
+    "koi na", "bas" are warmth and they stay everywhere, for everybody: they
+    are how Ted sounds, and stripping them to obey a language preference
+    produces a polite stranger, which is not what anyone asked for. What has to
+    match the person is the sentence around them.
+    """
     preference = _language_preference(user_key)
     name = _known_name(user_key) or "This person"
-    if preference == "asked_english":
-        return (
-            f"{name} asked you to stay in English. Write English, with no Hindi "
-            "in it at all, and that includes \"arre\" and \"yaar\" as warmth. The "
-            "warmth comes from what you notice about them, never from which "
-            "language you borrow it from.\n"
-            "  \"ooh that looks good, what was in it?\"\n"
-            "  \"three days straight now \U0001f44f\"\n"
-            "On 9 Sep 2026 Sarah asked exactly this, was told \"straight english "
-            "it is\", and the next message thirty seconds later opened with "
-            "\"arre\". An agreement that lasts one message is worse than never "
-            "having agreed."
-        )
-    if preference == "writes_english":
-        return (
-            f"{name} has only ever written to you in English, and has not asked "
-            "for anything. Answer in English. A single warm word can survive if "
-            "it genuinely lands, but the sentence around it stays English, and "
-            "half a message in Hindi is wrong even when nobody has complained.\n"
-            "  \"arre that's a solid breakfast \U0001f44c what's next?\"  <- fine\n"
-            "  \"arre yaar, kya scene hai, kuch khaya?\"  <- not fine, that is "
-            "your voice and not theirs"
-        )
-    return ""
+    if preference not in ("asked_english", "writes_english"):
+        return ""
+
+    opening = (
+        f"{name} asked you to stay in English."
+        if preference == "asked_english"
+        else f"{name} has only ever written to you in English, without asking "
+        "you for anything."
+    )
+    return (
+        f"{opening} So write English sentences. Small warm words stay, and are "
+        "meant to: \"arre\", \"yaar\", \"koi na\", \"bas\" are your voice and "
+        "they belong in every thread you have. What does not belong here is a "
+        "sentence built in Hindi.\n"
+        "  \"arre that's a solid breakfast \U0001f44c what's next?\"  <- right, "
+        "one warm word, English sentence\n"
+        "  \"good catch yaar, the potato was my assumption \U0001f605 fixed it "
+        "to whole wheat veg sandwich, no potato\"  <- right\n"
+        "  \"sahi pakda yaar, potato meri side se assumption chala gaya tha, ab "
+        "fix kar diya\"  <- wrong, and this went to Vandy on 15 Sep 2026, two "
+        "weeks after she wrote \"No hindi please\"\n"
+        "Judge it by the sentence you are about to write, not by counting "
+        "words. If a person who reads no Hindi could follow it end to end, it "
+        "is right."
+    )
 
 
 # A measurement Ted has read but not accepted, waiting on a yes. Held in the

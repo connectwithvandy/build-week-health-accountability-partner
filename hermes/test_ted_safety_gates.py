@@ -9344,21 +9344,42 @@ class LanguagePreferenceTest(unittest.TestCase):
         self.assertEqual(gates._language_preference(self.KEY), "")
         self.assertEqual(gates._language_card(self.KEY), "")
 
-    def test_the_card_for_an_explicit_request_rules_out_the_warm_words(
-        self,
-    ) -> None:
+    def test_the_warm_words_survive_an_explicit_request(self) -> None:
+        """"arre" and "yaar" are warmth, not language.
+
+        An earlier version of this card banned them outright for anyone who
+        asked for English, which was a misreading: stripping them leaves a
+        polite stranger, and nobody asked for that. The line is the sentence.
+        """
         gates._note_language(self.KEY, "english please")
         card = gates._language_card(self.KEY)
-        self.assertIn("no Hindi", card)
+        self.assertIn("Small warm words stay", card)
         self.assertIn("arre", card)
-        self.assertIn("Sarah", card)
+        self.assertNotIn("no Hindi in it at all", card)
 
-    def test_the_card_for_an_english_writer_allows_one_warm_word(self) -> None:
+    def test_both_english_cases_are_told_the_same_rule(self) -> None:
+        """Asking and simply always writing English differ in how the gate
+        learns it, never in what Ted then does."""
+        gates._note_language(self.KEY, "english please")
+        asked = gates._language_card(self.KEY)
+
+        gates._ONBOARDING_STATE.clear()
         for message in ("2 eggs", "done", "walked 5k", "feeling good"):
             gates._note_language(self.KEY, message)
+        inferred = gates._language_card(self.KEY)
+
+        for card in (asked, inferred):
+            self.assertIn("write English sentences", card)
+            self.assertIn("Small warm words stay", card)
+        self.assertIn("asked you to stay in English", asked)
+        self.assertIn("without asking", inferred)
+
+    def test_the_card_shows_the_sentence_that_was_actually_wrong(self) -> None:
+        """Vandy wrote "No hindi please" on 31 Aug and got this on 15 Sep."""
+        gates._note_language(self.KEY, "english please")
         card = gates._language_card(self.KEY)
-        self.assertIn("has not asked", card)
-        self.assertIn("<- fine", card)
+        self.assertIn("potato meri side se assumption chala gaya tha", card)
+        self.assertIn("<- wrong", card)
 
     def test_a_plain_english_log_is_not_read_as_hindi(self) -> None:
         """Precision matters more than recall here. Misreading an English
