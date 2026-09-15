@@ -9261,3 +9261,124 @@ class SayingHelloBeforeYourNameTest(unittest.TestCase):
         self.assertIsNotNone(reply)
         self.assertIn("Arpith", reply)
         self.assertNotIn("what should i call you", reply.lower())
+
+
+class LanguagePreferenceTest(unittest.TestCase):
+    """Ted was more Hinglish than the user in 38 of 40 threads.
+
+    Counted across every WhatsApp conversation on 15 Sep 2026. Nobody
+    out-Hinglished him, including the people who had never typed a Hindi word.
+    SOUL.md had said "I mirror the user" the whole time, which is a judgement
+    the model has to make again every turn, and it lost every turn.
+
+    The case that proves it is Sarah on 9 Sep: she asked to stick to English,
+    was told "yep, straight english it is", and the next message thirty seconds
+    later opened with "arre".
+    """
+
+    KEY = "whatsapp:sha256:language"
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_sarahs_actual_words_are_understood(self) -> None:
+        """She typed "englishhhh". A request that only works when typed calmly
+        is no use to anybody."""
+        gates._note_language(self.KEY, "Can we stick with englishhhh")
+        self.assertEqual(gates._language_preference(self.KEY), "asked_english")
+
+    def test_other_ways_of_asking(self) -> None:
+        for phrasing in (
+            "english please",
+            "can you reply in english",
+            "only english na",
+            "no hindi",
+            "hindi mat bolo",
+        ):
+            with self.subTest(phrasing=phrasing):
+                gates._ONBOARDING_STATE.clear()
+                gates._note_language(self.KEY, phrasing)
+                self.assertEqual(
+                    gates._language_preference(self.KEY), "asked_english"
+                )
+
+    def test_asking_for_hindi_is_heard_too(self) -> None:
+        gates._note_language(self.KEY, "hindi mein baat karo")
+        self.assertEqual(gates._language_preference(self.KEY), "")
+
+    def test_a_refusal_of_hindi_is_not_a_request_for_it(self) -> None:
+        """A "don't speak hindi" contains both halves of the other pattern."""
+        gates._note_language(self.KEY, "please don't speak hindi with me")
+        self.assertEqual(gates._language_preference(self.KEY), "asked_english")
+
+    def test_the_request_survives_them_typing_one_hindi_word_later(self) -> None:
+        """This is the whole point. Asking once has to be enough."""
+        gates._note_language(self.KEY, "Can we stick with englishhhh")
+        gates._note_language(self.KEY, "haan ok")
+        gates._note_language(self.KEY, "thoda late today")
+        self.assertEqual(gates._language_preference(self.KEY), "asked_english")
+
+    def test_only_another_explicit_request_moves_it(self) -> None:
+        gates._note_language(self.KEY, "english only please")
+        gates._note_language(self.KEY, "actually switch to hinglish")
+        self.assertEqual(gates._language_preference(self.KEY), "")
+
+    def test_writing_only_english_is_an_answer_on_its_own(self) -> None:
+        for message in ("2 eggs and toast", "done", "walked 5k", "feeling good"):
+            gates._note_language(self.KEY, message)
+        self.assertEqual(gates._language_preference(self.KEY), "writes_english")
+
+    def test_one_message_short_of_the_evidence_stays_quiet(self) -> None:
+        for message in ("2 eggs", "done", "walked 5k"):
+            gates._note_language(self.KEY, message)
+        self.assertEqual(gates._language_preference(self.KEY), "")
+
+    def test_somebody_who_code_switches_is_mirrored_not_corrected(self) -> None:
+        for message in ("2 eggs and toast", "done", "walked 5k", "haan kar diya"):
+            gates._note_language(self.KEY, message)
+        self.assertEqual(gates._language_preference(self.KEY), "")
+        self.assertEqual(gates._language_card(self.KEY), "")
+
+    def test_the_card_for_an_explicit_request_rules_out_the_warm_words(
+        self,
+    ) -> None:
+        gates._note_language(self.KEY, "english please")
+        card = gates._language_card(self.KEY)
+        self.assertIn("no Hindi", card)
+        self.assertIn("arre", card)
+        self.assertIn("Sarah", card)
+
+    def test_the_card_for_an_english_writer_allows_one_warm_word(self) -> None:
+        for message in ("2 eggs", "done", "walked 5k", "feeling good"):
+            gates._note_language(self.KEY, message)
+        card = gates._language_card(self.KEY)
+        self.assertIn("has not asked", card)
+        self.assertIn("<- fine", card)
+
+    def test_a_plain_english_log_is_not_read_as_hindi(self) -> None:
+        """Precision matters more than recall here. Misreading an English
+        writer keeps Ted in Hindi at somebody who never asked."""
+        for message in (
+            "2 eggs, toast and black coffee",
+            "walked 8k steps today",
+            "no workout, was travelling",
+            "can we do this later",
+            "I had a sandwich for lunch",
+        ):
+            with self.subTest(message=message):
+                self.assertFalse(gates._looks_hinglish(message))
+
+    def test_real_hinglish_is_still_caught(self) -> None:
+        for message in (
+            "haan yaar kar diya",
+            "aaj kuch nahi khaya",
+            "thoda late ho gaya",
+            "आज खाना नहीं खाया",
+        ):
+            with self.subTest(message=message):
+                self.assertTrue(gates._looks_hinglish(message))

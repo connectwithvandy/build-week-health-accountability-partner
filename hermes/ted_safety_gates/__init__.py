@@ -296,6 +296,155 @@ def _with_stored_measurements(
     return replace(profile, **fields) if fields else profile
 
 
+# --- Which language this person actually writes in -------------------------
+#
+# SOUL.md has said "I mirror the user: if they stay in straight English, I stay
+# in straight English" from the beginning, and on 15 Sep 2026 a count across
+# every WhatsApp thread showed Ted more Hinglish than the user in 38 of 40
+# conversations. Nobody out-Hinglished him. A per-turn instruction to mirror
+# somebody is a judgement the model has to make again every single turn, and it
+# loses: on 9 Sep Sarah asked "Can we stick with englishhhh", was told "yep,
+# straight english it is", and thirty seconds later got a reply opening with
+# "arre".
+#
+# So the preference is stored rather than judged, in the same durable state as
+# the name and the age, and read back on every turn. Asking once has to be
+# enough, which is exactly what it was not.
+
+_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
+
+# Deliberately conservative. Misreading an English writer as a Hinglish one
+# keeps Ted in Hindi at somebody who never asked for it, which is the whole
+# failure, so every word here has to be one an English-only writer would not
+# type by accident. Short connectors like "ka", "se" and "ho" are left out for
+# that reason, and "na" and "scene" because English speakers use both.
+_HINGLISH_WORDS = re.compile(
+    r"\b(?:yaar|yar|arre|arrey|kya|kyu|kyun|nahi|nahin|haan|acha|accha|thoda|"
+    r"matlab|bhi|toh|mein|aur|bas|kaisa|kaise|kitna|abhi|chalo|sahi|khaya|"
+    r"khana|paani|hua|gaya|karo|kar|karke|hai|hain|koi|kuch|waise|phir|sab|"
+    r"bola|dekh|bhej|raha|rahi|rakho|lagta|pata|theek|thik|bilkul|zyada|kam se)\b",
+    re.I,
+)
+
+# "englishhhh" is how Sarah actually typed it, so the trailing letters have to
+# survive the match. A request that only works when typed calmly is no use.
+_NEGATOR = re.compile(r"\b(?:no|not|don'?t|dont|stop|avoid|mat|nahi|band|kam)\b", re.I)
+_INTENT = r"stick|speak|talk|write|reply|keep|continue|switch|do|say|chat|use|go"
+_ASKS_FOR_ENGLISH = re.compile(
+    r"\bno\s+hindi\w*\b"
+    r"|\bhindi\w*\s+(?:mat|nahi|band|chhod)\w*\b"
+    r"|\b(?:only|just|plain|straight|simple|pure)\s+english\w*\b"
+    r"|\benglish\w*\s+(?:please|only|pls|plz)\b"
+    rf"|\b(?:{_INTENT})\b[^.!?\n]{{0,24}}\benglish\w*\b",
+    re.I,
+)
+_ASKS_FOR_HINGLISH = re.compile(
+    r"\b(?:hindi|hinglish)\w*\s+(?:me|mein|please|pls|plz|only)\b"
+    rf"|\b(?:{_INTENT})\b[^.!?\n]{{0,24}}\b(?:hindi|hinglish)\w*\b",
+    re.I,
+)
+
+# How many of their own messages it takes before silence on the subject counts
+# as an answer. Four is enough to tell a preference from a one-word reply, and
+# small enough that a new user is not addressed in Hindi for a week first.
+_ENGLISH_EVIDENCE_NEEDED = 4
+
+
+def _looks_hinglish(text: str) -> bool:
+    """Whether this message has Hindi in it, by their hand and not Ted's."""
+    text = (text or "").strip()
+    if not text:
+        return False
+    return bool(_DEVANAGARI.search(text) or _HINGLISH_WORDS.search(text))
+
+
+def _note_language(user_key: str, text: str) -> None:
+    """Record what language this person writes in, from their own message.
+
+    An explicit request is sticky for the same reason the minor flag is: it is
+    the one thing that must not quietly stop applying. It takes another
+    explicit request, in the other direction, to move it.
+    """
+    text = (text or "").strip()
+    if not user_key or not text:
+        return
+
+    def remember(choice: str) -> None:
+        if _onboarding(user_key).get("language") != choice:
+            _update_onboarding(user_key, language=choice)
+            LOGGER.info("ted_language_set user_key=%s language=%s", user_key, choice)
+
+    if _ASKS_FOR_ENGLISH.search(text):
+        remember("english")
+        return
+    if _ASKS_FOR_HINGLISH.search(text):
+        # "please don't speak hindi with me" names only the language being
+        # refused, never the one being asked for, and matches the same pattern
+        # as a request for it. Somebody pushing Hindi away wants English, so
+        # the negator decides which way the same sentence points.
+        remember("english" if _NEGATOR.search(text) else "hinglish")
+        return
+
+    # No request, so watch what they do. One Hinglish message from them is
+    # enough to stop inferring English: somebody who code-switches is not
+    # asking to be corrected, and mirroring is the right answer for them.
+    state = _onboarding(user_key)
+    if _looks_hinglish(text):
+        if not state.get("writes_hinglish"):
+            _update_onboarding(user_key, writes_hinglish=True)
+        return
+    if state.get("writes_hinglish"):
+        return
+    seen = state.get("english_messages")
+    seen = seen + 1 if isinstance(seen, int) else 1
+    if seen <= _ENGLISH_EVIDENCE_NEEDED:
+        _update_onboarding(user_key, english_messages=seen)
+
+
+def _language_preference(user_key: str) -> str:
+    """"asked_english", "writes_english", or "" when Hinglish is fine."""
+    state = _onboarding(user_key)
+    stored = state.get("language")
+    if stored == "english":
+        return "asked_english"
+    if stored == "hinglish" or state.get("writes_hinglish"):
+        return ""
+    seen = state.get("english_messages")
+    if isinstance(seen, int) and seen >= _ENGLISH_EVIDENCE_NEEDED:
+        return "writes_english"
+    return ""
+
+
+def _language_card(user_key: str) -> str:
+    """What to say about language this turn, or nothing when Hinglish fits."""
+    preference = _language_preference(user_key)
+    name = _known_name(user_key) or "This person"
+    if preference == "asked_english":
+        return (
+            f"{name} asked you to stay in English. Write English, with no Hindi "
+            "in it at all, and that includes \"arre\" and \"yaar\" as warmth. The "
+            "warmth comes from what you notice about them, never from which "
+            "language you borrow it from.\n"
+            "  \"ooh that looks good, what was in it?\"\n"
+            "  \"three days straight now \U0001f44f\"\n"
+            "On 9 Sep 2026 Sarah asked exactly this, was told \"straight english "
+            "it is\", and the next message thirty seconds later opened with "
+            "\"arre\". An agreement that lasts one message is worse than never "
+            "having agreed."
+        )
+    if preference == "writes_english":
+        return (
+            f"{name} has only ever written to you in English, and has not asked "
+            "for anything. Answer in English. A single warm word can survive if "
+            "it genuinely lands, but the sentence around it stays English, and "
+            "half a message in Hindi is wrong even when nobody has complained.\n"
+            "  \"arre that's a solid breakfast \U0001f44c what's next?\"  <- fine\n"
+            "  \"arre yaar, kya scene hai, kuch khaya?\"  <- not fine, that is "
+            "your voice and not theirs"
+        )
+    return ""
+
+
 # A measurement Ted has read but not accepted, waiting on a yes. Held in the
 # same durable state as everything else so a restart mid-question does not
 # lose it and silently fall back to guessing.
@@ -6086,16 +6235,20 @@ def _capture_turn(**kwargs: Any) -> dict[str, str] | None:
     _note_user_replied(user_key, result)
     _remember_name_from_facts(user_key, result)
     _capture_name_answer(user_key, _user_written_text(raw_message))
+    _note_language(user_key, _user_written_text(raw_message))
     memory_context = _format_user_memory(result)
     # What Ted actually said last turn, when a gate replaced it. First, because
-    # it is the thing the user's current message is answering. The voice card
-    # goes last, so it is the final thing read before the reply is written.
+    # it is the thing the user's current message is answering. The language card
+    # goes last, after the voice card, because it is the one the voice card
+    # pulls against: everything above is teaching a Hinglish-leaning voice, and
+    # for somebody who writes English that is the instruction to overrule.
     parts = [
         part
         for part in (
             _gated_reply_context(user_key),
             memory_context,
             _voice_card(user_key, plate=bool(_IMAGE_NOTE.search(raw_message))),
+            _language_card(user_key),
         )
         if part
     ]
