@@ -20,6 +20,7 @@ import {
   needsDateConfirmation,
   onboardingFieldValidator,
   firstHealthValueProblem,
+  releaseReminderDelivery as releaseReminderDeliveryFrom,
   pauseProblem,
   nextCompletedAt,
   setupSnapshotFrom,
@@ -1213,6 +1214,11 @@ export const gateReminderDelivery = internalMutation({
       sentCount: sentToday,
       updatedAt: now,
     };
+    // Everything below this line is committed before a single byte reaches
+    // WhatsApp, so it is all recorded as releasable. `deliveryId` is what the
+    // caller quotes back if the send it just won permission for never happens;
+    // see `releaseReminderDelivery`.
+    const deliveryId = `${now.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 
     if (decision.offerBreak) {
       // The break offer is going out in place of the nudge. Nothing further
@@ -1220,10 +1226,12 @@ export const gateReminderDelivery = internalMutation({
       // than climbing while Ted is deliberately silent.
       patch.awaitingBreakReply = true;
     } else if (!policy.awaitingBreakReply) {
-      // Counted at the moment a nudge is actually cleared to send, for the
-      // same reason the daily cap is: asking and not sending would burn the
-      // budget silently, and here it would also march a present user towards
-      // a break they never needed.
+      // Counted at the moment a nudge is cleared to send, which is not the
+      // same moment it arrives. Committing here and releasing later is
+      // deliberate: waiting for proof of delivery would mean an unanswered
+      // confirmation leaves the cap unfilled and the user nagged, while an
+      // unreleased send costs them one nudge they did not get. See
+      // `releaseReminderDelivery` for who does the releasing and when.
       //
       // Not counted once the break has already been offered. The evening
       // review still goes out in that state — see `decideReminderDelivery` —
@@ -1233,13 +1241,134 @@ export const gateReminderDelivery = internalMutation({
       patch.unansweredNudges = (policy.unansweredNudges ?? 0) + 1;
     }
 
+    patch.pendingDelivery = {
+      id: deliveryId,
+      day: args.today,
+      at: now,
+      countedNudge: patch.unansweredNudges !== undefined,
+      offeredBreak: decision.offerBreak === true,
+    };
+
     await ctx.db.patch(policy._id, patch);
     return {
       success: true,
       ...decision,
       sentToday,
+      deliveryId,
       maxPerDay: policy.maxPerDay,
       unansweredNudges: patch.unansweredNudges ?? policy.unansweredNudges ?? 0,
+    };
+  },
+});
+
+/**
+ * Every send that has been cleared and not yet accounted for.
+ *
+ * Builder read-back, so it crosses users and is reached with the shared secret
+ * rather than by the model, the same rule as `listSetupState`.
+ *
+ * This exists because the two stores cannot see each other. Convex knows it
+ * granted a send and charged somebody for it; the gateway's ledger knows a
+ * message to some chat failed at some time and has no idea which of its
+ * messages were reminders. Neither can close the loop alone, so this hands
+ * over the open ends — who, which send, and when it was cleared — and
+ * `scripts/ted-release-undelivered-reminders.py` does the matching.
+ *
+ * A row here is not a failure. Most of these arrived perfectly well and are
+ * simply the last send for that user, sitting where the next one will
+ * overwrite it.
+ */
+export const listPendingReminderDeliveries = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const policies = await ctx.db.query("reminders").collect();
+    const pending = [];
+    for (const policy of policies) {
+      if (!policy.pendingDelivery) continue;
+      const user = await ctx.db.get(policy.userId);
+      // A reminder row whose user is gone. `deleteUserMemory` removes both, so
+      // this is a torn delete rather than the normal case, and there is
+      // nothing a release could usefully do with it.
+      if (!user) continue;
+      pending.push({
+        whatsappUserId: user.whatsappUserId,
+        ...policy.pendingDelivery,
+      });
+    }
+    return { pending };
+  },
+});
+
+/**
+ * Milestone 12 — the send this gate cleared never reached the user.
+ *
+ * `gateReminderDelivery` commits the day's count and the unanswered-nudge
+ * count at the moment it grants permission, which is before WhatsApp has been
+ * asked for anything. Two things can happen after that and before a person
+ * sees a word, and both did:
+ *
+ *   * The gateway itself decides not to send after all. A scheduled ping
+ *     carrying a calorie number is dropped outright by `_cron_reminder_gate`,
+ *     several steps after this gate has already counted it.
+ *   * WhatsApp takes the message and never delivers it. The gateway's own
+ *     `delivery_obligations` ledger records that as `failed` or `abandoned`,
+ *     minutes or hours later.
+ *
+ * Neither is visible from here, so neither can be waited for. What this does
+ * instead is let whoever *can* see it say so, at whatever point it becomes
+ * known, and put the row back. The cost of never being told is one nudge the
+ * user does not get, which is the direction this should fail in.
+ *
+ * Idempotent by `deliveryId`: a release for a send that is no longer the
+ * outstanding one changes nothing and reports `released: false`. That is what
+ * makes it safe to run a reconciliation pass twice over the same ledger, and
+ * what stops a slow failure report clawing back a later send that went out
+ * perfectly well.
+ */
+export const releaseReminderDelivery = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    deliveryId: v.string(),
+    today: v.string(),
+    /** For the log only: `suppressed`, `undelivered`, or whatever finds it next. */
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    if (!isLocalDateKey(args.today)) {
+      throw new Error("today must be YYYY-MM-DD in the user's own timezone");
+    }
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", args.whatsappUserId),
+      )
+      .unique();
+    // No user, no row to put back. Not an error: `forget my data` deletes the
+    // user and their reminders, and a failure report for a send made before
+    // that is exactly the case where nothing should be recreated.
+    if (!user) return { success: true, released: false, reason: "noPolicy" };
+
+    const policy = await ctx.db
+      .query("reminders")
+      .withIndex("by_user", (query) => query.eq("userId", user._id))
+      .unique();
+
+    // Checked here as well as inside the pure function so the rest of this
+    // handler can see there is a row to patch.
+    if (!policy) return { success: true, released: false, reason: "noPolicy" };
+
+    const outcome = releaseReminderDeliveryFrom(policy, args.deliveryId, args.today);
+    if (!outcome.released) {
+      return { success: true, released: false, reason: outcome.reason };
+    }
+
+    await ctx.db.patch(policy._id, { ...outcome.patch, updatedAt: Date.now() });
+    return {
+      success: true,
+      released: true,
+      sentToday: outcome.patch.sentCount,
+      unansweredNudges:
+        outcome.patch.unansweredNudges ?? policy.unansweredNudges ?? 0,
     };
   },
 });

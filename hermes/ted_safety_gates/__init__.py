@@ -1332,6 +1332,8 @@ REQUIRED_CONVEX_ACTIONS = frozenset(
         "report",
         "reports",
         "reminderGate",
+        "reminderMissed",
+        "pendingReminders",
         "replied",
         # Builder read-back and the status recompute behind it. Listed here for
         # the same reason "reports" is, even though the gate never calls them:
@@ -7272,8 +7274,18 @@ def _cron_job_kind(session_id: str) -> str:
     return "nudge"
 
 
-def _reminder_allowed(user_key: str, kind: str = "nudge") -> tuple[bool, str, bool]:
-    """May a reminder go out right now, and should it be the break offer?"""
+def _reminder_allowed(
+    user_key: str, kind: str = "nudge"
+) -> tuple[bool, str, bool, str]:
+    """May a reminder go out right now, and should it be the break offer?
+
+    The fourth value is the id Convex gave this send. Saying yes costs the user
+    one of the day's reminders and moves them one closer to "want me to pause?",
+    and both of those are spent here, before WhatsApp has been asked for
+    anything. Hand that id to `_release_reminder` if the send does not happen
+    after all. Empty when there was nothing to spend — no stored policy, or a
+    Convex too old to know about any of this.
+    """
     result = _convex_request(
         "reminderGate",
         user_key,
@@ -7306,12 +7318,54 @@ def _reminder_allowed(user_key: str, kind: str = "nudge") -> tuple[bool, str, bo
         )
         # No break offer on this path: the count lives in the row we could not
         # read, and guessing at someone's engagement is worse than nudging.
-        return (not quiet), ("quietHours" if quiet else "defaultsOnly"), False
+        #
+        # No delivery id either, and none is needed: nothing was counted, so
+        # there is nothing a release could give back.
+        return (not quiet), ("quietHours" if quiet else "defaultsOnly"), False, ""
     reason = str(result.get("reason") or "unknown")
     return (
         bool(result.get("allowed")),
         reason,
         result.get("offerBreak") is True,
+        str(result.get("deliveryId") or ""),
+    )
+
+
+def _release_reminder(user_key: str, delivery_id: str, reason: str) -> None:
+    """Tell Convex the send it just cleared is not going to happen.
+
+    Called when this plugin itself decides, after asking, that nothing should
+    go out. Without it the user pays twice for a message they never saw: one of
+    the day's reminders, and one step towards the break offer.
+
+    Best-effort and deliberately silent about failure. Nothing here is worth
+    failing a cron run over, and the unreleased version is the behaviour this
+    code had all along — one nudge short, never one too many.
+    """
+    if not delivery_id:
+        return
+    result = _convex_request(
+        "reminderMissed",
+        user_key,
+        body={
+            "deliveryId": delivery_id,
+            "today": _today(user_key),
+            "reason": reason,
+        },
+    )
+    if not result.get("success"):
+        LOGGER.warning(
+            "ted_reminder_release_failed user_key=%s reason=%s error=%s",
+            user_key,
+            reason,
+            result.get("error"),
+        )
+        return
+    LOGGER.info(
+        "ted_reminder_released user_key=%s reason=%s released=%s",
+        user_key,
+        reason,
+        result.get("released"),
     )
 
 
@@ -7348,7 +7402,7 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
         return CRON_SILENT
 
     kind = _cron_job_kind(session_id)
-    allowed, reason, offer_break = _reminder_allowed(user_key, kind)
+    allowed, reason, offer_break, delivery_id = _reminder_allowed(user_key, kind)
     if not allowed:
         LOGGER.info(
             "ted_reminder_suppressed user_key=%s reason=%s kind=%s session=%s",
@@ -7388,6 +7442,11 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
     # number in one is dropped outright rather than argued with.
     if _response_has_calorie_number(response_text):
         LOGGER.info("ted_reminder_calorie_suppressed user_key=%s", user_key)
+        # The gate said yes several lines ago and charged the user for it. This
+        # is the one path that asks and then sends nothing, so it is the one
+        # path that has to give it back — and it gives it back by id, so this
+        # can never take more than the send it is about.
+        _release_reminder(user_key, delivery_id, "suppressed")
         return CRON_SILENT
     return None
 

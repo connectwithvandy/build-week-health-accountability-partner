@@ -154,6 +154,31 @@ http.route({
         return json(result);
       }
 
+      // Builder read-back, same rule as "reports" and "setupAudit": it crosses
+      // users, so it is reached with the shared secret and is never a model
+      // tool. Read-only; the release itself is "reminderMissed" below.
+      if (input.action === "pendingReminders") {
+        const result = await ctx.runQuery(
+          internal.ted.listPendingReminderDeliveries,
+          {},
+        );
+        return json({ success: true, ...result });
+      }
+
+      // The counterpart to "reminderGate": the send it cleared never reached
+      // anybody, so the day's count and the unanswered-nudge count go back.
+      // Quoting the gate's own deliveryId is what keeps this exactly-once, so
+      // a missing or wrong one is a no-op rather than a blind decrement.
+      if (input.action === "reminderMissed") {
+        const result = await ctx.runMutation(internal.ted.releaseReminderDelivery, {
+          whatsappUserId: input.whatsappUserId,
+          deliveryId: String(payload.deliveryId ?? ""),
+          today: String(payload.today ?? ""),
+          reason: payload.reason === undefined ? undefined : String(payload.reason),
+        });
+        return json(result);
+      }
+
       // Any inbound message clears the unanswered-nudge count. Sent only when
       // there is something to clear, so this is a rare call, not a per-turn one.
       if (input.action === "replied") {

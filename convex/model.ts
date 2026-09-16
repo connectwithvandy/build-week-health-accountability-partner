@@ -832,6 +832,101 @@ export function decideReminderDelivery(
   return { allowed: true, reason: "ok" };
 }
 
+/**
+ * What the gate wrote when it cleared a send, kept so it can be taken back.
+ *
+ * `gateReminderDelivery` commits at the moment permission is granted, which is
+ * before anything has reached WhatsApp. That is the right default — see the
+ * counter comments in `convex/ted.ts` — but it means a send that never happens
+ * still spends the day's allowance and still moves the user one nudge closer
+ * to "want me to pause?". The reviewer's phrasing was exact: a gateway failure
+ * can push users toward a break offer despite receiving nothing.
+ *
+ * The honest fix is not to delay the commit. A commit that waits for proof of
+ * delivery fails in the dangerous direction: if the confirmation never arrives
+ * the cap never fills, and the failure mode of an uncapped reminder loop is a
+ * person being nagged. Committing and then releasing fails in the safe
+ * direction, because the worst an unreleased send costs is one nudge the user
+ * did not get.
+ *
+ * So the gate records exactly what it did. `id` is what makes the release
+ * exactly-once: a release naming an id that is no longer outstanding is a
+ * no-op, so a reconciliation pass can run twice over the same failure and a
+ * late release cannot reach back past a send that has since gone out fine.
+ */
+export type PendingReminderDelivery = {
+  id: string;
+  /** The local day `sentCount` was counted into, so a release cannot cross midnight. */
+  day: string;
+  /** When permission was granted, for lining this up against a delivery ledger. */
+  at: number;
+  /** The gate incremented `unansweredNudges`. */
+  countedNudge: boolean;
+  /** The gate set `awaitingBreakReply`, so the break offer was the thing being sent. */
+  offeredBreak: boolean;
+};
+
+export type ReminderReleasePatch = {
+  sentCount: number;
+  unansweredNudges?: number;
+  awaitingBreakReply?: boolean;
+  /** Cleared either way: the send it described is over, however it ended. */
+  pendingDelivery: undefined;
+};
+
+export type ReminderRelease =
+  | { released: false; reason: "noPolicy" | "nothingPending" | "stale" }
+  | { released: true; patch: ReminderReleasePatch };
+
+/**
+ * Undo one cleared-but-undelivered send, or say why there is nothing to undo.
+ *
+ * Every field is put back to what it was rather than recomputed, which is why
+ * `PendingReminderDelivery` records the gate's own actions instead of leaving
+ * this to infer them. Inferring would get `awaitingBreakReply` wrong in the one
+ * case that matters most: a break offer that never arrived leaves the user
+ * waiting to answer a question they never saw, and Ted silent until they do.
+ *
+ * `day` guards the midnight case. A failure discovered after the local day has
+ * rolled over must not decrement a fresh day's count, because that count
+ * belongs to sends this one knows nothing about.
+ */
+export function releaseReminderDelivery(
+  policy:
+    | (ReminderPolicy & { pendingDelivery?: PendingReminderDelivery | null })
+    | null,
+  deliveryId: string,
+  today: string,
+): ReminderRelease {
+  if (!policy) return { released: false, reason: "noPolicy" };
+  const pending = policy.pendingDelivery;
+  if (!pending) return { released: false, reason: "nothingPending" };
+  // Not the send being released: either it was already released, or another has
+  // gone out since and this one is a straggler. Both are no-ops, and both are
+  // ordinary rather than an error.
+  if (pending.id !== deliveryId) return { released: false, reason: "stale" };
+
+  const patch: ReminderReleasePatch = {
+    // Only a same-day count can be given back. A stale one is left alone: the
+    // number on the row now describes a day this delivery was never part of.
+    sentCount:
+      pending.day === today && policy.sentLocalDate === today
+        ? Math.max(0, (policy.sentCount ?? 0) - 1)
+        : (policy.sentCount ?? 0),
+    pendingDelivery: undefined,
+  };
+  if (pending.countedNudge) {
+    patch.unansweredNudges = Math.max(0, (policy.unansweredNudges ?? 0) - 1);
+  }
+  if (pending.offeredBreak) {
+    // The question was never asked, so Ted is not owed an answer to it.
+    // Leaving this true is the worst outcome of the whole bug: it suppresses
+    // every nudge until the user replies to something they never received.
+    patch.awaitingBreakReply = false;
+  }
+  return { released: true, patch };
+}
+
 // ---------------------------------------------------------------------------
 // The floor under every calorie target.
 //
@@ -1253,6 +1348,8 @@ export const TED_HTTP_ACTIONS = [
   "report",
   "reports",
   "reminderGate",
+  "reminderMissed",
+  "pendingReminders",
   "replied",
   "setupAudit",
   "refreshSetup",

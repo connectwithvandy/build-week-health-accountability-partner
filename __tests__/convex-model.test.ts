@@ -14,6 +14,7 @@ import {
   isLocalTimeKey,
   buildDedupeKey,
   decideReminderDelivery,
+  releaseReminderDelivery,
   findClashingEntry,
   isPaused,
   isWithinQuietHours,
@@ -666,6 +667,112 @@ describe("Reminder delivery decision (milestone 12)", () => {
     expect(isPaused(now, now + 1)).toBe(true);
     expect(isPaused(now, now)).toBe(false);
     expect(isPaused(now, undefined)).toBe(false);
+  });
+});
+
+describe("Releasing a reminder that was cleared but never delivered", () => {
+  const today = "2026-09-16";
+  const pending = {
+    id: "abc-123",
+    day: today,
+    at: Date.UTC(2026, 8, 16, 13, 30),
+    countedNudge: true,
+    offeredBreak: false,
+  };
+  const base = {
+    quietHoursStart: "22:00",
+    quietHoursEnd: "07:00",
+    maxPerDay: 3,
+    sentLocalDate: today,
+    sentCount: 2,
+    unansweredNudges: 3,
+    pendingDelivery: pending,
+  };
+
+  it("gives back the day's count and the nudge that never arrived", () => {
+    const outcome = releaseReminderDelivery(base, "abc-123", today);
+    expect(outcome).toEqual({
+      released: true,
+      patch: {
+        sentCount: 1,
+        unansweredNudges: 2,
+        pendingDelivery: undefined,
+      },
+    });
+  });
+
+  it("stops the break offer waiting on a reply to a question nobody saw", () => {
+    const offered = {
+      ...base,
+      unansweredNudges: 4,
+      awaitingBreakReply: true,
+      pendingDelivery: { ...pending, countedNudge: false, offeredBreak: true },
+    };
+    const outcome = releaseReminderDelivery(offered, "abc-123", today);
+    expect(outcome.released).toBe(true);
+    if (!outcome.released) return;
+    expect(outcome.patch.awaitingBreakReply).toBe(false);
+    // The offer replaced the nudge rather than following one, so the gate never
+    // counted it and there is nothing here to give back.
+    expect(outcome.patch.unansweredNudges).toBeUndefined();
+    expect(outcome.patch.sentCount).toBe(1);
+  });
+
+  it("does nothing the second time, so a repeated pass cannot double-refund", () => {
+    const first = releaseReminderDelivery(base, "abc-123", today);
+    expect(first.released).toBe(true);
+    // What the row looks like once the first release has been written.
+    const after = { ...base, sentCount: 1, unansweredNudges: 2 };
+    delete (after as { pendingDelivery?: unknown }).pendingDelivery;
+    expect(releaseReminderDelivery(after, "abc-123", today)).toEqual({
+      released: false,
+      reason: "nothingPending",
+    });
+  });
+
+  it("will not reach back past a later send that went out fine", () => {
+    const newer = { ...base, pendingDelivery: { ...pending, id: "xyz-789" } };
+    expect(releaseReminderDelivery(newer, "abc-123", today)).toEqual({
+      released: false,
+      reason: "stale",
+    });
+  });
+
+  it("leaves a fresh day's count alone when the failure surfaces after midnight", () => {
+    const tomorrow = "2026-09-17";
+    const rolled = {
+      ...base,
+      sentLocalDate: tomorrow,
+      sentCount: 1,
+      pendingDelivery: { ...pending, day: today },
+    };
+    const outcome = releaseReminderDelivery(rolled, "abc-123", tomorrow);
+    expect(outcome.released).toBe(true);
+    if (!outcome.released) return;
+    // The 1 belongs to today's sends, which this delivery was never part of.
+    expect(outcome.patch.sentCount).toBe(1);
+    // The nudge count is not per-day, so that one is still owed back.
+    expect(outcome.patch.unansweredNudges).toBe(2);
+  });
+
+  it("never takes a counter below zero", () => {
+    const empty = {
+      ...base,
+      sentCount: 0,
+      unansweredNudges: 0,
+    };
+    const outcome = releaseReminderDelivery(empty, "abc-123", today);
+    expect(outcome.released).toBe(true);
+    if (!outcome.released) return;
+    expect(outcome.patch.sentCount).toBe(0);
+    expect(outcome.patch.unansweredNudges).toBe(0);
+  });
+
+  it("has nothing to say about a user with no reminder row", () => {
+    expect(releaseReminderDelivery(null, "abc-123", today)).toEqual({
+      released: false,
+      reason: "noPolicy",
+    });
   });
 });
 

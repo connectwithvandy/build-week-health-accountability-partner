@@ -4243,8 +4243,137 @@ class BreakOfferTest(unittest.TestCase):
     def test_a_storage_outage_does_not_invent_a_break_offer(self) -> None:
         """The count lives in the row we could not read, so do not guess."""
         with patch.object(gates.time, "strftime", return_value="09:00"):
-            allowed, reason, offer = gates._reminder_allowed("whatsapp:sha256:x")
+            allowed, reason, offer, delivery = gates._reminder_allowed(
+                "whatsapp:sha256:x"
+            )
         self.assertFalse(offer)
+        # Nothing was counted, so there is nothing a release could give back.
+        self.assertEqual(delivery, "")
+
+
+class ReminderReleaseTest(unittest.TestCase):
+    """A send that is cleared and then dropped has to be given back.
+
+    `gateReminderDelivery` spends one of the day's reminders and one step
+    towards the break offer at the moment it says yes, which is before WhatsApp
+    has been asked for anything. This plugin then has one path that asks and
+    sends nothing anyway.
+    """
+
+    SESSION = "cron_000000000000_20260903_084500"
+    CHAT = "000000000000000@lid"
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+
+    def jobs_file(self) -> object:
+        path = Path(self.tmp) / "jobs.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "000000000000",
+                        "name": "protein reminder",
+                        "origin": {"platform": "whatsapp", "chat_id": self.CHAT},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return patch.object(gates, "_CRON_JOBS_PATH", path)
+
+    def run_gate(self, response_text: str):
+        """Run one cron reminder, and report every release it asked for."""
+        released: list[dict] = []
+
+        def responder(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "deliveryId": "gate-id-1",
+                }
+            if action == "reminderMissed":
+                released.append(dict(body or {}))
+                return {"success": True, "released": True}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=responder
+        ):
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text=response_text
+            )
+        return reply, released
+
+    def test_a_suppressed_reminder_gives_the_users_allowance_back(self) -> None:
+        """The calorie drop is the one path that asks and then sends nothing."""
+        reply, released = self.run_gate("time for your 1,800 calorie dinner")
+        self.assertEqual(reply, gates.CRON_SILENT)
+        self.assertEqual(len(released), 1)
+        self.assertEqual(released[0]["deliveryId"], "gate-id-1")
+        self.assertEqual(released[0]["reason"], "suppressed")
+
+    def test_a_reminder_that_actually_goes_out_is_not_given_back(self) -> None:
+        reply, released = self.run_gate("protein shake time")
+        self.assertIsNone(reply)
+        self.assertEqual(released, [])
+
+    def test_the_release_names_the_send_rather_than_the_user(self) -> None:
+        """Quoting the id is what stops a release reaching a later send."""
+        _, released = self.run_gate("that is 1,800 calories")
+        self.assertIn("deliveryId", released[0])
+
+    def test_an_old_convex_with_no_delivery_id_is_not_asked(self) -> None:
+        """A deployment that predates this sends no id, and nothing is claimed."""
+        released: list[dict] = []
+
+        def responder(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {"success": True, "allowed": True, "reason": "ok"}
+            if action == "reminderMissed":
+                released.append(dict(body or {}))
+                return {"success": True}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=responder
+        ):
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION,
+                response_text="that is 1,800 calories",
+            )
+        self.assertEqual(reply, gates.CRON_SILENT)
+        self.assertEqual(released, [])
+
+    def test_a_failed_release_does_not_break_the_cron_run(self) -> None:
+        """One nudge short is survivable. A raised exception is not."""
+
+        def responder(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "deliveryId": "gate-id-1",
+                }
+            if action == "reminderMissed":
+                return {"success": False, "error": "offline"}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=responder
+        ):
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION,
+                response_text="that is 1,800 calories",
+            )
+        self.assertEqual(reply, gates.CRON_SILENT)
 
 
 class NudgeCountResetTest(unittest.TestCase):

@@ -123,6 +123,29 @@ export default defineSchema({
     // default for every user who predates this.
     unansweredNudges: v.optional(v.number()),
     awaitingBreakReply: v.optional(v.boolean()),
+    /**
+     * The send the gate last cleared, until something says it arrived or did
+     * not. Written by `gateReminderDelivery`, taken back by
+     * `releaseReminderDelivery`, and absent on every row that predates both —
+     * which reads as "nothing outstanding", the correct default.
+     *
+     * It holds what the gate actually changed rather than enough to recompute
+     * it, because the release has to put `awaitingBreakReply` back only when
+     * the break offer itself was the thing that went missing.
+     */
+    pendingDelivery: v.optional(
+      v.object({
+        id: v.string(),
+        day: v.string(),
+        // When permission was granted. The gateway's delivery ledger records
+        // failures against a chat and a wall-clock time and has no idea which
+        // of its messages were reminders, so this is the only thing that can
+        // line one of its failures up with one of these.
+        at: timestamp,
+        countedNudge: v.boolean(),
+        offeredBreak: v.boolean(),
+      }),
+    ),
     weeklyReviewEnabled: v.optional(v.boolean()),
     weeklyReviewDay: v.optional(weekdayValidator),
     weeklyReviewTime: v.optional(v.string()),
