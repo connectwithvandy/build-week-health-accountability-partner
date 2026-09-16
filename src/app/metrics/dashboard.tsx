@@ -42,7 +42,7 @@ export function DailyChart({
   title: string;
   note: string;
   series: { dayKey: string; value: number }[];
-  tone: "visitors" | "clicks" | "starts";
+  tone: "visitors" | "clicks" | "starts" | "activated";
 }) {
   const peak = Math.max(...series.map((point) => point.value), 0);
   const peakIndex = series.findIndex((point) => point.value === peak && peak > 0);
@@ -77,8 +77,22 @@ export function DailyChart({
   );
 }
 
+/** What each setup requirement is, said the way Ted asks for it. An unknown
+ *  key falls through to itself rather than being hidden, so a requirement added
+ *  to `setupRequirements` shows up here badly named instead of not at all. */
+const REQUIREMENT_LABELS: Record<string, string> = {
+  privacyNotice: "The privacy notice going out",
+  name: "What to call them",
+  age: "Their age",
+  height: "Their height",
+  weight: "Their weight",
+  goal: "The one thing they want to change",
+  calorieTarget: "A calorie target",
+  checkInTime: "What time to check in, and their city",
+};
+
 export function Dashboard({ summary, source }: { summary: Summary; source: string }) {
-  const { totals, thisWeek, daily, byPlacement, coverage } = summary;
+  const { totals, thisWeek, daily, byPlacement, setupBlockers, coverage } = summary;
 
   return (
     <>
@@ -94,7 +108,8 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
             <h1 className="metric-stage-label">different people opened the site</h1>
             <p className="metric-stage-note">
               {thisWeek.pageViews.toLocaleString()} page views ·{" "}
-              {totals.uniqueVisitors.toLocaleString()} people across every week on record
+              {totals.visitorWeeks.toLocaleString()} across every week on record, counted once per
+              person per week, so somebody who came back appears in each week they came
             </p>
           </div>
 
@@ -121,6 +136,20 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
               without opening the site, so this is not a share of the taps
             </p>
           </div>
+
+          {/* The stage the other three exist for. Starting a conversation is
+              one message. This is the first point where Ted actually did its
+              job, and unlike the stage to its left it is a fair share, because
+              both numbers come from the same rows and describe the same people. */}
+          <div className="metric-stage metric-stage-activated">
+            <p className="metric-stage-value">{thisWeek.activated.toLocaleString()}</p>
+            <p className="metric-stage-label">finished setup and logged something</p>
+            <p className="metric-stage-note">
+              {share(thisWeek.activated, thisWeek.conversationsStarted)} of the people who started ·{" "}
+              {totals.activated.toLocaleString()} all time ·{" "}
+              {totals.returnedASecondDay.toLocaleString()} came back and logged on a second day
+            </p>
+          </div>
         </div>
       </section>
 
@@ -143,6 +172,12 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
           tone="starts"
           series={daily.map((day) => ({ dayKey: day.dayKey, value: day.starts }))}
         />
+        <DailyChart
+          title="People who activated"
+          note="Setup finished and at least one thing logged"
+          tone="activated"
+          series={daily.map((day) => ({ dayKey: day.dayKey, value: day.activations }))}
+        />
       </section>
 
       <section className="metric-table-wrap">
@@ -155,6 +190,7 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
                 <th scope="col">Visitors</th>
                 <th scope="col">Taps</th>
                 <th scope="col">Conversations started</th>
+                <th scope="col">Activated</th>
               </tr>
             </thead>
             <tbody>
@@ -164,11 +200,51 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
                   <td>{day.visitors}</td>
                   <td>{day.clicks}</td>
                   <td>{day.starts}</td>
+                  <td>{day.activations}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      </section>
+
+      {/* Not a vanity number. Every row here is a person who started talking to
+          Ted and stopped somewhere, and the top row is the question costing the
+          most people. This is the one panel on the page that says what to fix
+          rather than how things went. */}
+      <section className="metric-table-wrap" aria-labelledby="setup-blockers">
+        <h2 id="setup-blockers">What setup is still waiting on</h2>
+        {setupBlockers.length === 0 ? (
+          <p className="metric-empty">Nobody is part-way through setup.</p>
+        ) : (
+          <>
+            <p className="metric-note">
+              {totals.loggedWithoutFinishingSetup.toLocaleString()} of these people are logging
+              meals, water or workouts anyway, so Ted is useful to them while still counting them
+              unfinished.
+            </p>
+            <div className="metric-scroll">
+              <table className="metric-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Still missing</th>
+                    <th scope="col">People held up by it</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {setupBlockers.map((row) => (
+                    <tr key={row.requirement}>
+                      <th scope="row">
+                        {REQUIREMENT_LABELS[row.requirement] ?? row.requirement}
+                      </th>
+                      <td>{row.people}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="metric-table-wrap">
@@ -238,6 +314,12 @@ export function Dashboard({ summary, source }: { summary: Summary; source: strin
             {coverage.truncated ? " (the read limit was hit, so older events are not counted)" : ""}
             {coverage.oldestEventAt
               ? `, the oldest from ${IST_TIME.format(new Date(coverage.oldestEventAt))}. `
+              : ". "}
+            {coverage.usersScanned.toLocaleString()} people and{" "}
+            {coverage.entriesScanned.toLocaleString()} logged entries behind the activation
+            figures
+            {coverage.entriesTruncated
+              ? ", and that read hit its limit too, so every activation number above is a floor rather than a count. "
               : ". "}
             Read from the Convex deployment at <code>{source}</code> at{" "}
             {IST_TIME.format(new Date(summary.generatedAt))} IST — the same deployment the

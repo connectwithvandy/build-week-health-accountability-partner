@@ -22,11 +22,14 @@ function summary(overrides: Partial<Summary> = {}): Summary {
     today: "2026-09-05",
     windowDays: 14,
     totals: {
-      uniqueVisitors: 412,
+      visitorWeeks: 412,
       pageViews: 631,
       whatsappClicks: 96,
-      uniqueClickers: 71,
+      clickerWeeks: 71,
       conversationsStarted: 25,
+      activated: 11,
+      returnedASecondDay: 8,
+      loggedWithoutFinishingSetup: 6,
     },
     thisWeek: {
       uniqueVisitors: 180,
@@ -34,6 +37,7 @@ function summary(overrides: Partial<Summary> = {}): Summary {
       whatsappClicks: 45,
       uniqueClickers: 36,
       conversationsStarted: 9,
+      activated: 4,
     },
     byPlacement: [
       { placement: "hero", clicks: 60, uniqueClickers: 44 },
@@ -45,9 +49,18 @@ function summary(overrides: Partial<Summary> = {}): Summary {
       visitors: [4, 9, 12, 7, 15, 22, 18, 31, 27, 40, 36, 52, 44, 61][index],
       clicks: [0, 1, 2, 1, 3, 5, 4, 7, 6, 9, 8, 12, 10, 14][index],
       starts: [0, 0, 1, 0, 1, 2, 1, 3, 2, 4, 3, 5, 2, 4][index],
+      activations: [0, 0, 0, 0, 1, 1, 0, 1, 1, 2, 1, 2, 1, 2][index],
     })),
+    setupBlockers: [
+      { requirement: "checkInTime", people: 22 },
+      { requirement: "calorieTarget", people: 20 },
+      { requirement: "goal", people: 16 },
+    ],
     coverage: {
       eventsScanned: 1204,
+      usersScanned: 46,
+      entriesScanned: 161,
+      entriesTruncated: false,
       truncated: false,
       oldestEventAt: Date.UTC(2026, 7, 23, 4, 0),
       newestEventAt: Date.UTC(2026, 8, 5, 5, 30),
@@ -67,6 +80,52 @@ describe("the /metrics dashboard", () => {
     ).toBeInTheDocument();
     // the same number is never printed twice on the page
     expect(screen.getAllByText("180")).toHaveLength(1);
+  });
+
+  it("never calls the lifetime rollup a number of people", () => {
+    render(<Dashboard summary={summary()} source="hardy-scorpion-901.convex.cloud" />);
+
+    const lede = screen.getByLabelText("This week, stage by stage");
+    // The visitor hash has the week baked into it, so 412 is visitor-weeks and
+    // an upper bound on people. "412 people" is a claim a reader could
+    // disprove, and every other figure on the page would lose its credit with
+    // it.
+    expect(within(lede).queryByText(/412 people/)).not.toBeInTheDocument();
+    expect(within(lede).getByText(/counted once per person per week/)).toBeInTheDocument();
+  });
+
+  it("separates finishing setup and logging from merely saying hello", () => {
+    render(<Dashboard summary={summary()} source="hardy-scorpion-901.convex.cloud" />);
+
+    const lede = screen.getByLabelText("This week, stage by stage");
+    // 4 of the 9 who started this week got as far as logging something.
+    expect(within(lede).getByText(/44% of the people who started/)).toBeInTheDocument();
+    expect(
+      within(lede).getByText(/8 came back and logged on a second day/),
+    ).toBeInTheDocument();
+  });
+
+  it("names the question holding up the most people, worst first", () => {
+    render(<Dashboard summary={summary()} source="hardy-scorpion-901.convex.cloud" />);
+
+    // The panel exists to be acted on, so the row order is load-bearing: the
+    // first one is the question to go and fix. Scoped to the panel, because the
+    // day table above it is full of row headers too.
+    const panel = screen.getByLabelText("What setup is still waiting on");
+    const rows = within(panel).getAllByRole("rowheader");
+    expect(rows[0]).toHaveTextContent("What time to check in, and their city");
+    expect(rows).toHaveLength(3);
+    expect(
+      screen.getByText(/6 of these people are logging meals, water or workouts anyway/),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing is pending rather than showing an empty blockers table", () => {
+    render(
+      <Dashboard summary={summary({ setupBlockers: [] })} source="hardy-scorpion-901.convex.cloud" />,
+    );
+
+    expect(screen.getByText("Nobody is part-way through setup.")).toBeInTheDocument();
   });
 
   it("shows the drop from visiting to tapping to talking", () => {
@@ -89,6 +148,7 @@ describe("the /metrics dashboard", () => {
         whatsappClicks: 0,
         uniqueClickers: 0,
         conversationsStarted: 0,
+        activated: 0,
       },
     });
     render(<Dashboard summary={empty} source="hardy-scorpion-901.convex.cloud" />);
@@ -101,9 +161,9 @@ describe("the /metrics dashboard", () => {
   it("puts every charted value in a table, because the charts alone are not readable by everyone", () => {
     render(<Dashboard summary={summary()} source="hardy-scorpion-901.convex.cloud" />);
 
-    // 14 days + 3 buttons + two header rows.
-    expect(screen.getAllByRole("row")).toHaveLength(14 + 3 + 2);
-    expect(screen.getByRole("row", { name: "5 Sept 61 14 4" })).toBeInTheDocument();
+    // 14 days + 3 blockers + 3 buttons + three header rows.
+    expect(screen.getAllByRole("row")).toHaveLength(14 + 3 + 3 + 3);
+    expect(screen.getByRole("row", { name: "5 Sept 61 14 4 2" })).toBeInTheDocument();
   });
 
   it("names the buttons the way a person would, not the way the code does", () => {
@@ -123,7 +183,15 @@ describe("the /metrics dashboard", () => {
 
   it("admits when the read hit its ceiling instead of showing a short count as a total", () => {
     const capped = summary({
-      coverage: { eventsScanned: 16000, truncated: true, oldestEventAt: null, newestEventAt: null },
+      coverage: {
+        eventsScanned: 16000,
+        usersScanned: 46,
+        entriesScanned: 161,
+        entriesTruncated: false,
+        truncated: true,
+        oldestEventAt: null,
+        newestEventAt: null,
+      },
     });
     render(<Dashboard summary={capped} source="hardy-scorpion-901.convex.cloud" />);
 

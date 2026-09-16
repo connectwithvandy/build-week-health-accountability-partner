@@ -19,6 +19,7 @@ import {
   isLocalTimeKey,
   needsDateConfirmation,
   onboardingFieldValidator,
+  setupSnapshotFrom,
   type SetupSnapshot,
   type SetupState,
   setupStateFor,
@@ -294,17 +295,7 @@ async function buildSetupSnapshot(
       .withIndex("by_user", (query) => query.eq("userId", user._id))
       .unique(),
   ]);
-  return {
-    privacyNoticeSentAt: user.privacyNoticeSentAt ?? null,
-    name: user.name ?? null,
-    age: user.age ?? null,
-    heightCm: user.heightCm ?? null,
-    weightKg: user.weightKg ?? null,
-    sex: user.sex ?? null,
-    goal: user.goal ?? null,
-    calories: target?.calories ?? null,
-    dailyReviewTime: reminder?.dailyReviewTime ?? null,
-  };
+  return setupSnapshotFrom(user, target, reminder);
 }
 
 /**

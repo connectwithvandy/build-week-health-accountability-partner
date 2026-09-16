@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 
 import { mutation, query } from "./_generated/server";
+import { setupRequirements, setupSnapshotFrom, setupStateFor } from "./model";
 
 /**
  * The website's own numbers: who arrived, who tapped "Message Ted", and how
@@ -118,7 +119,58 @@ export const summary = query({
 
     // A user row is written the first time Ted records anything at all for a
     // WhatsApp number, so its creation is that person's first conversation.
-    const users = await ctx.db.query("users").collect();
+    const users = await ctx.db.query("users").take(ROW_LIMIT);
+
+    /**
+     * Activation, as distinct from starting a conversation.
+     *
+     * Saying hello creates a user row and proves almost nothing. Finishing
+     * setup and then logging a real meal, walk, glass of water or workout is
+     * the smallest act that shows Ted did its job, and the two are reported
+     * separately because collapsing them lets a wave of curious hellos read as
+     * a wave of use.
+     *
+     * Readiness is recomputed here from the rows rather than read from
+     * `onboarding.completedAt`, because that column is only ever written inside
+     * `saveOnboarding`: a user whose last missing field was closed by a
+     * `setTarget` call goes active without it. Trusting it would undercount.
+     */
+    // `.take(ROW_LIMIT)` rather than `.collect()`, for the same reason the site
+    // events above use it: Convex refuses to scan past its ceiling, and a
+    // `.collect()` that reaches it throws rather than returning a short list.
+    // `dailyEntries` is the table that will get there first, and a short read
+    // would quietly deflate the activation count, so the ceiling is reported
+    // alongside the numbers rather than hidden behind them.
+    const [onboarding, entries, targets, reminders] = await Promise.all([
+      ctx.db.query("onboarding").take(ROW_LIMIT),
+      ctx.db.query("dailyEntries").take(ROW_LIMIT),
+      ctx.db.query("targets").take(ROW_LIMIT),
+      ctx.db.query("reminders").take(ROW_LIMIT),
+    ]);
+
+    const targetByUser = new Map(targets.map((row) => [String(row.userId), row]));
+    const reminderByUser = new Map(reminders.map((row) => [String(row.userId), row]));
+    const onboardingStartedAt = new Map(
+      onboarding.map((row) => [String(row.userId), row.startedAt]),
+    );
+
+    /**
+     * The moment someone first logged anything. `occurredAt` is when it
+     * happened in their day and `createdAt` is when Ted wrote it down; the
+     * earlier of the two is the one that cannot post-date the act itself.
+     */
+    const firstEntryAt = new Map<string, number>();
+    const entryDays = new Map<string, Set<string>>();
+    for (const entry of entries) {
+      const userId = String(entry.userId);
+      const at = Math.min(entry.occurredAt, entry.createdAt);
+      const known = firstEntryAt.get(userId);
+      if (known === undefined || at < known) firstEntryAt.set(userId, at);
+
+      const days = entryDays.get(userId) ?? new Set<string>();
+      days.add(entry.localDate);
+      entryDays.set(userId, days);
+    }
 
     const visitorsAllTime = new Set<string>();
     const visitorsThisWeek = new Set<string>();
@@ -164,23 +216,81 @@ export const summary = query({
     }
 
     const startsByDay = new Map<string, number>();
+    const activationsByDay = new Map<string, number>();
     let startsThisWeek = 0;
+    let activationsThisWeek = 0;
+    let activatedAllTime = 0;
+    let loggedWithoutFinishing = 0;
+    let returnedASecondDay = 0;
+
+    /** How often each requirement is the thing still standing in someone's way.
+     *  Counted only for people who have not finished, so it reads as a queue of
+     *  open questions rather than a history of answered ones. */
+    const blockedBy = new Map<string, number>(setupRequirements.map((name) => [name, 0]));
+
     for (const user of users) {
       const dayKey = istDayKey(user.createdAt);
       startsByDay.set(dayKey, (startsByDay.get(dayKey) ?? 0) + 1);
       if (weekDays.has(dayKey)) startsThisWeek += 1;
+
+      const userId = String(user._id);
+      const state = setupStateFor(
+        setupSnapshotFrom(user, targetByUser.get(userId), reminderByUser.get(userId)),
+      );
+      const firstLog = firstEntryAt.get(userId);
+
+      if ((entryDays.get(userId)?.size ?? 0) >= 2) returnedASecondDay += 1;
+
+      if (!state.ready) {
+        for (const requirement of state.missing) {
+          blockedBy.set(requirement, (blockedBy.get(requirement) ?? 0) + 1);
+        }
+        // Someone logging real meals while Ted still considers them unfinished
+        // is the most useful number on this page: it is the gap between what
+        // the product thinks is happening and what is actually happening.
+        if (firstLog !== undefined) loggedWithoutFinishing += 1;
+        continue;
+      }
+
+      if (firstLog === undefined) continue;
+
+      activatedAllTime += 1;
+      // Dated by whichever half landed last, because that is when both were
+      // first true. Someone who logged a meal mid-setup and finished the next
+      // day activated on the second day, not the first. `startedAt` is the
+      // closest stored stand-in for when setup closed, since `completedAt` is
+      // exactly the column that cannot be trusted here.
+      const activatedAt = Math.max(onboardingStartedAt.get(userId) ?? user.createdAt, firstLog);
+      const activatedDay = istDayKey(activatedAt);
+      activationsByDay.set(activatedDay, (activationsByDay.get(activatedDay) ?? 0) + 1);
+      if (weekDays.has(activatedDay)) activationsThisWeek += 1;
     }
 
     return {
       generatedAt: now,
       today: istDayKey(now),
       windowDays: WINDOW_DAYS,
+      /**
+       * Lifetime rollups. The two visitor counts are deliberately NOT called
+       * "unique visitors", because they cannot be: the visitor hash has the
+       * week baked into it (see `visitorHash` in src/lib/site-analytics.ts), so
+       * somebody who comes back in a second week arrives as a second hash and
+       * is counted twice. Summed, they are visitor-weeks, an upper bound on
+       * people, and naming them that way is the only version of this number
+       * that survives being checked.
+       *
+       * The weekly figures below have no such problem. Within one week the hash
+       * is stable, so `thisWeek.uniqueVisitors` really is a headcount.
+       */
       totals: {
-        uniqueVisitors: visitorsAllTime.size,
+        visitorWeeks: visitorsAllTime.size,
         pageViews,
         whatsappClicks: clicks,
-        uniqueClickers: clickersAllTime.size,
+        clickerWeeks: clickersAllTime.size,
         conversationsStarted: users.length,
+        activated: activatedAllTime,
+        returnedASecondDay,
+        loggedWithoutFinishingSetup: loggedWithoutFinishing,
       },
       thisWeek: {
         uniqueVisitors: visitorsThisWeek.size,
@@ -188,7 +298,13 @@ export const summary = query({
         whatsappClicks: clicksThisWeek,
         uniqueClickers: clickersThisWeek.size,
         conversationsStarted: startsThisWeek,
+        activated: activationsThisWeek,
       },
+      /** Ordered by how many people each one is holding up, worst first. */
+      setupBlockers: [...blockedBy.entries()]
+        .map(([requirement, people]) => ({ requirement, people }))
+        .filter((row) => row.people > 0)
+        .sort((a, b) => b.people - a.people),
       byPlacement: [...clicksByPlacement.entries()]
         .map(([placement, bucket]) => ({
           placement,
@@ -201,10 +317,19 @@ export const summary = query({
         visitors: visitorsByDay.get(dayKey)?.size ?? 0,
         clicks: clicksByDay.get(dayKey) ?? 0,
         starts: startsByDay.get(dayKey) ?? 0,
+        activations: activationsByDay.get(dayKey) ?? 0,
       })),
       // Everything the reader needs to judge the numbers above.
       coverage: {
         eventsScanned: events.length,
+        usersScanned: users.length,
+        entriesScanned: entries.length,
+        // Any of these reaching the ceiling makes the activation numbers a
+        // floor rather than a count, and the page says so in those words.
+        entriesTruncated:
+          entries.length === ROW_LIMIT ||
+          users.length === ROW_LIMIT ||
+          onboarding.length === ROW_LIMIT,
         truncated: events.length === ROW_LIMIT,
         oldestEventAt: events.length > 0 ? events[events.length - 1].createdAt : null,
         newestEventAt: events.length > 0 ? events[0].createdAt : null,

@@ -967,6 +967,42 @@ export type SetupSnapshot = {
   dailyReviewTime?: string | null;
 };
 
+/**
+ * Assemble a snapshot from the three rows it is spread across.
+ *
+ * Pure, and deliberately takes the rows rather than a database handle, so the
+ * two callers that need it can read those rows however suits them: `ted.ts`
+ * fetches one user's target and reminder by index, while the dashboard reads
+ * every row once and looks them up in a map. Both then judge readiness by the
+ * identical code, which is the whole point — a second opinion about what
+ * "missing" means is the bug this shape exists to prevent.
+ */
+export function setupSnapshotFrom(
+  user: {
+    privacyNoticeSentAt?: number | null;
+    name?: string | null;
+    age?: number | null;
+    heightCm?: number | null;
+    weightKg?: number | null;
+    sex?: string | null;
+    goal?: Goal | null;
+  },
+  target: { calories?: number | null } | null | undefined,
+  reminder: { dailyReviewTime?: string | null } | null | undefined,
+): SetupSnapshot {
+  return {
+    privacyNoticeSentAt: user.privacyNoticeSentAt ?? null,
+    name: user.name ?? null,
+    age: user.age ?? null,
+    heightCm: user.heightCm ?? null,
+    weightKg: user.weightKg ?? null,
+    sex: user.sex ?? null,
+    goal: user.goal ?? null,
+    calories: target?.calories ?? null,
+    dailyReviewTime: reminder?.dailyReviewTime ?? null,
+  };
+}
+
 export type SetupState = {
   missing: SetupRequirement[];
   /**
