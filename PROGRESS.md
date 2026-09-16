@@ -1128,6 +1128,74 @@ and every reply for five days has come from the second-choice model.
 Top up the primary provider. This costs nothing to fix and is affecting every
 conversation.
 
+## Order 26 — 16 Sep 2026, night, the pause that silenced nothing
+
+### The one that matters
+
+Sarah asked to be paused at 12:50. The conversation was correct in every word:
+
+    12:50  Sarah   Yes please do pause
+    12:50  Ted     for how many days should i pause the reminders?
+    12:55  Sarah   7 days
+    12:55  Ted     reminders paused for a week, back on 23rd 🙌
+
+The number written into `reminders.pausedUntil` was **26 Sep 2025**. A year in
+the past, so `isPaused` returned false, every guard below it passed, and her
+21:00 daily review reached her eight hours after Ted promised a week's silence.
+
+`paused_until` was described to the model as "Epoch milliseconds". It had "7"
+right and "the 23rd" right and was only wrong converting one into the other, so
+it is no longer asked: the tool takes `pause_days` and `_set_reminder` computes
+the moment from `_local_now`, the same clock `_spoken_date` builds the sentence
+from. It also calls `_mark_paused` on that path, because Sarah had no
+gate-side record at all, which is why the cron check could not save her either.
+`pauseProblem` in `model.ts` refuses an already-expired pause at the mutation,
+the same way the calorie floor sits there rather than only in the gate.
+
+Her row was corrected by hand to 23 Sep 2026. She was the only user affected;
+five others hold correct gate-side pauses. That was luck. The daily-review
+change earlier the same evening (`1d5e081`) was argued safe on the grounds that
+"an explicit pause still silences everything", and nobody read the column
+before believing it. Had one of those eleven held a broken pause, that change
+would have made this worse.
+
+### Also shipped
+
+- **`cache_ttl` 5m → 1h** in `~/.hermes/config.yaml`, which is **not version
+  controlled**. ~438 Sonnet calls a day each carry ~11k tokens of SOUL.md, and
+  the traffic is bursty, so a five-minute cache was written, expired unread and
+  written again, costing more than not caching. That, not the length of
+  SOUL.md, is why a top-up lasted a single day.
+- **`npm run forget -- --who <name>`**, which turns "reply and Vandy deletes it
+  by hand" into one command. The machine holds five things, not the two the
+  privacy page implies; `delivery_obligations.content` carries reply text and
+  nothing else deletes it.
+- **`npm run timezones`** and nine backfilled timezones. 18 of 24 people with a
+  check-in time had none, because `REVIEW_TIME_QUESTION` had lost its city ask.
+  Restored, with a test.
+- **A refused write now names the field** rather than saying "i couldn't file
+  that one", and a failed write is retried once before the user is asked to
+  resend anything.
+
+### Held deliberately, do not lose
+
+`0a0a90e` loosened "a reply is at most two short sentences" to a rule about
+nagging rather than length, and `cc93527` reverts it in the tree. It is held,
+not rejected: it changes what users see and should land when somebody is
+watching. `git revert cc93527` puts it back.
+
+The baseline to judge it against, measured over 238 replies from the seven days
+to 16 Sep: **85% one sentence, median 89 characters, 2 over two sentences, and
+zero with a second question, a mid-sentence dash or an exclamation mark.**
+Re-run that a day after it ships; a jump in the median, or replies that open
+with what is missing, is the signal to revert again.
+
+### Still open
+
+Patch 13 (a cron send writing an obligation row, so the reminder count can be
+refunded), Hermes being unreviewable from this repo, and the nine users with a
+check-in time and no timezone who can only be asked.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
