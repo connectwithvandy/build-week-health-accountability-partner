@@ -1212,11 +1212,17 @@ export const gateReminderDelivery = internalMutation({
       // goes out until they say something, so the counter stops here rather
       // than climbing while Ted is deliberately silent.
       patch.awaitingBreakReply = true;
-    } else {
+    } else if (!policy.awaitingBreakReply) {
       // Counted at the moment a nudge is actually cleared to send, for the
       // same reason the daily cap is: asking and not sending would burn the
       // budget silently, and here it would also march a present user towards
       // a break they never needed.
+      //
+      // Not counted once the break has already been offered. The evening
+      // review still goes out in that state — see `decideReminderDelivery` —
+      // and the counter exists only to decide when to offer a break, which has
+      // happened. Letting it climb would leave a returning user's row reading
+      // like weeks of ignored nudges that were never sent.
       patch.unansweredNudges = (policy.unansweredNudges ?? 0) + 1;
     }
 

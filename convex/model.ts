@@ -789,7 +789,19 @@ export function decideReminderDelivery(
   // This holds until they say something, anything: the reset is any inbound
   // message, not a particular reply, because someone who starts logging again
   // has answered more clearly than "no" would have.
-  if (policy.awaitingBreakReply) {
+  //
+  // THE DAILY REVIEW IS EXEMPT, for the same reason it is exempt from quiet
+  // hours below. SCOPING.md §23 is written about nudges — "the coach stops
+  // nudging", "never sends a fifth unanswered nudge" — and the evening review
+  // is §24, a separate thing the user asked for at an hour they chose
+  // themselves. Suppressing it here was reading §23 wider than it is written.
+  //
+  // On 16 Sep 2026 eleven of the twenty-four people with reminder settings were
+  // in this state, nine of them quiet for seven to eleven days, and every one
+  // had named a check-in time. They were receiving nothing at all. An explicit
+  // pause still silences everything, above, because that is a thing they chose;
+  // going quiet is not the same as asking to be left alone.
+  if (policy.awaitingBreakReply && kind !== "dailyReview") {
     return { allowed: false, reason: "awaitingReply" };
   }
   if (
@@ -805,7 +817,16 @@ export function decideReminderDelivery(
   // Quiet hours and the cap are checked first on purpose: the break offer is
   // still a message, and it must not be the one thing that gets to arrive at
   // 3am or past the daily limit.
-  if ((policy.unansweredNudges ?? 0) >= NUDGES_BEFORE_BREAK_OFFER) {
+  //
+  // `awaitingBreakReply` rules it out entirely: they have already been asked,
+  // and asking twice is worse than the nagging the offer exists to prevent.
+  // This only became reachable when the daily review above stopped being
+  // blocked — without it, somebody's evening check-in would be replaced by a
+  // second copy of a question they have already ignored once.
+  if (
+    !policy.awaitingBreakReply &&
+    (policy.unansweredNudges ?? 0) >= NUDGES_BEFORE_BREAK_OFFER
+  ) {
     return { allowed: true, reason: "ok", offerBreak: true };
   }
   return { allowed: true, reason: "ok" };

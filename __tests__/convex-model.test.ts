@@ -873,6 +873,65 @@ describe("Backing off when someone goes quiet", () => {
     expect(decision.reason).toBe("awaitingReply");
   });
 
+  it("still sends the evening check-in to somebody who went quiet", () => {
+    // SCOPING §23 stops *nudges* after four unanswered. The evening review is
+    // §24 and is something the user asked for at an hour they named, which is
+    // the same argument that already exempts it from quiet hours. Eleven of
+    // the twenty-four people with reminder settings were in this state on
+    // 16 Sep and receiving nothing at all.
+    const decision = decideReminderDelivery(
+      { ...base, unansweredNudges: 9, awaitingBreakReply: true } as never,
+      "21:00",
+      "2026-09-02",
+      now,
+      "dailyReview",
+    );
+    expect(decision.allowed).toBe(true);
+    expect(decision.reason).toBe("ok");
+  });
+
+  it("does not ask a second time about the break it already offered", () => {
+    // Without this the exemption above would replace somebody's evening
+    // check-in with another copy of a question they have already ignored.
+    const decision = decideReminderDelivery(
+      { ...base, unansweredNudges: 9, awaitingBreakReply: true } as never,
+      "21:00",
+      "2026-09-02",
+      now,
+      "dailyReview",
+    );
+    // Asserted together, because `offerBreak` being absent on a decision that
+    // was refused anyway proves nothing: this has to be a review that is
+    // actually going out, carrying no second break question.
+    expect(decision).toEqual({ allowed: true, reason: "ok" });
+  });
+
+  it("still silences the evening check-in for somebody who actually paused", () => {
+    // Going quiet is not the same as asking to be left alone. An explicit
+    // pause is a thing they chose and it outranks everything.
+    const decision = decideReminderDelivery(
+      { ...base, awaitingBreakReply: true, pausedUntil: now + 60_000 } as never,
+      "21:00",
+      "2026-09-02",
+      now,
+      "dailyReview",
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("paused");
+  });
+
+  it("still holds the nudges back while the break question is open", () => {
+    const decision = decideReminderDelivery(
+      { ...base, unansweredNudges: 9, awaitingBreakReply: true } as never,
+      "09:00",
+      "2026-09-02",
+      now,
+      "nudge",
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe("awaitingReply");
+  });
+
   it("never lets the break offer itself break quiet hours", () => {
     const decision = decideReminderDelivery(
       { ...base, unansweredNudges: 9 } as never,
