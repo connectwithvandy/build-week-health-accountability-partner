@@ -1760,6 +1760,52 @@ class StorageOutageTest(unittest.TestCase):
             },
         )
 
+    def test_a_write_that_times_out_once_is_tried_again(self) -> None:
+        """A blip should cost Ted a moment, not cost the user their meal."""
+        outage = self.outage()
+        saved = {"success": True}
+        with patch.object(gates, "_convex_request", side_effect=[outage, saved]) as call:
+            with patch.object(gates.time, "sleep"):
+                result = gates._convex_write("log", "whatsapp:123", self.SESSION)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(call.call_count, 2)
+        # The turn must not be told a save failed that in fact landed.
+        context = gates._TURN_CONTEXT.get(self.SESSION) or {}
+        self.assertFalse(context.get("storage_failed"))
+
+    def test_a_refused_write_is_never_retried(self) -> None:
+        """A refusal is the backend having read it and said no.
+
+        The identical payload earns the identical answer, so a retry is delay
+        in front of the same result — and it would double every log line for a
+        calorie target that was always going to be refused.
+        """
+        refusal = {"success": False, "error": "below resting energy", "refused": True}
+        with patch.object(gates, "_convex_request", return_value=refusal) as call:
+            with patch.object(gates.time, "sleep"):
+                gates._convex_write("save", "whatsapp:123", self.SESSION)
+
+        self.assertEqual(call.call_count, 1)
+
+    def test_a_write_that_keeps_failing_still_gives_up(self) -> None:
+        """Bounded. Ted is answering a live chat, not draining a queue."""
+        with patch.object(gates, "_convex_request", return_value=self.outage()) as call:
+            with patch.object(gates.time, "sleep"):
+                result = gates._convex_write("log", "whatsapp:123", self.SESSION)
+
+        self.assertFalse(result["success"])
+        self.assertEqual(call.call_count, 1 + gates._CONVEX_WRITE_RETRIES)
+        context = gates._TURN_CONTEXT.get(self.SESSION) or {}
+        self.assertTrue(context.get("storage_failed"))
+
+    def test_a_read_is_never_retried(self) -> None:
+        """Reads are cached and cheap to lose; only writes cost the user."""
+        with patch.object(gates, "_convex_request", return_value=self.outage()) as call:
+            gates._cached_user_memory("whatsapp:nobody")
+
+        self.assertEqual(call.call_count, 1)
+
     def test_a_refused_write_is_not_reported_as_an_outage(self) -> None:
         reason = "A calorie target of 1200 is below this user's resting energy of 1667 kcal"
         error = self.http_error(400, json.dumps({"success": False, "error": reason}).encode())

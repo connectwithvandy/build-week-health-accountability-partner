@@ -45,6 +45,11 @@ os.environ["TED_GATES_GATEWAY_STATE"] = str(_SANDBOX / "gateway_state.json")
 # end of it. Tests that care about scheduling patch _run_cron_cli directly.
 os.environ["TED_GATES_DISABLE_CRON"] = "1"
 
+# A failed Convex write is retried once, after a pause. The pause is real and
+# deliberate in production and pure waiting here: the tests that exercise it
+# patch `_convex_request` anyway, so nothing is being skipped except the sleep.
+os.environ["TED_GATES_RETRY_PAUSE"] = "0"
+
 # The real gateway reads these from ~/.hermes/.env. A test run must never
 # inherit a live Convex URL or secret and write to production.
 os.environ.pop("TED_CONVEX_SITE_URL", None)

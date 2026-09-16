@@ -1529,6 +1529,31 @@ def _note_write_refused(context_id: str) -> None:
             context["write_refused"] = True
 
 
+# One extra attempt at a write that failed for a reason that might not last.
+#
+# There was none, so a single timeout or dropped connection was enough to tell
+# somebody their meal did not save. That is the reviewer's "I haven't completed
+# that action" in its real form: there is no button to tap in WhatsApp, so the
+# useful version of a retry is Ted trying again itself rather than asking a
+# person to retype what they already sent.
+#
+# This costs nothing on the happy path. It is only reached after a write has
+# already failed, where the alternative outcome is a wrong answer to the user,
+# so a second or two of extra latency is being spent on a turn that was going
+# to disappoint them anyway.
+#
+# Deliberately one, not three. Ted is answering a live chat, and a write worth
+# waiting fifteen seconds for is not one worth holding a conversation open for.
+_CONVEX_WRITE_RETRIES = 1
+
+# Long enough that a backend refusing connections for a moment gets a moment,
+# short enough to be invisible in a chat. Read from the environment so the test
+# suite can zero it: a quarter second in each of the forty-odd tests that drive
+# a failing write took the run from one second to fourteen, and a suite nobody
+# wants to wait for is a suite that stops being run.
+_CONVEX_RETRY_PAUSE = float(os.environ.get("TED_GATES_RETRY_PAUSE", "0.25"))
+
+
 def _convex_write(
     action: str,
     user_key: str,
@@ -1539,6 +1564,22 @@ def _convex_write(
     """A write, plus the things every write must do: invalidate the cached
     facts it may have changed, and flag an outage or a refusal for the turn."""
     result = _convex_request(action, user_key, facts=facts, body=body)
+
+    # Retried only when the backend could not be reached. A refusal is the
+    # backend having read the write and said no, and it will say no to the
+    # identical payload every time, so retrying one is pure delay in front of
+    # the same answer.
+    for attempt in range(_CONVEX_WRITE_RETRIES):
+        if result.get("success") or not result.get("storage_error"):
+            break
+        LOGGER.info(
+            "ted_convex_write_retry action=%s attempt=%d error=%s",
+            action,
+            attempt + 1,
+            result.get("error"),
+        )
+        time.sleep(_CONVEX_RETRY_PAUSE)
+        result = _convex_request(action, user_key, facts=facts, body=body)
     if result.get("success"):
         _invalidate_user_memory(user_key)
     elif result.get("refused"):
