@@ -4251,6 +4251,119 @@ class BreakOfferTest(unittest.TestCase):
         self.assertEqual(delivery, "")
 
 
+class CountedNoteTest(unittest.TestCase):
+    """Saying whose count it is, without asking a question.
+
+    13 of the 50 photo meals logged by 16 Sep 2026 were corrected afterwards
+    against 6 of 77 typed ones, and the largest group was a miscount: four
+    rotis that were three, one paratha that was two. The card already prints
+    the count. It never said the count was Ted's.
+
+    A question was the obvious fix and is the wrong one. The tool description
+    has told the model since the beginning not to ask about portions before
+    logging, and an unanswered question about a meal either blocks the entry or
+    hangs. A line with no question mark costs nothing to ignore.
+    """
+
+    KEY = "whatsapp:sha256:counted-note"
+    MEAL = {"items": ["4 rotis", "moong dal"], "calories": 600}
+
+    def note(self, meal=None, sources=("photo",), said=""):
+        return gates._counted_note([meal or self.MEAL], list(sources), said)
+
+    # --- when it speaks -----------------------------------------------------
+
+    def test_a_count_read_off_a_photo_is_owned(self) -> None:
+        self.assertEqual(self.note(), "(4 rotis is my count, tell me if it's off)")
+
+    def test_a_voice_note_counts_the_same_way(self) -> None:
+        """Hermes transcribes before Ted sees it, so voice is Ted counting too."""
+        self.assertIn("4 rotis", self.note(sources=("voice",)))
+
+    def test_it_is_never_a_question(self) -> None:
+        """A question needs answering. This is the whole point of the design."""
+        self.assertNotIn("?", self.note())
+
+    # --- when it stays quiet ------------------------------------------------
+
+    def test_a_typed_meal_says_nothing(self) -> None:
+        """Their count, not Ted's. There is nothing to own up to."""
+        self.assertEqual(self.note(sources=("text",)), "")
+
+    def test_a_number_in_their_own_words_silences_it(self) -> None:
+        """Reading somebody's own "3 rotis" back as Ted's guess is not listening."""
+        self.assertEqual(self.note(said="3 rotis and dal"), "")
+
+    def test_no_meal_no_note(self) -> None:
+        self.assertEqual(gates._counted_note([], ["photo"], ""), "")
+
+    def test_portion_words_are_not_counts_worth_a_line(self) -> None:
+        """Being one out on "2 pieces" of toffee changes nothing worth saying."""
+        for items in (["mango bite toffee, 2 pieces"], ["veg soup (1 bowl)"],
+                      ["powdered mishri, 1 tbsp"]):
+            with self.subTest(items=items):
+                self.assertEqual(self.note({"items": items, "calories": 90}), "")
+
+    # --- one line, whatever arrives ----------------------------------------
+
+    def test_three_photos_still_produce_one_line(self) -> None:
+        """Sending a whole day as three pictures is normal here."""
+        meals = [
+            {"items": ["2 rotis"], "calories": 240},
+            {"items": ["1 paratha"], "calories": 486},
+            {"items": ["3 idlis"], "calories": 180},
+        ]
+        note = gates._counted_note(meals, ["photo", "photo", "photo"], "")
+        self.assertEqual(note.count("is my count"), 1)
+        # The one whose being wrong moves the day furthest.
+        self.assertIn("1 paratha", note)
+
+    def test_the_estimate_note_wins_so_there_are_never_two(self) -> None:
+        out = gates._with_meal_breakdown(
+            "ooh nice", self.MEAL, {"calories": 600, "meals": 1}, self.KEY,
+            meals=[self.MEAL], unmatched=["mathri"],
+            sources=["photo"], user_words="",
+        )
+        self.assertIn("my estimate", out)
+        self.assertNotIn("is my count", out)
+
+    def test_the_breakdown_itself_is_untouched(self) -> None:
+        """The card is the card. This only ever appends a line under it."""
+        args = dict(meal=self.MEAL, day={"calories": 600, "meals": 1},
+                    user_key=self.KEY, meals=[self.MEAL])
+        without = gates._with_meal_breakdown("ooh nice", **args)
+        with_note = gates._with_meal_breakdown(
+            "ooh nice", **args, sources=["photo"], user_words="")
+        self.assertTrue(with_note.startswith(without))
+        self.assertEqual(with_note[len(without):].strip(),
+                         "(4 rotis is my count, tell me if it's off)")
+
+    # --- the phrase reads like a person wrote it ---------------------------
+
+    def test_the_count_attaches_to_the_food_it_belongs_to(self) -> None:
+        """"masala omelette (2 eggs)" is one omelette, not two."""
+        self.assertEqual(gates._counted_item_phrase("masala omelette (2 eggs)"), "2 eggs")
+
+    def test_every_shape_ted_writes_a_count_in(self) -> None:
+        for item, expected in (
+            ("4 rotis", "4 rotis"),
+            ("roti (1)", "1 roti"),
+            ("veg paratha x2", "2 parathas"),
+            ("paneer paratha (1, assumed)", "1 paratha"),
+            ("grilled veg sandwich (1)", "1 sandwich"),
+            ("2 bread slices", "2 slices"),
+            ("besan cheela (2)", "2 cheelas"),
+        ):
+            with self.subTest(item=item):
+                self.assertEqual(gates._counted_item_phrase(item), expected)
+
+    def test_a_loose_number_elsewhere_in_the_item_is_not_a_count(self) -> None:
+        self.assertEqual(gates._counted_item_phrase("2 glasses milk, dal"), "")
+
+    def test_a_number_binds_to_the_nearest_food_not_the_first(self) -> None:
+        self.assertEqual(gates._counted_item_phrase("1 cup tea and 2 rotis"), "2 rotis")
+
+
 class FactReuseTest(unittest.TestCase):
     """Did remembering something actually change what Ted said?
 

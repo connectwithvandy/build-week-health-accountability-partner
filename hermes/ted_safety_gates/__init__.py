@@ -5044,6 +5044,136 @@ def _meals_breakdown(
     return "\n".join(out)
 
 
+# Foods where getting the count wrong costs real calories. A roti is ~120 kcal
+# and a paratha closer to 300, so miscounting one moves somebody's day more
+# than most whole snacks do.
+#
+# Portion words — pieces, cups, bowls, katoris — are deliberately absent. They
+# fire on "mango bite toffee, 2 pieces" and "veg soup (1 bowl)", where being
+# out by one changes almost nothing, and a note nobody needs is how a useful
+# line turns into wallpaper people stop reading.
+_STAPLE_WORD = (
+    r"rotis?|chapatis?|parathas?|chillas?|cheelas?|dosas?|idlis?|puris?"
+    r"|naans?|eggs?|slices?|toasts?|sandwich(?:es)?|scoops?|pancakes?"
+    r"|omelettes?|omelets?"
+)
+
+# The count has to sit against the food, not merely somewhere in the same item.
+# "masala omelette (2 eggs)" is one omelette made of two eggs, and reading the
+# 2 as omelettes turns a correct entry into a wrong note. Two shapes, because
+# Ted writes both: "4 rotis" and "roti (1)" / "veg paratha x2".
+# One optional word may sit between, for "2 bread slices" and "3 wheat chillas".
+# Exactly one: at two the gap starts swallowing separate foods, and "1 cup tea
+# and 2 rotis" must attach the 2 to the rotis rather than the 1 to anything.
+_COUNT_THEN_FOOD = re.compile(
+    rf"(\d+(?:\.\d+)?)\s*(?:x\s*)?(?:[a-z]+\s+)?({_STAPLE_WORD})\b", re.I
+)
+_FOOD_THEN_COUNT = re.compile(
+    rf"\b({_STAPLE_WORD})\s*[\(,]?\s*(?:x\s*)?(\d+(?:\.\d+)?)", re.I
+)
+
+
+def _pluralise(word: str, count: str) -> str:
+    """"roti" and 1 -> "roti"; "roti" and 2 -> "rotis".
+
+    Only ever applied to the words in `_STAPLE_WORD`, so this does not need to
+    be a general English pluraliser and deliberately is not one.
+    """
+    singular = count in ("1", "1.0")
+    lower = word.lower()
+    if singular:
+        if lower.endswith("es") and lower[:-2].endswith(("ch", "sh", "s", "x")):
+            return word[:-2]
+        if lower.endswith("s") and not lower.endswith("ss"):
+            return word[:-1]
+        return word
+    if lower.endswith("s"):
+        return word
+    if lower.endswith(("ch", "sh", "x")):
+        return f"{word}es"
+    return f"{word}s"
+
+
+def _counted_item_phrase(item: str) -> str:
+    """The count and the food it belongs to: "4 rotis", "1 paneer paratha".
+
+    Just the two words. The rest of the item is already printed in the card
+    directly above, and repeating "paneer paratha (1, assumed), green chutney,
+    curd cup" back is not a sentence anybody says out loud.
+    """
+    text = str(item)
+    match = _COUNT_THEN_FOOD.search(text)
+    if match:
+        number, food = match.group(1), match.group(2)
+    else:
+        match = _FOOD_THEN_COUNT.search(text)
+        if not match:
+            return ""
+        food, number = match.group(1), match.group(2)
+    return f"{number} {_pluralise(food, number)}"
+
+
+def _counted_note(
+    meals: list[dict[str, Any]] | None,
+    sources: list[str] | None,
+    user_words: str,
+) -> str:
+    """Name the one count Ted worked out for itself, or nothing.
+
+    Thirteen of the fifty photo meals logged by 16 Sep 2026 were corrected
+    afterwards, against six of seventy-seven typed ones, and the largest group
+    of those was a miscount: four rotis that were three, one paratha that was
+    two, 360 kcal in a single item. The card already prints the count. What it
+    never said was whose count it is.
+
+    So this is not a question, and that is the whole design. The tool
+    description has told the model since the beginning not to ask about portion
+    size before logging — "a logged estimate they can correct in one message is
+    worth more than a more accurate number three questions later" — and a
+    question here would quietly reverse a decision that was made on purpose. It
+    would also need answering, and an unanswered question about a meal is a
+    worse object than a wrong number: it either blocks the entry or hangs.
+
+    A line with no question mark costs the reader nothing and makes the fix
+    three characters. Same shape as `_estimate_note` directly above, which
+    already does this for foods the table cannot price.
+
+    Silent when the person did the counting. Someone who wrote "3 rotis" under
+    the photo, or said it into a voice note, has already told Ted, and reading
+    their own number back as Ted's guess is not far off not listening at all.
+    """
+    # Only where the count came out of an image or a transcript. A typed "2
+    # rotis" is theirs, and there is nothing to own up to.
+    if not any(str(source) in ("photo", "voice") for source in (sources or [])):
+        return ""
+    if not meals:
+        return ""
+    said = str(user_words or "").lower()
+    if re.search(r"\d", said):
+        return ""
+
+    best: tuple[float, str] | None = None
+    for meal in meals:
+        if not isinstance(meal, dict):
+            continue
+        try:
+            calories = float(meal.get("calories") or 0)
+        except (TypeError, ValueError):
+            calories = 0.0
+        for item in meal.get("items") or []:
+            text = str(item)
+            phrase = _counted_item_phrase(text)
+            if not phrase or phrase.lower() in said:
+                continue
+            # The count whose being wrong moves the day furthest. Tie broken on
+            # the phrase so the same plate always produces the same line.
+            if best is None or (-calories, phrase) < (-best[0], best[1]):
+                best = (calories, phrase)
+    if best is None:
+        return ""
+    return f"({best[1]} is my count, tell me if it's off)"
+
+
 def _with_meal_breakdown(
     reply: str,
     meal: dict[str, Any],
@@ -5051,6 +5181,8 @@ def _with_meal_breakdown(
     user_key: str = "",
     meals: list[dict[str, Any]] | None = None,
     unmatched: list[str] | None = None,
+    sources: list[str] | None = None,
+    user_words: str = "",
 ) -> str:
     block = _meals_breakdown(meals or [], day, user_key) or meal_breakdown(
         meal, day, user_key
@@ -5058,6 +5190,13 @@ def _with_meal_breakdown(
     if not block:
         return reply
     note = _estimate_note(unmatched)
+    # At most one of these, ever, and the older one wins. Both say "this number
+    # is mine, not yours" and two parentheticals saying it twice is the noise
+    # this is supposed to remove. The breakdown block itself is untouched by
+    # either: they are appended under it, exactly as the estimate note always
+    # has been.
+    if not note:
+        note = _counted_note(meals or [meal], sources, user_words)
     if note:
         block = f"{block}\n\n{note}"
     words = _without_portion_question(words_without_figures(reply))
@@ -5089,6 +5228,9 @@ def transform_response(
     report_saved: bool | None = None,
     logged_meal: dict[str, Any] | None = None,
     logged_meals: list[dict[str, Any]] | None = None,
+    # Which input each of those meals came out of, same order. A count read off
+    # a photo is Ted's; one the user typed is theirs.
+    logged_meal_sources: list[str] | None = None,
     unmatched_foods: list[str] | None = None,
     day_summary: dict[str, Any] | None = None,
     reviewed_day: dict[str, Any] | None = None,
@@ -5271,6 +5413,8 @@ def transform_response(
             user_key,
             meals=logged_meals,
             unmatched=unmatched_foods,
+            sources=logged_meal_sources,
+            user_words=user_text,
         )
     # No meal landed this turn, but Ted just read the day out loud, so the
     # same block goes out under whatever Ted said about it.
@@ -6496,6 +6640,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         report_saved=report_saved,
         logged_meal=context.get("logged_meal"),
         logged_meals=context.get("logged_meals"),
+        logged_meal_sources=context.get("logged_meal_sources"),
         unmatched_foods=context.get("unmatched_foods"),
         day_summary=context.get("day_summary"),
         reviewed_day=context.get("reviewed_day"),
@@ -8440,6 +8585,12 @@ def _log_daily_entry(
                     # written to the database and then dropped on the floor
                     # between here and the card.
                     turn.setdefault("logged_meals", []).append(body["meal"])
+                    # Kept beside the meal because the reply gate has to know
+                    # whether a count came out of a photo or out of the user's
+                    # own typing. See `_counted_note`.
+                    turn.setdefault("logged_meal_sources", []).append(
+                        str(body.get("source") or "")
+                    )
                     turn["logged_meal"] = body["meal"]
                     turn["day_summary"] = result.get("daySummary") or {}
     return json.dumps(result, ensure_ascii=False)
