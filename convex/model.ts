@@ -1151,6 +1151,54 @@ export function setupStateFor(snapshot: SetupSnapshot): SetupState {
 }
 
 /**
+ * Why this pause cannot be stored, or null if it can.
+ *
+ * `pausedUntil` is a timestamp the model works out and hands over, and nothing
+ * checked it. On 16 Sep 2026 Sarah asked to be paused, Ted answered "reminders
+ * paused for a week, back on 23rd", and the row was written with **26 Sep
+ * 2025**: wrong day, and a year in the past. `isPaused` therefore returned
+ * false, every guard below it let messages through, and Ted's 21:00 check-in
+ * reached her eight hours after it promised to leave her alone for a week.
+ *
+ * A pause that has already expired when it is written is not a pause. It is a
+ * silent no-op on somebody explicitly asking to be left alone, which is the
+ * worst direction this particular field can be wrong in, and the one the user
+ * is least likely to forgive.
+ *
+ * The upper bound catches the same year-off error pointed the other way. Both
+ * are deliberately generous: a month away is somebody's real request, a year is
+ * arithmetic that went wrong.
+ *
+ * Note what this does NOT catch: Ted said the 23rd and stored the 26th, and a
+ * range check cannot see that, because both are plausible dates. What would
+ * catch it is Ted never computing a timestamp at all and naming the number of
+ * days instead. That is a bigger change and is not this one.
+ */
+export const MAX_PAUSE_DAYS = 365;
+
+export function pauseProblem(pausedUntil: unknown, now: number): string | null {
+  if (pausedUntil === undefined || pausedUntil === null) return null;
+  if (typeof pausedUntil !== "number" || !Number.isFinite(pausedUntil)) {
+    return `pausedUntil must be a finite timestamp, got ${String(pausedUntil)}`;
+  }
+  if (pausedUntil <= now) {
+    const days = Math.round((now - pausedUntil) / (24 * 60 * 60 * 1000));
+    return (
+      `a pause until ${new Date(pausedUntil).toISOString()} is ${days} day(s) in ` +
+      `the past, so it would silence nothing. Send the moment the pause ends, ` +
+      `or null to resume now.`
+    );
+  }
+  if (pausedUntil > now + MAX_PAUSE_DAYS * 24 * 60 * 60 * 1000) {
+    return (
+      `a pause until ${new Date(pausedUntil).toISOString()} is more than ` +
+      `${MAX_PAUSE_DAYS} days away, which is arithmetic rather than a request.`
+    );
+  }
+  return null;
+}
+
+/**
  * What `onboarding.completedAt` should be after a readiness check.
  *
  * One home for a rule that used to live in one caller. `completedAt` was

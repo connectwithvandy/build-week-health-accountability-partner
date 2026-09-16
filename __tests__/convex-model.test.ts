@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstHealthValueProblem,
+  pauseProblem,
   nextCompletedAt,
   healthValueProblem,
   HEALTH_RANGES,
@@ -1308,5 +1309,42 @@ describe("when onboarding counts as finished", () => {
         else expect(next === undefined || next === NOW).toBe(true);
       }
     }
+  });
+});
+
+describe("a pause that would silence nothing", () => {
+  const now = Date.UTC(2026, 8, 16, 16, 0);
+  const day = 24 * 60 * 60 * 1000;
+
+  it("refuses the pause that actually happened", () => {
+    // Sarah asked to pause on 16 Sep 2026. Ted said "back on 23rd" and wrote
+    // 26 Sep 2025, a year in the past, so isPaused returned false and her
+    // 21:00 check-in reached her eight hours later.
+    const problem = pauseProblem(Date.UTC(2025, 8, 26), now);
+    expect(problem).toMatch(/in the past/);
+  });
+
+  it("accepts the pause she was actually promised", () => {
+    expect(pauseProblem(now + 7 * day, now)).toBeNull();
+  });
+
+  it("leaves un-pausing alone", () => {
+    // null is how "resume now" arrives, and it must not be read as a pause in
+    // the past and refused.
+    expect(pauseProblem(null, now)).toBeNull();
+    expect(pauseProblem(undefined, now)).toBeNull();
+  });
+
+  it("refuses the same mistake pointed the other way", () => {
+    expect(pauseProblem(now + 400 * day, now)).toMatch(/more than 365 days/);
+  });
+
+  it("does not argue with a long but real break", () => {
+    expect(pauseProblem(now + 60 * day, now)).toBeNull();
+  });
+
+  it("refuses something that is not a timestamp", () => {
+    expect(pauseProblem("next tuesday", now)).toMatch(/finite timestamp/);
+    expect(pauseProblem(Number.NaN, now)).toMatch(/finite timestamp/);
   });
 });

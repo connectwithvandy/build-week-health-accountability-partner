@@ -6972,9 +6972,38 @@ TED_SET_REMINDER_SCHEMA = {
         "type": "object",
         "properties": {
             **_REMINDER_SETTING_PROPERTIES,
+            # Days, not a timestamp, and this is the whole point.
+            #
+            # This field used to read "Epoch milliseconds, or null to
+            # un-pause", which asks a language model to do calendar
+            # arithmetic. On 16 Sep 2026 Sarah asked to pause, Ted asked "for
+            # how many days should i pause the reminders?", she said "7 days",
+            # and Ted answered "reminders paused for a week, back on 23rd" —
+            # every word of that correct. The number it put in this field was
+            # 26 Sep **2025**. A pause a year in the past silences nothing, so
+            # her 21:00 check-in reached her eight hours later.
+            #
+            # The model was right about "7" and right about "the 23rd". It was
+            # only wrong converting one into the other, so it is no longer
+            # asked to. `_set_reminder` does that from the user's own
+            # timezone, which is also the clock the spoken date is built from,
+            # so the sentence and the row cannot disagree again.
+            "pause_days": {
+                "type": ["integer", "null"],
+                "description": (
+                    "How many days to pause reminders for, as the user said "
+                    "it: 7 for a week, 30 for a month. Never a date and never "
+                    "a timestamp. Send paused_until: null to un-pause now."
+                ),
+                "minimum": 1,
+                "maximum": 365,
+            },
             "paused_until": {
-                "type": ["number", "null"],
-                "description": "Epoch milliseconds, or null to un-pause.",
+                "type": ["null"],
+                "description": (
+                    "Only ever null, which un-pauses immediately. To pause, "
+                    "use pause_days."
+                ),
             },
         },
         "additionalProperties": False,
@@ -8487,8 +8516,29 @@ def _set_reminder(
     if not isinstance(args, dict) or not args:
         return _refused("Send at least one reminder setting")
     body = _camel(args)
-    if "pausedUntil" not in body and args.get("paused_until", "missing") is None:
+
+    # The model says how many days; the timestamp is worked out here, on the
+    # user's own clock. `_camel` would otherwise carry `pause_days` through as
+    # `pauseDays`, which the mutation does not take, so it is consumed rather
+    # than forwarded.
+    body.pop("pauseDays", None)
+    days = args.get("pause_days")
+    if isinstance(days, int) and not isinstance(days, bool) and days > 0:
+        days = min(days, 365)
+        # Midnight on the user's own calendar, the same date `_spoken_date`
+        # reads from, so what Ted says and what the row holds are one answer to
+        # one question rather than two answers to the same one.
+        resume = (_local_now(user_key) + timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        body["pausedUntil"] = int(resume.timestamp() * 1000)
+        _mark_paused(user_key, resume.date())
+        LOGGER.info(
+            "ted_pause_set user_key=%s days=%s until=%s", user_key, days, resume.date()
+        )
+    elif "pausedUntil" not in body and args.get("paused_until", "missing") is None:
         body["pausedUntil"] = None
+
     result = _convex_write("reminder", user_key, session_id or task_id, body=body)
     if result.get("success"):
         _schedule_saved_reminders(user_key, session_id or task_id, body, result)

@@ -4868,9 +4868,82 @@ class OnboardingRemindersTest(unittest.TestCase):
                 "properties"
             ]
         )
-        self.assertEqual(standalone - nested, {"paused_until"})
+        # Pausing is the one thing the standalone tool does that onboarding
+        # does not: nobody sets up a break in the same breath as setting up
+        # reminders. Both halves of it live here, `pause_days` to start one and
+        # `paused_until: null` to end one.
+        self.assertEqual(standalone - nested, {"paused_until", "pause_days"})
         self.assertIn("quiet_hours_start", nested)
         self.assertIn("daily_review_time", nested)
+
+    def test_a_pause_in_days_becomes_the_date_ted_says_out_loud(self) -> None:
+        """Seven days from today, on the user's calendar, at midnight.
+
+        The sentence and the row have to be one answer to one question. Ted
+        computes the spoken date from `_local_now`; this computes the stored
+        timestamp from the same clock, so they cannot drift the way they did
+        for Sarah.
+        """
+        from datetime import timedelta
+
+        captured: dict = {}
+
+        def fake_write(action, user_key, context_id="", facts=None, body=None):
+            captured.update(body or {})
+            return {"success": True}
+
+        with patch.object(gates, "_convex_write", side_effect=fake_write), \
+             patch.object(gates, "_active_user_key", return_value="whatsapp:sha256:x"), \
+             patch.object(gates, "_schedule_saved_reminders"), \
+             patch.object(gates, "_mark_paused"):
+            gates._set_reminder({"pause_days": 7}, session_id="s")
+
+        self.assertIn("pausedUntil", captured)
+        self.assertNotIn("pauseDays", captured)
+
+        stored = gates.datetime.fromtimestamp(
+            captured["pausedUntil"] / 1000, gates._user_time_zone("whatsapp:sha256:x")
+        )
+        expected = (gates._local_now("whatsapp:sha256:x") + timedelta(days=7)).date()
+        self.assertEqual(stored.date(), expected)
+        self.assertEqual((stored.hour, stored.minute), (0, 0))
+        # And the thing that made it a non-pause: it has to be in the future.
+        self.assertGreater(captured["pausedUntil"], gates.time.time() * 1000)
+
+    def test_unpausing_still_works(self) -> None:
+        """null is how "come back now" arrives and must not be read as a pause."""
+        captured: dict = {}
+
+        def fake_write(action, user_key, context_id="", facts=None, body=None):
+            captured.update(body or {})
+            return {"success": True}
+
+        with patch.object(gates, "_convex_write", side_effect=fake_write), \
+             patch.object(gates, "_active_user_key", return_value="whatsapp:sha256:x"), \
+             patch.object(gates, "_schedule_saved_reminders"):
+            gates._set_reminder({"paused_until": None}, session_id="s")
+
+        self.assertIsNone(captured["pausedUntil"])
+
+    def test_the_model_is_never_asked_for_a_timestamp(self) -> None:
+        """The whole of Sarah's bug, as a test.
+
+        `paused_until` used to accept a number described as "Epoch
+        milliseconds". Ted told her "back on 23rd" and sent 26 Sep 2025, a year
+        in the past, so nothing was silenced and her 21:00 check-in arrived
+        eight hours later. The model had "7 days" and "the 23rd" both right; it
+        was only wrong turning one into the other.
+        """
+        pause = gates.TED_SET_REMINDER_SCHEMA["parameters"]["properties"]
+        # Days, bounded, and nothing that invites a date.
+        self.assertEqual(pause["pause_days"]["type"], ["integer", "null"])
+        self.assertEqual(pause["pause_days"]["minimum"], 1)
+        self.assertEqual(pause["pause_days"]["maximum"], 365)
+        # The only value the old field still takes is null, which un-pauses.
+        self.assertEqual(pause["paused_until"]["type"], ["null"])
+        for field in ("pause_days", "paused_until"):
+            self.assertNotIn("epoch", pause[field]["description"].lower())
+            self.assertNotIn("millisecond", pause[field]["description"].lower())
 
 
 class ErasureSurvivesTheOpenThreadTest(unittest.TestCase):

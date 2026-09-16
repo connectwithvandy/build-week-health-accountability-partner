@@ -20,6 +20,7 @@ import {
   needsDateConfirmation,
   onboardingFieldValidator,
   firstHealthValueProblem,
+  pauseProblem,
   nextCompletedAt,
   setupSnapshotFrom,
   type SetupSnapshot,
@@ -837,6 +838,12 @@ export const setReminder = internalMutation({
     if (items !== undefined) patch.items = items;
     // null is how "un-pause" arrives over HTTP; undefined means "leave it".
     if (pausedUntil !== undefined) {
+      // The backstop under the gate, which now computes this from a number of
+      // days rather than handing the model a date to turn into a timestamp.
+      // Sarah's pause arrived here as 26 Sep 2025 while Ted was telling her
+      // "back on 23rd", and a pause already in the past silences nothing.
+      const problem = pauseProblem(pausedUntil, now);
+      if (problem) throw new Error(problem);
       patch.pausedUntil = pausedUntil === null ? undefined : pausedUntil;
     }
 
