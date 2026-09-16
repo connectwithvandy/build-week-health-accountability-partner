@@ -5581,9 +5581,22 @@ def reminder_receipt_gate(
 # set"; that account would never have received a recap, and neither side would
 # have found out. The question is cheap to repeat and impossible to recover
 # once the conversation has moved on.
+# Asks for two things in one question, on purpose.
+#
+# The design note above SETUP_QUESTIONS says the city "waits until a reminder is
+# actually being set", because it is a setting rather than a profile field and
+# putting it in the counted six would make the count a lie. This is that moment,
+# and for a while the question forgot to ask: 18 of the 24 people with a
+# check-in time had no timezone on 16 Sep 2026, so Ted knew somebody wanted 9pm
+# and not whose 9pm. `_user_time_zone` then falls back to Asia/Kolkata, which
+# has been right only because everyone so far is in India.
+#
+# One question mark, because two questions here reads as an interrogation at the
+# one moment the conversation is meant to feel finished. The example answers
+# both halves in four words, which is the shape people actually reply in.
 REVIEW_TIME_QUESTION = (
     "one last thing before we start. what time works for your evening "
-    "check-in? something like 9pm or 10:30pm."
+    "check-in, and which city are you in? something like 9pm, mumbai."
 )
 
 def _offers_a_target_choice(profile: CalorieProfile) -> bool:

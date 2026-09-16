@@ -998,6 +998,20 @@ class OnboardingCloseTest(unittest.TestCase):
         self.assertEqual(question, question.lower())
         self.assertIn("9pm", question)
 
+    def test_the_question_asks_where_they_are(self) -> None:
+        """A time with no city is a time in nobody's day.
+
+        This is the only place the city is asked: SETUP_QUESTIONS deliberately
+        leaves it out so the counted six stays six. It went missing once
+        already, and 18 of the 24 people with a check-in time ended up with no
+        timezone, so Ted was scheduling them on a fallback rather than on an
+        answer. The example has to answer both halves, or people reply with
+        only the time.
+        """
+        question = gates.REVIEW_TIME_QUESTION
+        self.assertIn("city", question)
+        self.assertIn("mumbai", question)
+
 
 class DeleteMyDataTest(unittest.TestCase):
     """A deletion confirmation must be backed by a real deletion."""
