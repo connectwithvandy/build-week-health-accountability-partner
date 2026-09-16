@@ -3289,7 +3289,13 @@ SETUP_QUESTIONS: tuple[tuple[str, str], ...] = (
         "how active is a normal day? desk most of it, on your feet, or "
         "training regularly?",
     ),
-    ("goal", "last one. are we losing, gaining, or holding steady?"),
+    # "are we losing" asks what is happening to you. People answered it that
+    # way: on 12 Sep somebody replied "But I train 6 hours a week", which is a
+    # true statement about their life and not a goal, so nothing landed. Three
+    # of the five answers that did parse were "holding steady", the last option
+    # read straight back, which is what people do with a question they have not
+    # understood. "want to" asks for the decision instead of the diagnosis.
+    ("goal", "last one. want to lose weight, gain, or stay where you are?"),
 )
 SETUP_COUNT = len(SETUP_QUESTIONS)
 # Ted writes the number out. Derived from the count so the two can never
@@ -3340,21 +3346,48 @@ def _bare_feet_inches(written: str) -> float | None:
 # are all the same answer. Ordered deliberately, loss before gain, because
 # "lose fat and gain muscle" is a loss answer in every practical sense and the
 # first match wins.
+# Only ever matched against the answer to question 6, never against ordinary
+# conversation — `_find_goal` has one caller, `_setup_answer`, and it knows
+# which question was asked. That is what makes this list safe to be generous
+# with: "fit" in a free-text message is not a goal, but under "want to lose
+# weight, gain, or stay where you are?" it is an answer.
+#
+# Order is the order they are tried, and the first hit wins. A direction beats
+# a vibe, so "want to get fit and lose some weight" lands on loseWeight rather
+# than improveConsistency, which is why that one is last.
 _GOAL_WORDS: tuple[tuple[str, str], ...] = (
     (
         "loseWeight",
         r"lose|losing|loss|cut(?:ting)?|reduce|reducing|slim|lean(?:er)?|"
-        r"drop|shed|trim|burn|deficit|thinner|smaller",
+        r"drop|shed|trim|burn|deficit|thinner|smaller|"
+        # Hinglish. Two words, not one: a bare "vajan" is the noun and turns
+        # up in "vajan kitna hai", while "vajan kam" is the decision. Every
+        # spelling people actually type, because the transliteration is not
+        # standardised and a missed one is a silently dropped answer.
+        r"(?:vajan|wajan|vazan|weight)\s+(?:kam|ghata)|motapa|patla",
     ),
     (
         "gainWeight",
         r"gain|gaining|bulk|put\s+on|putting\s+on|build|heavier|bigger|"
-        r"mass|grow",
+        r"mass|grow|"
+        r"(?:muscle|body)\s+bana|(?:vajan|wajan|vazan|weight)\s+badha",
     ),
     (
         "maintainWeight",
         r"maintain|maintaining|hold|holding|steady|stay|same|keep|"
-        r"where\s+i\s+am|as\s+i\s+am|nothing|neither",
+        r"where\s+i\s+am|as\s+i\s+am|nothing|neither|"
+        r"aise\s+hi|same\s+rakh",
+    ),
+    (
+        # A real answer with no direction in it. Before this it matched nothing
+        # at all, so "tone up" and "just want to be consistent" were treated as
+        # no answer, asked again twice, and then stalled for good. The goal
+        # already exists in the schema and three users hold it; only the
+        # counted question had no way to reach it.
+        "improveConsistency",
+        r"fit(?:ter|ness)?|shape|tone|toning|toned|healthy|healthier|health|"
+        r"consistent|consistency|regular|discipline|habit|strong(?:er)?|"
+        r"stamina|energy|active",
     ),
 )
 _GOAL_PATTERNS = tuple(
@@ -3379,6 +3412,10 @@ _GOAL_WORDS_BACK = {
     "loseWeight": "losing",
     "gainWeight": "gaining",
     "maintainWeight": "holding steady",
+    # Not a weight direction, so the read-back does not pretend it is one. The
+    # number that follows is maintenance, which is the honest answer for
+    # somebody who asked to be more consistent rather than lighter.
+    "improveConsistency": "building the habit",
 }
 
 
@@ -3646,6 +3683,18 @@ def _setup_payoff(profile: CalorieProfile) -> str:
             f"{opener}{anchor}"
             f"to gain, *{target:,}* is a steady place to aim.\n\n"
             f"want me to track you against *{target:,}*, or *{estimate:,}*?"
+        )
+
+    # Somebody who answered "get fit" or "just want to be consistent" gets the
+    # same number as somebody holding steady, because maintenance is the honest
+    # answer when no direction was asked for. What they must not get is
+    # "exactly what you're after", which tells a person who never mentioned
+    # weight that a weight number was their goal all along.
+    if profile.goal == "improveConsistency":
+        return (
+            f"{opener}{anchor}"
+            "no cut, no bulk — we'll just get you showing up, and change the "
+            f"number later if you want to.\n\n{TARGET_CHOICE_MADE}"
         )
 
     return f"{opener}{anchor}which is exactly what you're after.\n\n{TARGET_CHOICE_MADE}"

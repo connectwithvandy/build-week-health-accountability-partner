@@ -4251,6 +4251,92 @@ class BreakOfferTest(unittest.TestCase):
         self.assertEqual(delivery, "")
 
 
+class GoalQuestionTest(unittest.TestCase):
+    """Question 6 asks for a decision, and takes the answers people give.
+
+    It had been delivered seven times by 16 Sep 2026. Two answers landed on
+    nothing: "But I train 6 hours a week", which is a true thing about someone's
+    life and not a goal, and "Looks good". Three of the five that did parse were
+    "holding steady" — Ted's own last option read back, which is what people do
+    with a question they have not understood.
+
+    Seventeen of the forty-seven users have no goal stored at all, so this is
+    the second biggest hole in the funnel after the check-in time.
+    """
+
+    def test_the_question_asks_what_they_want_not_what_is_happening(self) -> None:
+        q = gates._setup_question(5).lower()
+        self.assertIn("want to", q)
+        # "are we losing" reads as a diagnosis of the last few months.
+        self.assertNotIn("are we losing", q)
+
+    def test_the_three_plain_answers(self) -> None:
+        for written, goal in (
+            ("lose", "loseWeight"),
+            ("gain", "gainWeight"),
+            ("maintain", "maintainWeight"),
+            ("stay where i am", "maintainWeight"),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_goal(written), goal)
+
+    def test_hinglish_lands(self) -> None:
+        """Users write Hinglish and "weight loss karna hai" already worked.
+
+        "vajan kam karna hai" is the same sentence in the other direction and
+        matched nothing, so the answer was silently dropped and re-asked.
+        """
+        for written, goal in (
+            ("vajan kam karna hai", "loseWeight"),
+            ("wajan kam", "loseWeight"),
+            ("motapa kam karna hai", "loseWeight"),
+            ("muscle banana hai", "gainWeight"),
+            ("weight badhana hai", "gainWeight"),
+            ("aise hi", "maintainWeight"),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_goal(written), goal)
+
+    def test_a_bare_noun_is_not_a_goal(self) -> None:
+        """"vajan kitna hai" is a question about weight, not a decision.
+
+        The Hinglish patterns need the verb, which is why they are two words.
+        """
+        self.assertIsNone(gates._find_goal("vajan"))
+        self.assertIsNone(gates._find_goal("weight"))
+
+    def test_an_answer_with_no_direction_has_somewhere_to_go(self) -> None:
+        """"tone up" used to match nothing, be asked twice more, then stall."""
+        for written in ("tone up", "get fit", "get in shape", "be healthier",
+                        "just want to be consistent", "stamina", "discipline"):
+            with self.subTest(written=written):
+                self.assertEqual(gates._find_goal(written), "improveConsistency")
+
+    def test_a_direction_beats_a_vibe(self) -> None:
+        self.assertEqual(
+            gates._find_goal("want to get fit and lose some weight"), "loseWeight"
+        )
+
+    def test_describing_yourself_is_still_not_an_answer(self) -> None:
+        """The two real misses stay misses, so Ted asks again rather than guess.
+
+        Inventing a goal from "i train 6 hours a week" would put a calorie
+        target on somebody who never chose one, which is the failure the target
+        floor exists for.
+        """
+        for written in ("But I train 6 hours a week", "i am 85kg", "Looks good",
+                        "5'2", ""):
+            with self.subTest(written=written):
+                self.assertIsNone(gates._find_goal(written))
+
+    def test_the_read_back_does_not_call_it_a_weight_goal(self) -> None:
+        """Somebody who said "get fit" never mentioned weight."""
+        said = gates._GOAL_WORDS_BACK["improveConsistency"]
+        self.assertNotIn("losing", said)
+        self.assertNotIn("gaining", said)
+        self.assertTrue(said)
+
+
 class CountedNoteTest(unittest.TestCase):
     """Saying whose count it is, without asking a question.
 
