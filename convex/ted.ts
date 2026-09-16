@@ -1262,6 +1262,62 @@ export const gateReminderDelivery = internalMutation({
 });
 
 /**
+ * Mark stored facts as having shaped a reply that actually went out.
+ *
+ * `getUserMemory` hands over every fact on every turn, so being *read* proves
+ * nothing and is not what this counts. The gate decides what counts, from the
+ * text the user received, and sends the keys — see `facts_reused` in
+ * `hermes/ted_safety_gates`. Keys, never values: this is a counter, and there
+ * is no reason for somebody's thyroid or their intimacy status to travel over
+ * the wire a second time to increment one.
+ *
+ * Unknown keys are skipped rather than created. A fact that has been renamed or
+ * forgotten between the turn and this write is not a fact to invent a row for,
+ * and `deleteUserMemory` running mid-turn is exactly that case.
+ */
+export const noteFactsUsed = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    keys: v.array(v.string()),
+  },
+  handler: async (ctx, { whatsappUserId, keys }) => {
+    if (keys.length === 0) return { success: true, counted: 0 };
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    if (!user) return { success: true, counted: 0 };
+
+    const now = Date.now();
+    let counted = 0;
+    // Deduplicated because the same key reaching here twice in one turn is a
+    // caller bug, not two separate uses, and a counter that can be inflated by
+    // a retry is not worth keeping.
+    for (const key of new Set(keys)) {
+      const fact = await ctx.db
+        .query("userFacts")
+        .withIndex("by_user_and_key", (query) =>
+          query.eq("userId", user._id).eq("key", key),
+        )
+        .unique();
+      if (!fact) continue;
+      await ctx.db.patch(fact._id, {
+        lastUsedAt: now,
+        useCount: (fact.useCount ?? 0) + 1,
+        // Deliberately not touching `updatedAt`. That column means "the fact
+        // changed", and reuse does not change it. Moving it would make every
+        // remembered fact look freshly learned and quietly break the drift
+        // checks that read it.
+      });
+      counted += 1;
+    }
+    return { success: true, counted };
+  },
+});
+
+/**
  * Every send that has been cleared and not yet accounted for.
  *
  * Builder read-back, so it crosses users and is reached with the shared secret

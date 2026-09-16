@@ -1,4 +1,4 @@
-# Build Week submission — generated 2026-09-16 22:45:52 IST
+# Build Week submission — generated 2026-09-16 22:51:11 IST
 
 Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/vandana.agarwal/.hermes/.env (the live gateway's backend)) with read-only `npx convex data` queries. No writes, no migrations.
 
@@ -11,8 +11,8 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 | Users onboarded (finished onboarding) | 19 | `onboarding` | `completedAt !== undefined` |
 | Users onboarded (cross-check on the user row) | 17 | `users` | `status === "active"` |
 | Users part-way through onboarding | 29 | `users` | `status === "onboarding"` |
-| Users active in the last 24 hours | 10 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1789492552345 (2026-09-15 22:45:52 IST)` |
-| Users active in the last 7 days | 14 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788974152345 (2026-09-09 22:45:52 IST)` |
+| Users active in the last 24 hours | 10 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1789492871205 (2026-09-15 22:51:11 IST)` |
+| Users active in the last 7 days | 14 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788974471205 (2026-09-09 22:51:11 IST)` |
 | Total inbound messages | NOT STORED | `dailyEntries` | `distinct externalMessageId where externalMessageId !== '' → 0 rows carry one; the schema has no messages table, so inbound turns are not counted anywhere in Convex` |
 | Inbound messages — defensible floor | 164 | `dailyEntries` | `no filter — every row is one thing a user sent that Ted logged; excludes chat that produced no log, so this is a lower bound` |
 | Meals logged | 149 | `dailyEntries` | `entryType === "meal"` |
@@ -27,11 +27,16 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 | Waitlist entries | NO SUCH TABLE | `—` | `no table matching /waitlist\|wait_list\|waiting/i exists in hardy-scorpion-901` |
 | Payment / paid-user records | NO SUCH TABLE | `—` | `no table matching /pay\|subscription\|billing\|invoice\|checkout\|order/i exists in hardy-scorpion-901` |
 | Memory facts stored about users | 89 | `userFacts` | `no filter — every row in the table` |
+| Stored facts that have since shaped a reply | 0 of 89 | `userFacts` | `useCount > 0; written by the gate from delivered text, never by the model` |
+| Users who got a reply shaped by something Ted remembered | 0 | `userFacts` | `distinct userId where useCount > 0` |
+| Users who got one in the last 7 days | 0 | `userFacts` | `distinct userId where useCount > 0 and lastUsedAt >= 1788974471205` |
+| Times a remembered fact has changed a reply | 0 | `userFacts` | `sum of useCount across every row` |
 | Replies users reported as wrong | 2 | `reportedReplies` | `no filter — every row in the table` |
 
 ### Caveats
 
 - **Inbound messages cannot be counted from Convex.** `convex/schema.ts` has no messages table, and `dailyEntries.externalMessageId` is written empty on every row (0 of 164). Use the line below as the defensible floor, or pull the real number from the WhatsApp gateway logs.
+- **No fact reuse is recorded yet.** `useCount` is written by the gate from the text users actually receive, so it only counts turns that happened after the instrumentation shipped. Read the four rows above as "not measured yet" rather than as "memory is never used" until the gateway has been serving with it for a full week.
 
 ## Inbound messages, from the gateway
 

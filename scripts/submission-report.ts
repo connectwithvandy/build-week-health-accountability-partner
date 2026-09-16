@@ -549,6 +549,60 @@ function main(): void {
 
   // --- supporting ---------------------------------------------------------
   add("Memory facts stored about users", userFacts.length, "userFacts", "no filter — every row in the table");
+
+  // --- did remembering change anything? -----------------------------------
+  //
+  // The moat claim is "Ted already knows 40 things about the people using him
+  // and gets more useful the longer you stay". The count above is the first
+  // half and cannot touch the second: a fact written in week one and never
+  // used since is indistinguishable, in that number, from one that shapes an
+  // answer every few days.
+  //
+  // `useCount` is written by the gate when a stored value shows up in the text
+  // a user actually received and not in what they had just said. It starts at
+  // nothing for every fact that predates the instrumentation, so a low number
+  // here means "not measured yet" until the table has had time to fill.
+  const reused = userFacts.filter((f) => (f.useCount ?? 0) > 0);
+  add(
+    "Stored facts that have since shaped a reply",
+    `${reused.length} of ${userFacts.length}`,
+    "userFacts",
+    "useCount > 0; written by the gate from delivered text, never by the model",
+  );
+
+  const usersWithReuse = new Set(reused.map((f) => f.userId));
+  add(
+    "Users who got a reply shaped by something Ted remembered",
+    usersWithReuse.size,
+    "userFacts",
+    "distinct userId where useCount > 0",
+  );
+
+  const reusedThisWeek = reused.filter((f) => (f.lastUsedAt ?? 0) >= since7d);
+  add(
+    "Users who got one in the last 7 days",
+    new Set(reusedThisWeek.map((f) => f.userId)).size,
+    "userFacts",
+    `distinct userId where useCount > 0 and lastUsedAt >= ${since7d}`,
+  );
+
+  add(
+    "Times a remembered fact has changed a reply",
+    reused.reduce((total, f) => total + (f.useCount ?? 0), 0),
+    "userFacts",
+    "sum of useCount across every row",
+  );
+
+  if (reused.length === 0 && userFacts.length > 0) {
+    notes.push(
+      "**No fact reuse is recorded yet.** `useCount` is written by the gate " +
+        "from the text users actually receive, so it only counts turns that " +
+        "happened after the instrumentation shipped. Read the four rows above " +
+        "as \"not measured yet\" rather than as \"memory is never used\" " +
+        "until the gateway has been serving with it for a full week.",
+    );
+  }
+
   add("Replies users reported as wrong", reportedReplies.length, "reportedReplies", "no filter — every row in the table");
 
   // --- print --------------------------------------------------------------

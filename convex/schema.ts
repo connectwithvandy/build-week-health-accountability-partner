@@ -66,6 +66,20 @@ export default defineSchema({
     key: v.string(),
     value: v.string(),
     sourceMessageId: v.optional(v.string()),
+    /**
+     * Whether remembering this ever changed a reply, and how often.
+     *
+     * The row on its own only proves Ted wrote something down. These two say
+     * whether it came back — a fact stored in week one and never reused since
+     * is a different thing from one that shapes an answer every few days, and
+     * until now the table could not tell them apart.
+     *
+     * Written by the gate from the words that actually reached the user, never
+     * by the model. Both optional: absent means never reused, which is the
+     * right reading for every fact stored before this existed.
+     */
+    lastUsedAt: v.optional(timestamp),
+    useCount: v.optional(v.number()),
     createdAt: timestamp,
     updatedAt: timestamp,
   })

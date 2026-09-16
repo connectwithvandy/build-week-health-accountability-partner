@@ -154,6 +154,25 @@ http.route({
         return json(result);
       }
 
+      // Which stored facts shaped the reply that just went out. The gate does
+      // the deciding, from the delivered text; this only counts.
+      if (input.action === "factsUsed") {
+        const keys = Array.isArray(payload.keys)
+          ? payload.keys.filter((key): key is string => typeof key === "string")
+          : [];
+        // A cap, because this is reached on ordinary turns and a caller that
+        // sent a thousand keys would be a bug worth refusing rather than
+        // absorbing. Nobody has more than a few dozen facts.
+        if (keys.length > 50) {
+          return json({ success: false, error: "Too many keys" }, 400);
+        }
+        const result = await ctx.runMutation(internal.ted.noteFactsUsed, {
+          whatsappUserId: input.whatsappUserId,
+          keys,
+        });
+        return json(result);
+      }
+
       // Builder read-back, same rule as "reports" and "setupAudit": it crosses
       // users, so it is reached with the shared secret and is never a model
       // tool. Read-only; the release itself is "reminderMissed" below.

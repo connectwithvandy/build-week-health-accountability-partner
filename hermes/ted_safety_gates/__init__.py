@@ -1334,6 +1334,7 @@ REQUIRED_CONVEX_ACTIONS = frozenset(
         "reminderGate",
         "reminderMissed",
         "pendingReminders",
+        "factsUsed",
         "replied",
         # Builder read-back and the status recompute behind it. Listed here for
         # the same reason "reports" is, even though the gate never calls them:
@@ -6506,7 +6507,167 @@ def _transform_live_response(**kwargs: Any) -> str | None:
     # `replacement`. Keep the difference so the next turn can be told.
     if replacement is not None and replacement != CRON_SILENT:
         _record_gated_reply(user_key, model_text, replacement)
+
+    # Measured on what the user actually receives, not on what the model wrote.
+    # The two differ often enough that this file exists, and a fact the gate
+    # stripped out of the reply was not reused by anybody.
+    delivered = model_text if replacement is None else replacement
+    if delivered and delivered != CRON_SILENT:
+        _note_facts_reused(user_key, delivered, user_text)
+
     return replacement
+
+
+# ---------------------------------------------------------------------------
+# Did remembering something actually change what Ted said?
+#
+# `userFacts` records what Ted learned. Nothing recorded whether any of it was
+# ever used again, so "Ted already knows 40 things about the people using him"
+# was a count of writes, and a count of writes cannot show that remembering
+# improved a single reply. The reviewer's word for the gap was "the evidence
+# gap is in 40 things remembered".
+#
+# Measured here rather than asked of the model, for the reason `reportedReplies`
+# exists: the model's account of its own reasoning is the least trustworthy
+# thing in the system. A fact either shows up in the words that went to the
+# user or it did not.
+#
+# `getUserMemory` hands over every fact on every turn, so "was it fetched" is
+# always yes and means nothing. What is worth counting is narrower:
+#
+#     a distinctive word from the stored value appears in Ted's reply,
+#     and does not appear in what the user just said
+#
+# The second half is what separates memory from parroting. Somebody who writes
+# "had my saunf water" and gets "saunf water, noted" was not remembered at, they
+# were repeated back to. Somebody who writes "what should i drink" and gets
+# "your saunf water" was.
+
+# Words too common to prove anything. Matching one of these would report reuse
+# on almost every turn, which is worse than reporting none: a metric that is
+# always yes cannot be wrong and cannot be useful.
+_REUSE_STOPWORDS = frozenset(
+    {
+        # English function words long enough to survive the length filter
+        "about", "after", "again", "also", "been", "before", "being", "between",
+        "both", "current", "currently", "does", "doing", "done", "down", "during",
+        "each", "even", "every", "from", "have", "having", "here", "into", "just",
+        "like", "more", "most", "much", "must", "need", "needs", "only", "other",
+        "over", "same", "should", "some", "still", "such", "than", "that", "their",
+        "them", "then", "there", "these", "they", "this", "those", "through",
+        "under", "until", "very", "want", "wants", "were", "what", "when", "where",
+        "which", "while", "with", "without", "would", "your", "yours",
+        # Hinglish particles that carry no content
+        "aur", "haan", "kaise", "karo", "koi", "mera", "meri", "nahi", "toh",
+        # The product's own vocabulary. Ted says these constantly regardless of
+        # what he remembers, so they are noise rather than signal.
+        "calorie", "calories", "carbs", "check", "daily", "date", "diet", "eat",
+        "eating", "fibre", "fiber", "food", "goal", "goals", "gram", "grams",
+        "health", "keep", "log", "logged", "logging", "meal", "meals", "morning",
+        "night", "protein", "reminder", "reminders", "steps", "target", "today",
+        "tomorrow", "track", "tracking", "user", "walk", "water", "week",
+        "weight", "workout", "yesterday",
+        # Times of day. These arrive inside stored values as *schedule* ("1hr
+        # after lunch") while Ted says them as ordinary conversation ("what did
+        # you have for lunch?"), so matching one reported a supplement fact as
+        # reused on a plain greeting. The dosage in the same value — "29mg",
+        # "1500mcg" — is the part that actually proves he remembered.
+        "afternoon", "breakfast", "dinner", "evening", "lunch", "snack",
+        "taken", "time", "times",
+        # Model narration. These open a stored value far more often than they
+        # say anything about the person: "user prefers...", "tends to keep...".
+        "prefer", "prefers", "tends", "usually",
+    }
+)
+
+# Four, because three-letter tokens are almost all function words in both
+# English and Hinglish, and the few that are not ("gym", "dal") are not worth
+# the false positives that "and", "the", "aap" and "kya" would bring with them.
+_REUSE_MIN_WORD = 4
+
+
+def _reuse_tokens(text: str) -> set[str]:
+    """The words in a piece of text that could carry a memory."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return {
+        word
+        for word in words
+        if len(word) >= _REUSE_MIN_WORD and word not in _REUSE_STOPWORDS
+    }
+
+
+def facts_reused(
+    facts: list[dict[str, Any]], reply_text: str, user_text: str
+) -> list[str]:
+    """Which stored facts show up in this reply and not in what was just said.
+
+    Pure, so it can be tested against real stored values rather than reasoned
+    about. Returns fact keys, sorted, and never the values: this result goes to
+    a log and a counter, and a line naming somebody's intimacy status or their
+    thyroid is not something to write down twice.
+
+    Deliberately conservative. A fact whose whole value is stopwords can never
+    be counted, which undercounts rather than inventing reuse that did not
+    happen — the same direction every other measurement in this file errs in.
+    """
+    reply_tokens = _reuse_tokens(reply_text)
+    if not reply_tokens:
+        return []
+    said_by_user = _reuse_tokens(user_text)
+    used: set[str] = set()
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        key = str(fact.get("key") or "")
+        if not key:
+            continue
+        # The key itself is deliberately not matched, only the value. Keys are
+        # the schema's words rather than the person's: counting "goal" would
+        # fire on every coaching sentence Ted has ever written.
+        distinctive = _reuse_tokens(str(fact.get("value") or ""))
+        if distinctive & reply_tokens - said_by_user:
+            used.add(key)
+    return sorted(used)
+
+
+def _note_facts_reused(user_key: str, reply_text: str, user_text: str) -> list[str]:
+    """Count the facts this reply used, and tell Convex which.
+
+    Reads the cache rather than Convex, so an ordinary turn costs no extra
+    read: `_capture_turn` has already filled it on this same turn to build the
+    memory card. The one case that re-reads is a fact saved mid-turn, which
+    invalidates the cache, and that is the case where re-reading is right.
+    Writes only when something was actually reused, which on current data is a
+    minority of turns — the same rule `noteUserReplied` follows.
+
+    Best-effort. A failure here loses a number, and a number is never worth
+    failing somebody's reply over.
+    """
+    if not user_key or not reply_text:
+        return []
+    memory = _cached_user_memory(user_key)
+    if not memory.get("success"):
+        return []
+    facts = memory.get("facts") or []
+    if not isinstance(facts, list) or not facts:
+        return []
+    used = facts_reused(facts, reply_text, user_text)
+    if not used:
+        return []
+    LOGGER.info(
+        "ted_facts_reused user_key=%s count=%d keys=%s",
+        user_key,
+        len(used),
+        ",".join(used),
+    )
+    result = _convex_request("factsUsed", user_key, body={"keys": used})
+    if not result.get("success"):
+        LOGGER.warning(
+            "ted_facts_reused_unrecorded user_key=%s error=%s",
+            user_key,
+            result.get("error"),
+        )
+    return used
 
 
 def _record_tool_success(**kwargs: Any) -> None:

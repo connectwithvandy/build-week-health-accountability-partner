@@ -4251,6 +4251,77 @@ class BreakOfferTest(unittest.TestCase):
         self.assertEqual(delivery, "")
 
 
+class FactReuseTest(unittest.TestCase):
+    """Did remembering something actually change what Ted said?
+
+    The claim under test is the moat one: "Ted already knows 40 things about
+    the people using him". A count of stored rows cannot support it, because a
+    fact written once and never used again is indistinguishable from one that
+    shapes an answer every week. These pin the line between the two.
+
+    Every value here is a real shape from the live `userFacts` table, because
+    the model writes descriptions rather than the user's own words — "takes
+    saunf dhania jeera water without sugar" — and a matcher tuned against
+    invented values would not survive contact with those.
+    """
+
+    FACTS = [
+        {"key": "drink_preference", "value": "takes saunf dhania jeera water without sugar"},
+        {"key": "symptom_note", "value": "sometimes feels brain fog and blankness"},
+        {"key": "supplement_chelated_iron", "value": "29mg, 1hr after lunch, Tue and Thu, reminder 4:00 PM"},
+        {"key": "name", "value": "John"},
+        {"key": "activity_level", "value": "desk most of the day, trains about 6 hours per week"},
+    ]
+
+    def used(self, reply: str, said: str = "") -> list[str]:
+        return gates.facts_reused(self.FACTS, reply, said)
+
+    def test_raising_something_the_user_did_not_mention_is_reuse(self) -> None:
+        self.assertEqual(
+            self.used("your saunf dhania jeera water, the one without sugar", "what should i drink"),
+            ["drink_preference"],
+        )
+
+    def test_repeating_the_user_back_is_not_reuse(self) -> None:
+        """The line between remembering somebody and parroting them."""
+        self.assertEqual(self.used("saunf water, noted", "had my saunf water already"), [])
+
+    def test_an_ordinary_reply_reuses_nothing(self) -> None:
+        self.assertEqual(self.used("nice, keep it up. log your dinner when you can", "ok"), [])
+
+    def test_a_schedule_word_in_a_stored_value_is_not_a_memory(self) -> None:
+        """"1hr after lunch" once made a plain greeting look like recall.
+
+        Ted asks about lunch constantly and it means nothing about what he
+        remembers. The dosage in the same value is the part that does.
+        """
+        self.assertNotIn("supplement_chelated_iron", self.used("what did you have for lunch?", "hi"))
+        self.assertIn("supplement_chelated_iron", self.used("your 29mg iron, tue and thu", "which iron again"))
+
+    def test_the_product_s_own_vocabulary_never_counts(self) -> None:
+        """A metric that says yes on every turn cannot be wrong or useful."""
+        self.assertEqual(self.used("logged. that's your protein and water for today", "done"), [])
+
+    def test_the_key_is_never_matched_only_the_value(self) -> None:
+        """Keys are the schema's words, not the person's."""
+        self.assertEqual(self.used("what's your activity level like?", "hi"), [])
+
+    def test_a_fact_with_nothing_distinctive_can_never_be_counted(self) -> None:
+        """Undercounting beats inventing recall that did not happen."""
+        self.assertEqual(gates.facts_reused([{"key": "weight_kg", "value": "85"}], "you're at 85 kg", "hi"), [])
+
+    def test_keys_come_back_sorted_and_deduplicated(self) -> None:
+        doubled = [{"key": "name", "value": "John"}, {"key": "name", "value": "John"}]
+        self.assertEqual(gates.facts_reused(doubled, "hey John", "hi"), ["name"])
+
+    def test_a_malformed_fact_row_does_not_break_the_turn(self) -> None:
+        mixed = [None, {"value": "no key here"}, {"key": "name", "value": "John"}]
+        self.assertEqual(gates.facts_reused(mixed, "hey John", "hi"), ["name"])
+
+    def test_an_empty_reply_reuses_nothing(self) -> None:
+        self.assertEqual(self.used("", "what should i drink"), [])
+
+
 class ReminderReleaseTest(unittest.TestCase):
     """A send that is cleared and then dropped has to be given back.
 

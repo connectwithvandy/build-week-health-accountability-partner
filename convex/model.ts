@@ -1350,6 +1350,7 @@ export const TED_HTTP_ACTIONS = [
   "reminderGate",
   "reminderMissed",
   "pendingReminders",
+  "factsUsed",
   "replied",
   "setupAudit",
   "refreshSetup",
