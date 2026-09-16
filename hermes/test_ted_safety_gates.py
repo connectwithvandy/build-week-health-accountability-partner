@@ -9014,7 +9014,12 @@ class TheLosingNumberHasAFloorTest(unittest.TestCase):
             key, target_state="asking", target_lower=1360, target_maintenance=1600
         )
         self.addCleanup(gates._forget_user, key)
-        self.assertIsNone(gates.target_choice_gate("yes", key))
+        # Not the cut. It lands on maintenance, and — since 16 Sep — says so,
+        # because a default nobody is told about is how Ted came to store one
+        # number while announcing another.
+        reply = gates.target_choice_gate("yes", key)
+        self.assertIn("1,600", reply)
+        self.assertIn("1,360", reply)
         # And the question closes rather than staying armed for a later reply.
         self.assertEqual(gates._onboarding(key).get("target_state"), "done")
         self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1600)
@@ -9054,7 +9059,7 @@ class TheDayIsCountedAgainstTheChosenNumberTest(unittest.TestCase):
 
     def test_an_unanswered_choice_falls_back_to_maintenance(self) -> None:
         """A bare "yes" closes the question on maintenance. It must still count."""
-        self.assertIsNone(gates.target_choice_gate("yes", self.KEY))
+        self.assertIn("2,000", gates.target_choice_gate("yes", self.KEY))
         out = gates._daily_overview({"calories": 1563}, self.KEY)
         self.assertIn("(437 left)", out)
 

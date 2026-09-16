@@ -5928,13 +5928,60 @@ def _offers_a_target_choice(profile: CalorieProfile) -> bool:
     return _loss_target(profile) < _estimated_maintenance(profile)
 
 
+# Naming one of the two, by what it is rather than by its size. The ordinals
+# are safe for both goals because the question always names the goal number
+# first: "track you against *2,100*, or *1,910*?"
 _PICKS_MAINTENANCE = re.compile(
-    r"\b(?:maintenance|maintain|the higher|higher one|bigger|second|"
-    r"the second|no cut|don'?t cut|stay|full)\b", re.IGNORECASE
+    r"\b(?:maintenance|maintain|second|the second|no cut|don'?t cut|stay|full)\b",
+    re.IGNORECASE,
 )
-_PICKS_LOWER = re.compile(
-    r"\b(?:lower|the lower|lower one|first|the first|smaller|cut|"
-    r"the cut|deficit|lose|losing)\b", re.IGNORECASE
+_PICKS_GOAL_NUMBER = re.compile(
+    r"\b(?:first|the first|cut|the cut|deficit|lose|losing|"
+    r"gain|gaining|bulk|surplus|build)\b",
+    re.IGNORECASE,
+)
+
+# Naming one of the two by size, which is the pair that had to be split out.
+# `target_lower` is only actually lower when the goal is to lose: for a gain it
+# holds `_gain_target`, which is *above* maintenance. "the higher one" used to
+# be listed as a way of asking for maintenance, so on 16 Sep 2026 a user being
+# offered 2,100 to gain or 1,910 maintenance would have been given 1,910 for
+# saying "bigger". Resolved against the actual numbers instead of the names.
+# A reply that was trying to answer, without naming either number. "do it" and
+# "yes" belong here; "3 rotis and dal" does not.
+#
+# The difference decides whether Ted says anything. The question closes either
+# way — leaving it armed is how a deletion confirmation chose a calorie target
+# nine turns later — but announcing the default over somebody's dinner would
+# answer a question they were no longer asking.
+_TARGET_CHOICE_ATTEMPT = frozenset(
+    {
+        "yes", "yeah", "yep", "yup", "ya", "yaa", "haan", "haa", "han",
+        "ok", "okay", "k", "kk", "sure", "fine", "cool", "right",
+        "do it", "go ahead", "you can go ahead", "go on", "carry on",
+        "proceed", "continue", "go for it", "lets go", "let s go",
+        "either", "either one", "any", "anything", "whatever", "you decide",
+        "you choose", "up to you", "your call", "jo bhi", "jo bhi ho",
+        "aap decide karo", "tum decide karo", "theek hai", "thik hai",
+    }
+)
+
+
+def _looks_like_a_choice_attempt(written: str) -> bool:
+    """Whether this reply was aimed at the two-number question at all."""
+    text = re.sub(r"[^\w\s]", " ", (written or "").casefold())
+    return " ".join(text.split()) in _TARGET_CHOICE_ATTEMPT
+
+
+# Comparatives only, and only ones that cannot mean anything else in a health
+# chat. "more" and "less" were in here for one commit and the golden path
+# caught them immediately: "eat more protein", said while this question was
+# still armed, chose a calorie target.
+_PICKS_BIGGER = re.compile(
+    r"\b(?:higher|the higher|higher one|bigger|the bigger|larger)\b", re.IGNORECASE
+)
+_PICKS_SMALLER = re.compile(
+    r"\b(?:lower|the lower|lower one|smaller|the smaller)\b", re.IGNORECASE
 )
 
 
@@ -5963,8 +6010,14 @@ def target_choice_gate(user_text: str, user_key: str) -> str | None:
             break
     if chosen is None and _PICKS_MAINTENANCE.search(written):
         chosen = maintenance
-    if chosen is None and _PICKS_LOWER.search(written):
+    if chosen is None and _PICKS_GOAL_NUMBER.search(written):
         chosen = lower
+    # Size words last, and resolved against the numbers rather than the
+    # variable names, because which of the two is larger depends on the goal.
+    if chosen is None and _PICKS_BIGGER.search(written):
+        chosen = max(lower, maintenance)
+    if chosen is None and _PICKS_SMALLER.search(written):
+        chosen = min(lower, maintenance)
     if chosen is None:
         # The question is armed for exactly one turn, and this was it.
         #
@@ -5986,7 +6039,29 @@ def target_choice_gate(user_text: str, user_key: str) -> str | None:
             picks_state="asking",
         )
         LOGGER.info("ted_target_unanswered user_key=%s", user_key)
-        return None
+        # Said out loud when they were trying to answer, and only then.
+        #
+        # Returning None handed the turn back to the model, which then wrote
+        # whatever it liked about a choice it had not made. On 16 Sep 2026 a
+        # user answered "do it", this stored 1,910 — maintenance — and Ted
+        # told him "2100 it is then, that's your gaining number". He is trying
+        # to gain, and the number he is tracked against is the one where
+        # weight sits still.
+        #
+        # Defaulting quietly is the whole problem: the safe number is only
+        # safe if the person knows it is the one they got. Naming both makes
+        # the correction one word long.
+        if not _looks_like_a_choice_attempt(written):
+            # They have moved on and are talking about something else. The
+            # question is closed behind them, silently, because answering a
+            # meal with a calorie choice is the same rudeness pointed the
+            # other way.
+            return None
+        return (
+            f"going with *{maintenance:,}* for now, the number where your "
+            f"weight sits still. say *{lower:,}* if you'd rather have that "
+            f"one.\n\n{PICKS_QUESTION}"
+        )
 
     _update_onboarding(
         user_key, tracking_kcal=chosen, target_state="done", picks_state="asking"
