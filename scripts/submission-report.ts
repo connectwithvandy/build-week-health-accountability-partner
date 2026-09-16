@@ -485,6 +485,43 @@ function main(): void {
   const photo = dailyEntries.filter((e) => e.source === "photo");
   add("Photos received (that produced a log)", photo.length, "dailyEntries", 'source === "photo"');
 
+  // --- did the input method actually reduce effort? -----------------------
+  //
+  // The "why now" claim is that models got good enough to read a photo of a
+  // plate or a Hinglish voice note, and that typing is the step people quit
+  // at. This is the only measurement in the data that can argue with that, so
+  // it is reported whichever way it comes out.
+  //
+  // A correction is its own row carrying `correctedEntryId`, and it supersedes
+  // the original by flipping that original's state to "corrected". Counting
+  // every row would therefore credit the input method somebody *fixed things
+  // with* and penalise the one they fixed. Corrections are excluded from the
+  // denominator so each number means one thing: of the logs that started this
+  // way, how many did the user have to come back and fix.
+  const originals = dailyEntries.filter((e) => !e.correctedEntryId);
+  for (const source of ["text", "photo", "voice"]) {
+    const logged = originals.filter((e) => e.source === source);
+    if (logged.length === 0) continue;
+    const refixed = logged.filter((e) => e.state === "corrected");
+    const rate = ((refixed.length / logged.length) * 100).toFixed(1);
+    add(
+      `Logs started by ${source} that the user had to correct`,
+      `${refixed.length} of ${logged.length} (${rate}%)`,
+      "dailyEntries",
+      `source === "${source}" and correctedEntryId === undefined; ` +
+        `corrected share is state === "corrected" among those`,
+    );
+  }
+
+  const corrections = dailyEntries.filter((e) => e.correctedEntryId);
+  const typedFixes = corrections.filter((e) => e.source === "text");
+  add(
+    "Corrections that were typed rather than re-sent as photo or voice",
+    `${typedFixes.length} of ${corrections.length}`,
+    "dailyEntries",
+    'correctedEntryId !== undefined, then source === "text"',
+  );
+
   // --- optional tables ----------------------------------------------------
   const waitlistTable = tables.find((t) => /waitlist|wait_list|waiting/i.test(t));
   if (waitlistTable) {

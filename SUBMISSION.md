@@ -1,4 +1,4 @@
-# Build Week submission — generated 2026-09-05 10:34:33 IST
+# Build Week submission — generated 2026-09-16 22:45:52 IST
 
 Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/vandana.agarwal/.hermes/.env (the live gateway's backend)) with read-only `npx convex data` queries. No writes, no migrations.
 
@@ -6,28 +6,32 @@ Read from Convex deployment `hardy-scorpion-901` (TED_CONVEX_SITE_URL in /Users/
 
 | Metric | Number | Source table | Exact filter |
 | --- | ---: | --- | --- |
-| Data coverage (every total below is lifetime, no date filter) | 2026-09-02 20:38:37 IST → 2026-09-05 10:20:29 IST | `dailyEntries + onboarding + reminders + reportedReplies + targets + userFacts + users` | `oldest and newest _creationTime across every table in the deployment — totals cannot reach further back than this` |
-| Total user records created | 25 | `users` | `no filter — every row in the table` |
-| Users onboarded (finished onboarding) | 4 | `onboarding` | `completedAt !== undefined` |
-| Users onboarded (cross-check on the user row) | 4 | `users` | `status === "active"` |
-| Users part-way through onboarding | 21 | `users` | `status === "onboarding"` |
-| Users active in the last 24 hours | 22 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788498273540 (2026-09-04 10:34:33 IST)` |
-| Users active in the last 7 days | 25 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1787979873540 (2026-08-29 10:34:33 IST)` |
+| Data coverage (every total below is lifetime, no date filter) | 2026-09-02 20:38:37 IST → 2026-09-16 22:33:36 IST | `dailyEntries + onboarding + reminders + reportedReplies + siteEvents + targets + userFacts + users` | `oldest and newest _creationTime across every table in the deployment — totals cannot reach further back than this` |
+| Total user records created | 46 | `users` | `no filter — every row in the table` |
+| Users onboarded (finished onboarding) | 19 | `onboarding` | `completedAt !== undefined` |
+| Users onboarded (cross-check on the user row) | 17 | `users` | `status === "active"` |
+| Users part-way through onboarding | 29 | `users` | `status === "onboarding"` |
+| Users active in the last 24 hours | 10 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1789492552345 (2026-09-15 22:45:52 IST)` |
+| Users active in the last 7 days | 14 | `dailyEntries + userFacts + onboarding + users + reportedReplies` | `distinct userId still present in 'users', with any of: dailyEntries.occurredAt \| dailyEntries.createdAt \| dailyEntries.updatedAt \| userFacts.updatedAt \| onboarding.updatedAt \| users.updatedAt \| reportedReplies.reportedAt >= 1788974152345 (2026-09-09 22:45:52 IST)` |
 | Total inbound messages | NOT STORED | `dailyEntries` | `distinct externalMessageId where externalMessageId !== '' → 0 rows carry one; the schema has no messages table, so inbound turns are not counted anywhere in Convex` |
-| Inbound messages — defensible floor | 31 | `dailyEntries` | `no filter — every row is one thing a user sent that Ted logged; excludes chat that produced no log, so this is a lower bound` |
-| Meals logged | 27 | `dailyEntries` | `entryType === "meal"` |
-| Individual food items logged | 62 | `dailyEntries` | `sum of meal.items.length where entryType === "meal"` |
-| All logged entries (meal + water + steps + workout + commitment) | 31 | `dailyEntries` | `no filter — every row in the table` |
-| Voice notes received (that produced a log) | 8 | `dailyEntries` | `source === "voice"` |
-| Photos received (that produced a log) | 7 | `dailyEntries` | `source === "photo"` |
+| Inbound messages — defensible floor | 164 | `dailyEntries` | `no filter — every row is one thing a user sent that Ted logged; excludes chat that produced no log, so this is a lower bound` |
+| Meals logged | 149 | `dailyEntries` | `entryType === "meal"` |
+| Individual food items logged | 326 | `dailyEntries` | `sum of meal.items.length where entryType === "meal"` |
+| All logged entries (meal + water + steps + workout + commitment) | 164 | `dailyEntries` | `no filter — every row in the table` |
+| Voice notes received (that produced a log) | 12 | `dailyEntries` | `source === "voice"` |
+| Photos received (that produced a log) | 51 | `dailyEntries` | `source === "photo"` |
+| Logs started by text that the user had to correct | 6 of 77 (7.8%) | `dailyEntries` | `source === "text" and correctedEntryId === undefined; corrected share is state === "corrected" among those` |
+| Logs started by photo that the user had to correct | 13 of 50 (26.0%) | `dailyEntries` | `source === "photo" and correctedEntryId === undefined; corrected share is state === "corrected" among those` |
+| Logs started by voice that the user had to correct | 0 of 12 (0.0%) | `dailyEntries` | `source === "voice" and correctedEntryId === undefined; corrected share is state === "corrected" among those` |
+| Corrections that were typed rather than re-sent as photo or voice | 24 of 25 | `dailyEntries` | `correctedEntryId !== undefined, then source === "text"` |
 | Waitlist entries | NO SUCH TABLE | `—` | `no table matching /waitlist\|wait_list\|waiting/i exists in hardy-scorpion-901` |
 | Payment / paid-user records | NO SUCH TABLE | `—` | `no table matching /pay\|subscription\|billing\|invoice\|checkout\|order/i exists in hardy-scorpion-901` |
-| Memory facts stored about users | 40 | `userFacts` | `no filter — every row in the table` |
-| Replies users reported as wrong | 1 | `reportedReplies` | `no filter — every row in the table` |
+| Memory facts stored about users | 89 | `userFacts` | `no filter — every row in the table` |
+| Replies users reported as wrong | 2 | `reportedReplies` | `no filter — every row in the table` |
 
 ### Caveats
 
-- **Inbound messages cannot be counted from Convex.** `convex/schema.ts` has no messages table, and `dailyEntries.externalMessageId` is written empty on every row (0 of 31). Use the line below as the defensible floor, or pull the real number from the WhatsApp gateway logs.
+- **Inbound messages cannot be counted from Convex.** `convex/schema.ts` has no messages table, and `dailyEntries.externalMessageId` is written empty on every row (0 of 164). Use the line below as the defensible floor, or pull the real number from the WhatsApp gateway logs.
 
 ## Inbound messages, from the gateway
 
@@ -97,13 +101,6 @@ better:
 
 ## Checklist
 
-- [x] Live product URL — https://heyted.vercel.app/
-      Tested by hand on 2026-09-05: opened the site on a phone, tapped through
-      to WhatsApp, sent Ted a message and got a reply. This also settles the
-      number on the site being the one Ted answers on, which the three
-      automated checks in `scripts/gateway-message-count.py --verify-number`
-      could not confirm from the machine.
-- [x] Public GitHub repo URL — https://github.com/connectwithvandy/build-week-health-accountability-partner
-      Loaded with no login, so it is genuinely public.
-- [x] Metrics — the Convex table, the gateway table, and the social numbers
-- [ ] Unique site visitors — still the one number missing
+- [ ] Live product URL — https://heyted.vercel.app/
+- [ ] Public GitHub repo URL — https://github.com/connectwithvandy/build-week-health-accountability-partner
+- [ ] Metrics — the table above, plus the manual numbers filled in
