@@ -1088,22 +1088,36 @@ refund the count against it. Refunding before that is guessing. Counting after
 delivery instead is the wrong trade: a lost confirmation would double-send, and
 two nudges is worse than none.
 
-### 2. Three users were told their save failed and never got the message
+### 2. ~~Three users were told their save failed and never got the message~~
 
-All three abandoned deliveries are Ted's own storage-failure notice.
+**Already handled, and this entry was wrong.** Written from the raw
+`delivery_obligations` rows without checking what already reads them.
+`check_dropped()` in `scripts/ted-watch.py` exists for precisely this, names GT
+on 11 Sep and Ankiita on 15 Sep in its own docstring, and correctly closes a
+case when a later message reaches the same person, which is why Shreya on
+14 Sep is not owed anything. It reported `nobody is waiting` on 16 Sep, so both
+have since been reached.
 
-    11 Sep 11:20  919823980612  "it's not you, it's me 🙈 rough patch on my end…"
-    14 Sep 14:22  918882688533  "oops, my brain just blanked there 🙈 that one didn't save…"
-    15 Sep 01:02  919831243983  "oops, my brain just blanked there 🙈 that one didn't save…"
+Patch 12 is also not a gap. It cut the redelivery window from 24 hours to ten
+minutes on purpose: a reply is worth sending while somebody is still in the
+conversation it belongs to and not after, and "that one didn't save, send it
+again" arriving three hours later is worse than silence. Retrying those three
+would have undone a considered decision.
 
-`state=abandoned`, `attempts=0`, `last_error` "Not connected to WhatsApp" twice
-and "Connection Closed" once. No retry. Their write failed, and the one sentence
-that exists to stop them believing it landed was dropped as well, so three
-people are carrying on as though a meal is logged that is not.
+What the watchdog does not do is alert anywhere except email. `--dry-run`
+reports `pushover --- not configured`, and the whole point of that script is an
+alert that does not depend on the thing being watched.
 
-This is the WhatsApp-only-channel problem in its smallest form: the notice
-depends on the channel that is failing. A queue that retries when the link
-returns would fix all three, and it belongs in the gateway rather than the gate.
+### 3. The model has been failing over since 11 Sep
+
+`ted-watch.py --dry-run --force` on 16 Sep at 21:22 reports **"the Anthropic
+credit balance is empty, 14 failed calls in the last 24h (seen from at least
+2026-09-11 00:23:58)"**. Ted is still answering, on the fallback model, which is
+exactly the state the check was written for: nothing looks broken from outside
+and every reply for five days has come from the second-choice model.
+
+Top up the primary provider. This costs nothing to fix and is affecting every
+conversation.
 
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
