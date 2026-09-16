@@ -4251,6 +4251,65 @@ class BreakOfferTest(unittest.TestCase):
         self.assertEqual(delivery, "")
 
 
+class ConfusedIsNotANameTest(unittest.TestCase):
+    """Somebody said they were confused and Ted took it as their name.
+
+    On 16 Sep 2026 a live user's stored name was "ted i'm genuinely confused".
+    Ted had been greeting them with it ever since. The apostrophe is how it got
+    through: the function-word check looks for `\bam\b` and that does not match
+    inside "i'm", so four ordinary words passed every shape rule there is.
+    """
+
+    def test_the_sentence_that_was_actually_stored(self) -> None:
+        self.assertIsNone(gates._clean_name("ted i'm genuinely confused"))
+
+    def test_a_feeling_introduced_as_a_name_is_refused(self) -> None:
+        """"i am confused" strips to "confused", one word, all letters."""
+        for written in ("i am confused", "im tired", "i'm lost", "i am fine",
+                        "im not sure"):
+            with self.subTest(written=written):
+                self.assertIsNone(gates._clean_name(written))
+
+    def test_talking_to_ted_is_not_answering_him(self) -> None:
+        self.assertIsNone(gates._clean_name("im confused ted"))
+
+    def test_but_ted_on_its_own_could_be_a_person(self) -> None:
+        """A wrong rejection costs one re-ask. A wrong accept lasts forever."""
+        self.assertEqual(gates._clean_name("Ted"), "Ted")
+
+    def test_real_introductions_still_work(self) -> None:
+        """The whole point of the prefix strips, and a documented live fix.
+
+        Arpit answered "Hi ted, I'm Arpith" on 9 Sep and was asked again twice.
+        Tightening the sentence rules must not put that back.
+        """
+        for written, expected in (
+            ("Hi ted, I am Arpith", "Arpith"),
+            ("Hi ted, I'm Arpith", "Arpith"),
+            ("im Ayush", "Ayush"),
+            ("I am Vandy", "Vandy"),
+            ("call me Vandy", "Vandy"),
+            ("my name is Tanishka", "Tanishka"),
+        ):
+            with self.subTest(written=written):
+                self.assertEqual(gates._clean_name(written), expected)
+
+    def test_names_that_are_also_ordinary_words_survive(self) -> None:
+        """Happy, Lucky and Sunny are names people here actually go by.
+
+        This is why the feeling list is matched whole rather than word by word.
+        """
+        for written in ("Happy", "Lucky", "Sunny", "Golu", "Pinky"):
+            with self.subTest(written=written):
+                self.assertEqual(gates._clean_name(written), written)
+
+    def test_the_shapes_that_already_worked_still_do(self) -> None:
+        for written in ("Vandy", "Tanishka", "jaya", "Dr. Rao", "O'Brien",
+                        "Protein Smoothie"):
+            with self.subTest(written=written):
+                self.assertEqual(gates._clean_name(written), written)
+
+
 class GoalQuestionTest(unittest.TestCase):
     """Question 6 asks for a decision, and takes the answers people give.
 

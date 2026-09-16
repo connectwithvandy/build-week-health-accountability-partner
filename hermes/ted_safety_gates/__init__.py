@@ -2029,8 +2029,39 @@ _NOT_A_NAME = re.compile(
     r"\b(?:you|your|you're|yours|should|shouldn't|could|would|instead"
     r"|i\s+(?:like|love|think|want|feel|prefer|guess|mean)"
     r"|this|that's|thats|its|it's|keep\s+it|make\s+it|sounds?|looks?"
-    r"|feedback|better|shorter|longer|personality|onboarding)\b",
+    r"|feedback|better|shorter|longer|personality|onboarding"
+    # A first-person copula that is still here has already survived the
+    # introduction strip above, which removes a leading "i'm"/"i am"/"im".
+    # Anything left is therefore mid-sentence — "ted i'm genuinely confused",
+    # stored and used as a real user's name on 16 Sep 2026. The apostrophe is
+    # why it got through: `\bam\b` does not match inside "i'm", so the
+    # function-word check saw no verb and read four ordinary words.
+    r"|i['\u2019]m|i\s+am|im"
+    # Addressing Ted is not answering him. One word among several means they
+    # are talking to the bot; a lone "Ted" is left alone, because that could
+    # genuinely be somebody's name and a wrong rejection only costs a re-ask.
+    r"|(?<=\s)ted|ted(?=\s))\b",
     re.IGNORECASE,
+)
+
+# How somebody answers when they have not understood the question. These follow
+# "i'm" and are stripped to a single innocent-looking word: "i am confused"
+# became "confused", one word, all letters, and passed every shape check.
+#
+# A word list, which the comment on `_looks_like_a_name` rightly distrusts, so
+# it is kept to one bounded class: states a person reports about themselves,
+# never things a person is called. The general shape rules stay the real guard;
+# this only covers what survives being introduced.
+# Matched whole, never word by word. "genuinely confused" therefore still gets
+# through, which is the deliberate trade: checking each word would reject
+# "Happy", "Lucky" and "Sunny", which are real names people here actually use,
+# in order to catch a phrase nobody has typed yet.
+_FEELING_NOT_A_NAME = frozenset(
+    {
+        "confused", "lost", "tired", "busy", "sorry", "fine", "okay", "ok",
+        "hungry", "done", "ready", "here", "sure", "unsure", "bored",
+        "sick", "ill", "fat", "thin", "overweight", "stuck", "sad", "angry",
+    }
 )
 _MAX_NAME_WORDS = 4
 
@@ -2063,7 +2094,10 @@ def _is_name_word(word: str) -> bool:
 # purpose — they belong in names.
 _NAME_FUNCTION_WORDS = re.compile(
     r"\b(?:and|or|the|my|for|with|to|is|are|am|was|be|been|of|in|on|at|but"
-    r"|so|just|all|get|got|do|does|did|have|has|had|can|will|would|if|then)\b",
+    # "not" joined these after "im not sure" stripped to "not sure": two
+    # words, pure letters, and nothing else objected.
+    r"|so|just|all|get|got|do|does|did|have|has|had|can|will|would|if|then"
+    r"|not)\b",
     re.IGNORECASE,
 )
 
@@ -2176,6 +2210,10 @@ def _clean_name(text: str) -> str | None:
         # shape check — two letters, one word, all alphabetic — and Ted would
         # have called them "im" from then on. Same class as the greeting
         # above: the filler is not the answer.
+        return None
+    if name.casefold() in _FEELING_NOT_A_NAME:
+        # "i am confused" strips to "confused", which is one word of pure
+        # letters and passes every shape rule there is.
         return None
     if not _looks_like_a_name(name):
         # Too long, too many words, or a sentence about Ted rather than an
