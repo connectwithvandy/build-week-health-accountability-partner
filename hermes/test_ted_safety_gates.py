@@ -1,5 +1,8 @@
+import io
 import json
+import os
 import re
+import urllib.error
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 import time
 import unittest
@@ -1713,6 +1716,125 @@ class StorageOutageTest(unittest.TestCase):
 
         self.assertEqual(reply, gates.STORAGE_NOT_SAVED)
         self.assertNotEqual(reply, gates.CLAIM_NOT_DONE)
+
+    # ------------------------------------------------------------------
+    # A write Convex refused is not a write Convex lost.
+    #
+    # Both used to arrive here as `storage_error`, so a value rejected on
+    # purpose told the user "my fault not yours, send it again?" — an apology
+    # for something deliberate, plus an instruction that cannot ever work,
+    # because the same value earns the same refusal every time.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def http_error(code: int, body: bytes) -> urllib.error.HTTPError:
+        """Exactly what convex/http.ts returns when a mutation throws."""
+        return urllib.error.HTTPError(
+            url="https://example.convex.site/ted-memory",
+            code=code,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+    def convex_env(self):
+        return patch.dict(
+            os.environ,
+            {
+                "TED_CONVEX_SITE_URL": "https://example.convex.site",
+                "TED_HERMES_SHARED_SECRET": "test-secret",
+            },
+        )
+
+    def test_a_refused_write_is_not_reported_as_an_outage(self) -> None:
+        reason = "A calorie target of 1200 is below this user's resting energy of 1667 kcal"
+        error = self.http_error(400, json.dumps({"success": False, "error": reason}).encode())
+        with self.convex_env(), patch.object(gates.urllib.request, "urlopen", side_effect=error):
+            result = gates._convex_request("save", "whatsapp:123")
+
+        self.assertTrue(result["refused"])
+        # The distinction that matters: storage is fine, so nothing may tell
+        # the user to send it again.
+        self.assertNotIn("storage_error", result)
+        self.assertEqual(result["error"], reason)
+
+    def test_the_refusal_reason_survives_into_the_log(self) -> None:
+        """It only exists in the body, and urlopen raises before anyone reads it.
+
+        Before this branch the log recorded "HTTP Error 400: Bad Request" and
+        the reason was dropped, so a refused calorie target left no record of
+        which number or why.
+        """
+        reason = "A calorie target of 1200 is below this user's resting energy of 1667 kcal"
+        error = self.http_error(400, json.dumps({"success": False, "error": reason}).encode())
+        with self.convex_env(), patch.object(gates.urllib.request, "urlopen", side_effect=error):
+            with self.assertLogs(gates.LOGGER, level="WARNING") as captured:
+                gates._convex_request("save", "whatsapp:123")
+
+        self.assertTrue(any("1667 kcal" in line for line in captured.output), captured.output)
+        self.assertTrue(any("ted_convex_write_refused" in line for line in captured.output))
+
+    def test_a_server_error_is_still_an_outage(self) -> None:
+        """5xx means the backend broke, which resending genuinely can fix."""
+        error = self.http_error(500, b"upstream exploded")
+        with self.convex_env(), patch.object(gates.urllib.request, "urlopen", side_effect=error):
+            result = gates._convex_request("save", "whatsapp:123")
+
+        self.assertTrue(result["storage_error"])
+        self.assertNotIn("refused", result)
+
+    def test_a_refused_write_does_not_tell_the_user_to_resend(self) -> None:
+        refusal = {
+            "success": False,
+            "error": "A calorie target of 1200 is below this user's resting energy",
+            "refused": True,
+        }
+        with patch.object(gates, "_convex_request", return_value=refusal):
+            gates._log_daily_entry(
+                {
+                    "entry_type": "meal",
+                    "meal": {"items": ["2 rotis", "dal"], "calories": 420},
+                },
+                session_id=self.SESSION,
+            )
+
+        reply = _transform_live_response(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            response_text="logged it — roughly 420 calories.",
+        )
+
+        self.assertEqual(reply, gates.STORAGE_REFUSED_NOT_SAVED)
+        self.assertNotEqual(reply, gates.STORAGE_NOT_SAVED)
+
+    def test_the_refusal_line_neither_apologises_nor_loops(self) -> None:
+        line = gates.STORAGE_REFUSED_NOT_SAVED
+        # Not Ted's fault: the refusal was deliberate.
+        self.assertNotIn("my fault", line)
+        # And not an instruction that can never succeed.
+        self.assertNotIn("send it again", line)
+        self.assertNotEqual(line, gates.STORAGE_NOT_SAVED)
+
+    def test_the_raw_reason_never_reaches_the_user(self) -> None:
+        """The log gets the detail; the person it is about does not."""
+        reason = "A calorie target of 1200 is below this user's resting energy of 1667 kcal"
+        with patch.object(
+            gates,
+            "_convex_request",
+            return_value={"success": False, "error": reason, "refused": True},
+        ):
+            gates._log_daily_entry(
+                {"entry_type": "meal", "meal": {"items": ["dal"], "calories": 420}},
+                session_id=self.SESSION,
+            )
+
+        reply = _transform_live_response(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            response_text="logged it.",
+        )
+        self.assertNotIn("kcal", reply)
+        self.assertNotIn("resting energy", reply)
 
     def test_the_outage_line_is_not_the_claim_gate_line(self) -> None:
         """Distinct strings, so a tester can tell the two failures apart."""
@@ -5698,6 +5820,7 @@ class EveryLineTedSaysSoundsLikeTedTest(unittest.TestCase):
         "UNDER_18_REFUSAL",
         "CLAIM_NOT_DONE",
         "STORAGE_NOT_SAVED",
+        "STORAGE_REFUSED_NOT_SAVED",
         "REPORT_CONFIRMATION",
         "REPORT_NOT_SAVED",
         "UNREADABLE_DOCUMENT_REPLY",

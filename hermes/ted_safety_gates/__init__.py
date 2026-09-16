@@ -1363,6 +1363,7 @@ _MEMORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _STORAGE_UNAVAILABLE = "Ted per-user storage is unavailable"
 _STORAGE_UNCONFIGURED = "Ted per-user storage is not configured"
 _STORAGE_BAD_RESPONSE = "Ted per-user storage returned an invalid response"
+_STORAGE_REFUSED = "Ted per-user storage refused the write"
 
 
 def _missing_convex_env() -> list[str]:
@@ -1417,6 +1418,48 @@ def _convex_request(
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        # A 4xx is Convex refusing the write on purpose: an argument that failed
+        # validation, or one of the explicit throws in ted.ts such as the
+        # calorie floor. That is a different event from the backend being
+        # unreachable, and telling them apart is the whole point of this branch.
+        #
+        # The reason only exists in the response body, and `urlopen` raises
+        # before anything reads it. Until this branch existed the body was
+        # dropped on the floor and the log recorded "HTTP Error 400: Bad
+        # Request", so a refused calorie target left no record of which number
+        # or why.
+        detail = ""
+        try:
+            detail = json.loads(error.read().decode("utf-8")).get("error", "")
+        except Exception:  # noqa: BLE001 - a body we cannot read must not mask the refusal
+            detail = ""
+        if 400 <= error.code < 500:
+            LOGGER.warning(
+                "ted_convex_write_refused action=%s code=%s reason=%s",
+                action,
+                error.code,
+                detail or "(no reason in body)",
+            )
+            return {
+                "success": False,
+                "error": detail or _STORAGE_REFUSED,
+                # Deliberately not `storage_error`. Nothing is wrong with
+                # storage, so the turn must not tell the user to send it again.
+                "refused": True,
+            }
+        LOGGER.warning(
+            "ted_convex_request_failed action=%s timeout=%.1fs code=%s error=%s",
+            action,
+            timeout,
+            error.code,
+            detail or error,
+        )
+        return {
+            "success": False,
+            "error": _STORAGE_UNAVAILABLE,
+            "storage_error": True,
+        }
     except (OSError, urllib.error.URLError, ValueError) as error:
         LOGGER.warning(
             "ted_convex_request_failed action=%s timeout=%.1fs error=%s",
@@ -1470,6 +1513,22 @@ def _note_storage_failure(context_id: str) -> None:
             context["storage_failed"] = True
 
 
+def _note_write_refused(context_id: str) -> None:
+    """Record that a write was refused on purpose, as opposed to lost.
+
+    Kept separate from `storage_failed` because the two owe the user different
+    sentences. A lost write is Ted's fault and resending fixes it. A refused
+    write will be refused identically every time, so "send it again?" sends
+    somebody round a loop that cannot end.
+    """
+    if not context_id:
+        return
+    with _TURN_LOCK:
+        context = _TURN_CONTEXT.get(context_id)
+        if context is not None:
+            context["write_refused"] = True
+
+
 def _convex_write(
     action: str,
     user_key: str,
@@ -1477,11 +1536,17 @@ def _convex_write(
     facts: list[dict[str, str]] | None = None,
     body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """A write, plus the two things every write must do: invalidate the
-    cached facts it may have changed, and flag a storage outage for the turn."""
+    """A write, plus the things every write must do: invalidate the cached
+    facts it may have changed, and flag an outage or a refusal for the turn."""
     result = _convex_request(action, user_key, facts=facts, body=body)
     if result.get("success"):
         _invalidate_user_memory(user_key)
+    elif result.get("refused"):
+        # The stored rows did not change, but the cache may already disagree
+        # with them, so it goes either way.
+        _invalidate_user_memory(user_key)
+        _note_storage_failure(context_id)
+        _note_write_refused(context_id)
     elif result.get("storage_error"):
         _invalidate_user_memory(user_key)
         _note_storage_failure(context_id)
@@ -4224,6 +4289,15 @@ def _claim_types(text: str) -> set[str]:
 # saved and ask them to send it again.
 CLAIM_NOT_DONE = "my brain hung for a sec \U0001f605 back on track. try me again?"
 STORAGE_NOT_SAVED = "that one didn’t save, my fault not yours. send it again?"
+# The same news when the write was refused rather than lost. It must not say
+# "my fault" (it was deliberate) and must not say "send it again" (the same
+# value earns the same refusal, so that is a loop with no exit). The reason
+# itself stays in the log: it is written for whoever maintains Ted, and a
+# sentence like "below this user's resting energy of 1667 kcal" is not
+# something to put in front of the person it is about.
+STORAGE_REFUSED_NOT_SAVED = (
+    "i couldn’t file that one, and resending it would land the same way. mind checking it?"
+)
 # The same stripped reply, to somebody who never asked for anything to happen.
 #
 # On 3 Sep at 22:58:30 a tester said "i think you should really really look at
@@ -4264,19 +4338,26 @@ def action_claim_gate(
     successful_actions: set[str] | None = None,
     storage_failed: bool = False,
     user_asked_for_action: bool = True,
+    not_saved_message: str = STORAGE_NOT_SAVED,
 ) -> str | None:
-    """Remove action claims unless a tool succeeded in the same turn."""
+    """Remove action claims unless a tool succeeded in the same turn.
+
+    `not_saved_message` is the sentence appended when `storage_failed` is set.
+    It is a parameter rather than the constant so a write Convex refused on
+    purpose can say so, without duplicating any of the logic below that decides
+    *whether* the user is owed the news at all.
+    """
     claims = _claim_types(response_text)
     if not claims:
         # Nothing was claimed, but a save still failed this turn — the user is
         # owed the news either way, or they walk off believing a logged meal is
         # in there.
-        return STORAGE_NOT_SAVED if storage_failed else None
+        return not_saved_message if storage_failed else None
     allowed = set(successful_actions or ())
     if action_succeeded:
         allowed.update(claims)
     if claims.issubset(allowed):
-        return STORAGE_NOT_SAVED if storage_failed else None
+        return not_saved_message if storage_failed else None
     kept_sentences = [
         sentence.strip()
         for sentence in re.split(r"(?<=[.!?])\s+", response_text.strip())
@@ -4289,9 +4370,9 @@ def action_claim_gate(
         # "Logged this." The gate removes claims; it does not get a voice.
         # Keep the readings Ted gave (orders 03 and 05), but do not let them
         # stand alone implying the write landed.
-        return f"{cleaned} {STORAGE_NOT_SAVED}" if storage_failed else cleaned
+        return f"{cleaned} {not_saved_message}" if storage_failed else cleaned
     if storage_failed:
-        return STORAGE_NOT_SAVED
+        return not_saved_message
     # Nothing survived the strip. What replaces it depends on whether they
     # asked for anything: a failure notice to somebody who did, and a plain
     # "i can't file that" to somebody who was only talking.
@@ -4910,6 +4991,10 @@ def transform_response(
     successful_actions: set[str] | None = None,
     user_key: str = "",
     storage_failed: bool = False,
+    # Set when the backend refused the write rather than losing it. Only ever
+    # read alongside `storage_failed`, which stays the signal that the user is
+    # owed news at all; this decides which news.
+    write_refused: bool = False,
     report_saved: bool | None = None,
     logged_meal: dict[str, Any] | None = None,
     logged_meals: list[dict[str, Any]] | None = None,
@@ -5060,6 +5145,9 @@ def transform_response(
         successful_actions=successful_actions,
         storage_failed=storage_failed,
         user_asked_for_action=_asks_for_an_action(user_text),
+        not_saved_message=(
+            STORAGE_REFUSED_NOT_SAVED if write_refused else STORAGE_NOT_SAVED
+        ),
     )
     # A trimmed name question is a real edit, so it has to survive a claim gate
     # that found nothing of its own to change. Without this the function
@@ -6302,6 +6390,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         successful_actions=set(context.get("successful_actions", set())),
         user_key=user_key,
         storage_failed=bool(context.get("storage_failed")),
+        write_refused=bool(context.get("write_refused")),
         report_saved=report_saved,
         logged_meal=context.get("logged_meal"),
         logged_meals=context.get("logged_meals"),
