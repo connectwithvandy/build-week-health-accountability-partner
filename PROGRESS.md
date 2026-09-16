@@ -1073,20 +1073,29 @@ guarded: `_whatsapp_can_deliver()` sits above `_reminder_allowed()` in
 `_cron_reminder_gate` precisely so a down link cannot march a present user
 toward a break offer.
 
-What is left cannot be measured. `delivery_obligations` holds 226 rows, 223
-delivered and 3 abandoned, and **every one of them is a chat reply. There are
-no cron rows at all.** A cron job hands its text straight to the live adapter
-and writes no obligation row, which is the same gap order 24's successor found
-from the other side. So there is no record anywhere of whether a nudge landed.
+`delivery_obligations` holds 226 rows, 223 delivered and 3 abandoned, and every
+one is a chat reply: a cron job hands its text straight to the live adapter and
+writes no obligation row. But a record does exist, in the wrong place.
+`_reached_by_cron_since` in `ted-watch.py` already reads `agent.log` for
+"delivered to whatsapp:<chat_id> via live adapter", which is exactly the fact a
+refund would need.
+
+The problem is that the log rotates, so a delivery older than the current file
+cannot be seen. `check_dropped` can live with that, because being wrong there
+only ever means reporting somebody as answered who was. A refund cannot: it
+would hand back counts it could not justify.
 
 It is not theoretical. The open list above already records five daily reviews
 failing to deliver on 5 Sep at 21:01 with `last_status` still reading `ok`.
 Those five were counted.
 
-The shape of a fix, in order: make a cron send leave a record first, then
-refund the count against it. Refunding before that is guessing. Counting after
-delivery instead is the wrong trade: a lost confirmation would double-send, and
-two nudges is worse than none.
+The shape of a fix, in order: make a cron send write an obligation row like
+every other send, so delivery is recorded durably rather than in a file that
+rotates, then refund the count against it. That is a gateway change and would
+be patch 13.
+
+Counting after delivery instead is the wrong trade: a lost confirmation would
+double-send, and two nudges is worse than none.
 
 ### 2. ~~Three users were told their save failed and never got the message~~
 
