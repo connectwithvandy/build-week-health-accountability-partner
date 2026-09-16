@@ -1867,6 +1867,70 @@ class StorageOutageTest(unittest.TestCase):
         self.assertEqual(reply, gates.STORAGE_REFUSED_NOT_SAVED)
         self.assertNotEqual(reply, gates.STORAGE_NOT_SAVED)
 
+    def test_a_refused_measurement_says_which_one(self) -> None:
+        """The reviewer asked for the user's input to be preserved on a failure.
+
+        A transient failure now retries, so nothing is handed back. A refusal
+        has nothing to retry, so the next best thing is naming what was
+        refused: "couldn't save your height" is actionable and "i couldn't
+        file that one" is not.
+        """
+        refusal = {
+            "success": False,
+            "error": "heightCm of 4 is outside the range a person can have (90 to 250 cm)",
+            "refused": True,
+        }
+        with patch.object(gates, "_convex_request", return_value=refusal):
+            gates._log_daily_entry(
+                {"entry_type": "meal", "meal": {"items": ["dal"], "calories": 420}},
+                session_id=self.SESSION,
+            )
+
+        reply = _transform_live_response(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            response_text="logged it.",
+        )
+        self.assertIn("your height", reply)
+        self.assertNotIn("heightCm", reply)
+        self.assertNotIn("90 to 250", reply)
+
+    def test_the_column_name_and_the_range_never_reach_the_user(self) -> None:
+        """Reading a column name and a bound back at somebody is not an
+        improvement on saying nothing."""
+        import re as _re
+        for field, word in gates._REFUSED_FIELD_WORDS.items():
+            line = gates._refusal_sentence(f"{field} of 4 is outside the range (1 to 2 kg)")
+            self.assertIn(word, line)
+            # "age" and "steps" are ordinary English and belong in the sentence.
+            # What must never appear is the identifier: heightCm, waterMl,
+            # workoutsPerWeek. Checked by shape so a new column is covered
+            # without anyone remembering to list it.
+            self.assertIsNone(_re.search(r"[a-z][A-Z]", line), line)
+            self.assertNotIn("range", line)
+            self.assertNotIn("(1 to 2", line)
+
+    def test_a_refusal_it_cannot_name_falls_back(self) -> None:
+        """Only range checks name a field first. The calorie floor is prose and
+        an argument error names a type, and neither should be guessed at."""
+        floor = "A calorie target of 1200 is below this user's resting energy of 1667 kcal"
+        self.assertEqual(gates._refusal_sentence(floor), gates.STORAGE_REFUSED_NOT_SAVED)
+        self.assertEqual(gates._refusal_sentence(""), gates.STORAGE_REFUSED_NOT_SAVED)
+        self.assertEqual(
+            gates._refusal_sentence("somethingNew of 9 is out of range"),
+            gates.STORAGE_REFUSED_NOT_SAVED,
+        )
+
+    def test_every_named_field_reads_as_english(self) -> None:
+        """A word added here goes straight into a real chat, so it has to be
+        lowercase, dash-free and readable in Ted's voice."""
+        import re as _re
+        for field in gates._REFUSED_FIELD_WORDS:
+            line = gates._refusal_sentence(f"{field} of 4 is outside the range")
+            self.assertEqual(line, line.lower())
+            self.assertIsNone(_re.search(r"\w\s[\u2014\u2013-]\s\w", line))
+            self.assertEqual(line.count("?"), 1)
+
     def test_the_refusal_line_neither_apologises_nor_loops(self) -> None:
         line = gates.STORAGE_REFUSED_NOT_SAVED
         # Not Ted's fault: the refusal was deliberate.

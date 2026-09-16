@@ -1513,7 +1513,7 @@ def _note_storage_failure(context_id: str) -> None:
             context["storage_failed"] = True
 
 
-def _note_write_refused(context_id: str) -> None:
+def _note_write_refused(context_id: str, reason: str = "") -> None:
     """Record that a write was refused on purpose, as opposed to lost.
 
     Kept separate from `storage_failed` because the two owe the user different
@@ -1526,7 +1526,9 @@ def _note_write_refused(context_id: str) -> None:
     with _TURN_LOCK:
         context = _TURN_CONTEXT.get(context_id)
         if context is not None:
-            context["write_refused"] = True
+            # The sentence, not a flag: worked out here, where the reason is,
+            # rather than passed raw to the half of the code that talks.
+            context["write_refused"] = _refusal_sentence(reason)
 
 
 # One extra attempt at a write that failed for a reason that might not last.
@@ -1587,7 +1589,7 @@ def _convex_write(
         # with them, so it goes either way.
         _invalidate_user_memory(user_key)
         _note_storage_failure(context_id)
-        _note_write_refused(context_id)
+        _note_write_refused(context_id, str(result.get("error") or ""))
     elif result.get("storage_error"):
         _invalidate_user_memory(user_key)
         _note_storage_failure(context_id)
@@ -4339,6 +4341,50 @@ STORAGE_NOT_SAVED = "that one didn’t save, my fault not yours. send it again?"
 STORAGE_REFUSED_NOT_SAVED = (
     "i couldn’t file that one, and resending it would land the same way. mind checking it?"
 )
+
+# Which thing Ted is talking about, when it can tell.
+#
+# The reviewer asked for the user's input to be preserved on a failure. For a
+# transient one it now is, because the write is retried instead of handed back.
+# For a refusal there is nothing to retry, so the next best thing is naming
+# what was refused: "couldn't save your height" is something a person can act
+# on, and "i couldn't file that one" is not.
+#
+# The reason itself never travels. `heightCm of 4 is outside the range a person
+# can have (90 to 250 cm)` is written for whoever maintains Ted, and reading a
+# column name and a range back to somebody is not an improvement on saying
+# nothing. Only the field is taken, and only through this table, so a rule
+# added to `HEALTH_RANGES` without a word here falls back to the general line
+# rather than inventing a phrase for a column.
+_REFUSED_FIELD_WORDS = {
+    "age": "your age",
+    "heightCm": "your height",
+    "weightKg": "your weight",
+    "calories": "that calorie number",
+    "proteinGrams": "that protein number",
+    "carbohydrateGrams": "that carb number",
+    "fatGrams": "that fat number",
+    "fiberGrams": "that fibre number",
+    "steps": "those steps",
+    "waterMl": "that water amount",
+    "workoutMinutes": "that workout length",
+    "workoutsPerWeek": "that workout count",
+}
+
+
+def _refusal_sentence(reason: str) -> str:
+    """What to say about a refused write, given the backend's own reason.
+
+    Falls back to the general line whenever the field cannot be read, which
+    covers every refusal that is not a range check: the calorie floor phrases
+    itself as prose, and an argument-validation error names a type rather than
+    a measurement.
+    """
+    field = str(reason or "").strip().split(" ", 1)[0]
+    word = _REFUSED_FIELD_WORDS.get(field)
+    if not word:
+        return STORAGE_REFUSED_NOT_SAVED
+    return f"couldn’t save {word}, the number doesn’t look right to me. mind checking it?"
 # The same stripped reply, to somebody who never asked for anything to happen.
 #
 # On 3 Sep at 22:58:30 a tester said "i think you should really really look at
@@ -5032,10 +5078,11 @@ def transform_response(
     successful_actions: set[str] | None = None,
     user_key: str = "",
     storage_failed: bool = False,
-    # Set when the backend refused the write rather than losing it. Only ever
-    # read alongside `storage_failed`, which stays the signal that the user is
-    # owed news at all; this decides which news.
-    write_refused: bool = False,
+    # The sentence to use when the backend refused the write rather than
+    # losing it, or "" when it did not. Only ever read alongside
+    # `storage_failed`, which stays the signal that the user is owed news at
+    # all; this decides which news.
+    write_refused: str = "",
     report_saved: bool | None = None,
     logged_meal: dict[str, Any] | None = None,
     logged_meals: list[dict[str, Any]] | None = None,
@@ -5186,9 +5233,7 @@ def transform_response(
         successful_actions=successful_actions,
         storage_failed=storage_failed,
         user_asked_for_action=_asks_for_an_action(user_text),
-        not_saved_message=(
-            STORAGE_REFUSED_NOT_SAVED if write_refused else STORAGE_NOT_SAVED
-        ),
+        not_saved_message=write_refused or STORAGE_NOT_SAVED,
     )
     # A trimmed name question is a real edit, so it has to survive a claim gate
     # that found nothing of its own to change. Without this the function
@@ -6444,7 +6489,7 @@ def _transform_live_response(**kwargs: Any) -> str | None:
         successful_actions=set(context.get("successful_actions", set())),
         user_key=user_key,
         storage_failed=bool(context.get("storage_failed")),
-        write_refused=bool(context.get("write_refused")),
+        write_refused=str(context.get("write_refused") or ""),
         report_saved=report_saved,
         logged_meal=context.get("logged_meal"),
         logged_meals=context.get("logged_meals"),
