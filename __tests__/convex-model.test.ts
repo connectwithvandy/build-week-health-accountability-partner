@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstHealthValueProblem,
+  nextCompletedAt,
   healthValueProblem,
   HEALTH_RANGES,
   dailyEntryStates,
@@ -1208,6 +1209,45 @@ describe("what a stored health number is allowed to be", () => {
       "steps", "waterMl", "workoutMinutes", "workoutsPerWeek",
     ]) {
       expect(HEALTH_RANGES[field], `${field} has no range`).toBeDefined();
+    }
+  });
+});
+
+describe("when onboarding counts as finished", () => {
+  const NOW = 1789560000000;
+
+  it("stamps the moment setup first becomes ready", () => {
+    expect(nextCompletedAt(undefined, true, NOW)).toBe(NOW);
+  });
+
+  it("leaves it unset while anything is still missing", () => {
+    expect(nextCompletedAt(undefined, false, NOW)).toBeUndefined();
+  });
+
+  it("keeps the original moment once earned", () => {
+    // Not re-stamped on every subsequent write, or the column would drift
+    // forward and stop meaning "when they finished".
+    const earned = NOW - 86_400_000;
+    expect(nextCompletedAt(earned, true, NOW)).toBe(earned);
+  });
+
+  it("never clears it when a field is later lost", () => {
+    // Somebody who finished and then had a field cleared is a user with a gap
+    // to close, not somebody who never started. This is why Pradosh and
+    // Pritika keep theirs.
+    const earned = NOW - 86_400_000;
+    expect(nextCompletedAt(earned, false, NOW)).toBe(earned);
+  });
+
+  it("only ever moves from unset to set", () => {
+    // The property the whole rule reduces to, checked over every combination
+    // rather than the four spelled out above.
+    for (const current of [undefined, 1, NOW]) {
+      for (const ready of [true, false]) {
+        const next = nextCompletedAt(current, ready, NOW);
+        if (current !== undefined) expect(next).toBe(current);
+        else expect(next === undefined || next === NOW).toBe(true);
+      }
     }
   });
 });

@@ -1129,6 +1129,31 @@ export function setupStateFor(snapshot: SetupSnapshot): SetupState {
   return { missing, blocked, ready: missing.length === 0 && blocked === null };
 }
 
+/**
+ * What `onboarding.completedAt` should be after a readiness check.
+ *
+ * One home for a rule that used to live in one caller. `completedAt` was
+ * written only inside `saveOnboarding`, while `users.status` is derived by
+ * `refreshSetupStatus` from seven call sites, so anybody whose last missing
+ * field was closed by a `setTarget` call went active and never got the column.
+ * On 16 Sept two users were in exactly that state, and because two others were
+ * wrong in the opposite direction the totals matched and every aggregate check
+ * in the repo stayed green.
+ *
+ * Kept once earned, which is the older half of the rule and still right: a user
+ * who finished setup and later had a field cleared is somebody with a gap to
+ * close, not somebody who never started. So this only ever moves from unset to
+ * set, never back.
+ */
+export function nextCompletedAt(
+  current: number | undefined,
+  ready: boolean,
+  now: number,
+): number | undefined {
+  if (current !== undefined) return current;
+  return ready ? now : undefined;
+}
+
 /** Shorthand for the one thing `users.status` should be derived from. */
 export function isSetUp(snapshot: SetupSnapshot): boolean {
   return setupStateFor(snapshot).ready;

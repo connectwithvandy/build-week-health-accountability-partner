@@ -20,6 +20,7 @@ import {
   needsDateConfirmation,
   onboardingFieldValidator,
   firstHealthValueProblem,
+  nextCompletedAt,
   setupSnapshotFrom,
   type SetupSnapshot,
   type SetupState,
@@ -325,10 +326,33 @@ async function refreshSetupStatus(
   const state = setupStateFor(await buildSetupSnapshot(ctx, user));
   if (user.status === "deleting") return state;
 
+  const now = Date.now();
   const derived = state.ready ? "active" : "onboarding";
   if (user.status !== derived) {
-    await ctx.db.patch(user._id, { status: derived, updatedAt: Date.now() });
+    await ctx.db.patch(user._id, { status: derived, updatedAt: now });
   }
+
+  // `onboarding.completedAt` is stamped here, beside the status it has to
+  // agree with, rather than only in `saveOnboarding`. Setup can be finished by
+  // a write that never touches onboarding — a calorie target agreed in open
+  // conversation reaches `setTarget` — and when that happened the user went
+  // active while the column stayed empty forever. GT and Shreya were both in
+  // that state on 16 Sept.
+  //
+  // Only an existing row is stamped. A user with no onboarding row at all has
+  // not started one, and inventing it here would make `startedAt` a fiction;
+  // `saveOnboarding` still owns creating the row.
+  const onboarding = await ctx.db
+    .query("onboarding")
+    .withIndex("by_user", (query) => query.eq("userId", user._id))
+    .unique();
+  if (onboarding) {
+    const completedAt = nextCompletedAt(onboarding.completedAt, state.ready, now);
+    if (completedAt !== onboarding.completedAt) {
+      await ctx.db.patch(onboarding._id, { completedAt, updatedAt: now });
+    }
+  }
+
   return state;
 }
 
@@ -912,7 +936,9 @@ export const saveOnboarding = internalMutation({
         currentField,
         completedFields: completedField ? [completedField] : [],
         startedAt: now,
-        completedAt: state.ready ? now : undefined,
+        // refreshSetupStatus found no row to stamp, so the insert carries the
+        // same decision, taken by the same function.
+        completedAt: nextCompletedAt(undefined, state.ready, now),
         updatedAt: now,
       });
       return { success: true, created: true, onboardingId, ...state };
@@ -922,12 +948,13 @@ export const saveOnboarding = internalMutation({
     if (completedField && !completedFields.includes(completedField)) {
       completedFields.push(completedField);
     }
+    // No `completedAt` here. `refreshSetupStatus` above is the one writer, and
+    // `existing` was read before it ran, so passing it back would overwrite a
+    // fresh stamp with the stale value it replaced. The "kept once earned"
+    // rule now lives in `nextCompletedAt`.
     await ctx.db.patch(existing._id, {
       currentField,
       completedFields,
-      // Kept once earned. A user who completes setup and later has a field
-      // cleared is a user with a gap to close, not someone who never started.
-      completedAt: state.ready ? (existing.completedAt ?? now) : existing.completedAt,
       updatedAt: now,
     });
     return { success: true, created: false, onboardingId: existing._id, ...state };
