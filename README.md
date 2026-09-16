@@ -71,6 +71,7 @@ fixture keys into live gateway state.
 | `npm run hermes:patch:check` | Are all 8 gateway patches still applied? |
 | `npm run convex:check` | Does the deployed Convex backend still match this repo? |
 | `npm run reports` | Replies users reported as wrong. |
+| `npm run forget -- --who <name>` | What Ted's machine still holds about one person, which `delete my data` cannot reach: the conversation, the queued reply text, the photos and voice notes. Dry run; add `--apply` to erase it. |
 | `npm run timezones` | Who has a daily check-in time and no timezone, so Ted is guessing which 9pm they meant. Dry run; `-- --apply` fills in the ones a phone country code settles. |
 | `npm run submission:report` | Build Week numbers from production Convex. Read-only, but it **rewrites `SUBMISSION.md`**. |
 
