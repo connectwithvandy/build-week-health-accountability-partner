@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Local Python env for running the Hermes gate tests
 .venv/
+
+# Fonts the recap card downloads on first render
+/.recap-fonts/
