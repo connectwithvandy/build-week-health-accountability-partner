@@ -991,6 +991,120 @@ so a future re-save of that exact number will be refused.
      another attempt to make me claim I asked something I didn't". Two stayed
      internal; one was delivered at 11:06.
 
+## Order 25 — 16 Sep 2026, the scorecard read as a bug list
+
+The Build Week score and code review came back. The project is submitted and is
+not being resubmitted, so both were treated as free diagnosis: every finding
+ranked by user harm, nothing done because a parameter carried weight. Two of
+the six code-review concerns were wrong and are recorded as such below.
+
+Four commits, all deployed and pushed.
+
+**`0ef103e` — the dashboard stopped guessing.** `/metrics` now reports
+activation separately from saying hello: 46 conversations started, 13 people
+who finished setup and logged something, 10 who came back on a second day, and
+10 logging while Ted still counts them unfinished. It also carries a panel
+naming what setup is waiting on, which is where the real finding was (below).
+The lifetime visitor figure said "412 people across every week on record" and
+could not have: the visitor hash has the week baked into it, so a returning
+visitor arrives as a second hash. It is `visitorWeeks` now.
+
+**`8eb9ecf` — a refused write stopped being reported as an outage.** Convex
+returns 400 when a mutation throws; `urlopen` raises that as `HTTPError`, which
+subclasses `OSError`, so the gate's existing except clause caught it and called
+it a storage outage. A value Ted refused on purpose therefore told the user
+"that one didn't save, my fault not yours. send it again?" — an apology for a
+deliberate act, and an instruction that can never work, because the same value
+earns the same refusal every time. The reason was lost too: `http.ts` claims the
+detail stays in the response for the log, and `urlopen` raises before anything
+reads the body, so the log recorded "HTTP Error 400: Bad Request" and nothing
+else. **This closes the open item about raw `ArgumentValidationError` strings
+reaching a chat.** They never could. The error was caught too well, not too
+little.
+
+**`9a913a3` — the range check moved to the write.** The bounds added after
+Pallavi's 4cm height guard facts being promoted to profile columns, and
+`setTarget`, `saveOnboarding` and `logDailyEntry` are all reachable without
+going near them. Steps, water, macros, workout minutes and workouts per week
+had no bound anywhere at all, and the meal macros are estimated by a model from
+a photograph. Age is deliberately the widest at 5–120: the 18+ rule is enforced
+by `setupStateFor` returning `blocked: "minor"`, which it can only do if the age
+was stored, so refusing to write 17 would be the safety regression rather than
+the safety check. Every value in production was checked against the new bounds
+first; nothing would be refused.
+
+**`95ebf32` — one writer for who finished setup.** `onboarding.completedAt` was
+written only inside `saveOnboarding` while `users.status` is derived by
+`refreshSetupStatus` from seven call sites, so anyone whose last missing field
+was closed by `setTarget` went active without the column. GT and Shreya were
+both in that state; Shreya had every requirement on file and 16 logged entries
+and counted as neither onboarded nor activated. Pradosh and Pritika were wrong
+in the other direction, and because the two cancelled, 17 users were active and
+17 rows carried a `completedAt`, so every aggregate check here was green while
+four people were wrong. The wrong rows heal on that user's next write.
+
+### The finding no reviewer made
+
+Of the 29 users part-way through setup, the missing requirement is:
+
+    checkInTime 22 · calorieTarget 21 · goal 17 · weight 16 · height 15 · age 13
+
+The check-in time question is where the funnel actually leaks, and it already
+has two repairs behind it (orders 20 and 22). Ten people log meals, water and
+workouts while Ted counts them unfinished, so setup completion is not what
+gates value for them.
+
+### Two concerns the code review got wrong
+
+- **The deletion promise.** `privacy/page.tsx:65` already says in plain words
+  that photos, voice notes and conversation records sit on the machine and need
+  a manual request. The page is honest. The manual half is still fragile, which
+  is a different complaint.
+- **The lint suppression.** `eslint.config.mjs` exists and is a real Next
+  config. An artifact of the reviewer seeing ten files.
+
+## Open — 16 Sep 2026, two findings not acted on
+
+### 1. Nothing records whether a reminder arrived
+
+`gateReminderDelivery` increments `sentCount` and `unansweredNudges` when a
+nudge is *cleared*, not when it is delivered. The common case is already
+guarded: `_whatsapp_can_deliver()` sits above `_reminder_allowed()` in
+`_cron_reminder_gate` precisely so a down link cannot march a present user
+toward a break offer.
+
+What is left cannot be measured. `delivery_obligations` holds 226 rows, 223
+delivered and 3 abandoned, and **every one of them is a chat reply. There are
+no cron rows at all.** A cron job hands its text straight to the live adapter
+and writes no obligation row, which is the same gap order 24's successor found
+from the other side. So there is no record anywhere of whether a nudge landed.
+
+It is not theoretical. The open list above already records five daily reviews
+failing to deliver on 5 Sep at 21:01 with `last_status` still reading `ok`.
+Those five were counted.
+
+The shape of a fix, in order: make a cron send leave a record first, then
+refund the count against it. Refunding before that is guessing. Counting after
+delivery instead is the wrong trade: a lost confirmation would double-send, and
+two nudges is worse than none.
+
+### 2. Three users were told their save failed and never got the message
+
+All three abandoned deliveries are Ted's own storage-failure notice.
+
+    11 Sep 11:20  919823980612  "it's not you, it's me 🙈 rough patch on my end…"
+    14 Sep 14:22  918882688533  "oops, my brain just blanked there 🙈 that one didn't save…"
+    15 Sep 01:02  919831243983  "oops, my brain just blanked there 🙈 that one didn't save…"
+
+`state=abandoned`, `attempts=0`, `last_error` "Not connected to WhatsApp" twice
+and "Connection Closed" once. No retry. Their write failed, and the one sentence
+that exists to stop them believing it landed was dropped as well, so three
+people are carrying on as though a meal is logged that is not.
+
+This is the WhatsApp-only-channel problem in its smallest form: the notice
+depends on the channel that is failing. A queue that retries when the link
+returns would fix all three, and it belongs in the gateway rather than the gate.
+
 ## Readiness for inviting beta users — checked 3 Sep 2026, 15:10
 
 Asked directly whether Ted could be distributed. The answer was no, and two of
@@ -1149,8 +1263,11 @@ Ordered by what a real user hits first.
    numbers from Ted's prose, so he names the food and asks while the block counts.
 7. **Order 09, the half that is left.** Provider error copy is done and the stall
    watchdogs use `time.monotonic()`. Still open: force-test the Codex fallback,
-   and stop the raw `ArgumentValidationError` strings the Convex actions return on
-   a bad payload from reaching a chat.
+   ~~and stop the raw `ArgumentValidationError` strings the Convex actions return
+   on a bad payload from reaching a chat.~~ **Closed 16 Sep, order 25.** They
+   never could: the endpoint answers 400 and `urlopen` raises that as
+   `HTTPError`, which the gate already caught. The real fault was the opposite
+   and is now fixed, so the Codex fallback is the only half still open.
 8. ~~**Order 11 is written, tested, and not deployed.**~~ **Merged.**
    `fix/order-11-milestones-10-11-12` is now an ancestor of `main`, so the
    duplicate check, date confirmation, the report-a-bad-reply path and
@@ -1178,8 +1295,9 @@ Ordered by what a real user hits first.
 - `main` is **52 commits ahead** of `ship/landing-v6` and 0 behind, and in sync
   with `origin/main`. The old warning that main was 11 behind, and the held-back
   `c2d82be`, no longer apply.
-- The test suite is **536 Python tests** (880 subtests) and **78 vitest tests**,
-  measured 4 Sep — earlier counts of 81, 464 and 179 are all superseded. Run the
+- The test suite is **743 Python tests** (1,404 subtests) and **144 vitest
+  tests**, measured 16 Sep — earlier counts of 81, 464, 179, 536 and 78 are all
+  superseded. Run the
   Python tests with pytest and the root `conftest.py`; `python3 -m unittest` skips
   conftest and writes fixture keys into `~/.hermes/state`, which happened again on
   4 Sep and had to be cleaned by hand.
