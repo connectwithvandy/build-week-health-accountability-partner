@@ -19,6 +19,7 @@ import {
   isLocalTimeKey,
   needsDateConfirmation,
   onboardingFieldValidator,
+  firstHealthValueProblem,
   setupSnapshotFrom,
   type SetupSnapshot,
   type SetupState,
@@ -331,6 +332,23 @@ async function refreshSetupStatus(
   return state;
 }
 
+/**
+ * Refuse a health number that cannot describe a person, before it is stored.
+ *
+ * Throwing rather than clamping, for the reason `setTarget`'s calorie floor
+ * already gives: a clamp leaves Ted having said one number out loud while the
+ * row holds another, and two stores disagreeing is the failure this codebase
+ * keeps paying for. A refusal keeps them in step.
+ *
+ * The gateway turns this into one plain sentence for the user and writes the
+ * detail below to its log. It is safe for this message to name the field and
+ * the number because it never reaches a chat.
+ */
+function assertStorableHealthValues(fields: Record<string, unknown>): void {
+  const problem = firstHealthValueProblem(fields);
+  if (problem) throw new Error(problem);
+}
+
 const mealValidator = v.object({
   items: v.array(v.string()),
   calories: v.number(),
@@ -366,6 +384,19 @@ export const logDailyEntry = internalMutation({
     if (!isLocalDateKey(args.localDate)) {
       throw new Error("localDate must be YYYY-MM-DD in the user's own timezone");
     }
+    // Everything a logged entry can carry a number in, including the macros
+    // inside a meal, which the model estimates from a photo and which nothing
+    // has ever checked.
+    assertStorableHealthValues({
+      waterMl: args.waterMl,
+      steps: args.steps,
+      workoutMinutes: args.workoutMinutes,
+      calories: args.meal?.calories,
+      proteinGrams: args.meal?.proteinGrams,
+      carbohydrateGrams: args.meal?.carbohydrateGrams,
+      fatGrams: args.meal?.fatGrams,
+      fiberGrams: args.meal?.fiberGrams,
+    });
     const user = await ensureUser(ctx, args.whatsappUserId);
     const now = Date.now();
     const occurredAt = args.occurredAt ?? now;
@@ -653,6 +684,12 @@ export const setTarget = internalMutation({
     ),
   },
   handler: async (ctx, { whatsappUserId, customCommitments, ...fields }) => {
+    // Before the calorie floor below, because that rule asks whether a target
+    // is safe for this person and this one asks whether the number is a number
+    // at all. A negative calorie target should never reach a comparison
+    // against a resting-energy figure.
+    assertStorableHealthValues(fields);
+
     const user = await ensureUser(ctx, whatsappUserId);
     const now = Date.now();
 
@@ -831,6 +868,17 @@ export const saveOnboarding = internalMutation({
     ),
   },
   handler: async (ctx, { whatsappUserId, currentField, completedField, profile }) => {
+    // The path a 4cm height reached a profile on. The gate bounds these too,
+    // but only where a stored fact is promoted to a column, and this mutation
+    // is reachable without going through that.
+    if (profile) {
+      assertStorableHealthValues({
+        age: profile.age,
+        heightCm: profile.heightCm,
+        weightKg: profile.weightKg,
+      });
+    }
+
     const user = await ensureUser(ctx, whatsappUserId);
     const now = Date.now();
 

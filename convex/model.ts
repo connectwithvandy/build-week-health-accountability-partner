@@ -932,6 +932,87 @@ export function calorieFloorFor(profile: {
  * Missing preferences make Ted less tailored. Missing entries here make Ted
  * unable to answer "how am I doing", which is the whole product.
  */
+/**
+ * What a stored health number is allowed to be.
+ *
+ * The job here is to catch a value that cannot describe a person, not to argue
+ * with an unusual one. A hiker logging 30,000 steps, someone drinking four
+ * litres, a 250kg powerlifter: all fine, all stored. What is refused is the
+ * value that is not a measurement at all — a negative weight, a height of 4,
+ * a calorie count with eight digits.
+ *
+ * Height and weight deliberately match the bounds already in the gate at
+ * `ted_safety_gates/__init__.py` (`_PROFILE_RANGES`). Those bounds existed and
+ * still let a height of 4cm sit on a profile for nine days, because they guard
+ * one path — facts being promoted to profile columns — and every other way a
+ * measurement reaches the row went unchecked. Repeating them here is the point:
+ * this is the write itself, which every path has to go through.
+ *
+ * `age` is the exception and is far wider than the beta admits on purpose. The
+ * beta is 18+, but that is enforced by `setupStateFor` returning
+ * `blocked: "minor"`, which it can only do if the age was *stored*. Refusing to
+ * write 17 would mean a minor's age never lands, so nothing could ever block
+ * them and they would read as merely incomplete. The bound here is only
+ * "could this be a human being".
+ */
+export const HEALTH_RANGES: Record<string, { min: number; max: number; unit: string }> = {
+  age: { min: 5, max: 120, unit: "years" },
+  heightCm: { min: 90, max: 250, unit: "cm" },
+  weightKg: { min: 20, max: 400, unit: "kg" },
+  calories: { min: 0, max: 20000, unit: "kcal" },
+  proteinGrams: { min: 0, max: 2000, unit: "g" },
+  carbohydrateGrams: { min: 0, max: 2000, unit: "g" },
+  fatGrams: { min: 0, max: 2000, unit: "g" },
+  fiberGrams: { min: 0, max: 2000, unit: "g" },
+  steps: { min: 0, max: 200000, unit: "steps" },
+  waterMl: { min: 0, max: 20000, unit: "ml" },
+  workoutMinutes: { min: 0, max: 1440, unit: "minutes" },
+  workoutsPerWeek: { min: 0, max: 50, unit: "per week" },
+};
+
+/**
+ * Why this value cannot be stored in this field, or null if it can.
+ *
+ * Returns a sentence rather than a boolean so the caller can throw something
+ * that says which field and which number. That message goes to the log, never
+ * to the user: the gate turns a refused write into one plain line, and a
+ * sentence naming somebody's weight is not for them to read back.
+ *
+ * A field with no range is not an error. Unlisted fields pass, so adding one to
+ * a mutation without adding it here fails open rather than blocking a write
+ * nobody meant to block.
+ */
+export function healthValueProblem(field: string, value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return `${field} must be a finite number, got ${String(value)}`;
+  }
+  const range = HEALTH_RANGES[field];
+  if (!range) return null;
+  if (value < range.min || value > range.max) {
+    return (
+      `${field} of ${value} is outside the range a person can have ` +
+      `(${range.min} to ${range.max} ${range.unit})`
+    );
+  }
+  return null;
+}
+
+/**
+ * The first problem in a bag of fields, or null if every one of them is
+ * storable. Field order is the caller's, so the message names whichever the
+ * caller listed first rather than whichever happens to hash first.
+ */
+export function firstHealthValueProblem(
+  fields: Record<string, unknown>,
+): string | null {
+  for (const [field, value] of Object.entries(fields)) {
+    const problem = healthValueProblem(field, value);
+    if (problem) return problem;
+  }
+  return null;
+}
+
 export const setupRequirements = [
   "privacyNotice",
   "name",

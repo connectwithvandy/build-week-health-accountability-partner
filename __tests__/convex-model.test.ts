@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  firstHealthValueProblem,
+  healthValueProblem,
+  HEALTH_RANGES,
   dailyEntryStates,
   dailyEntryTypes,
   goals,
@@ -1119,5 +1122,92 @@ describe("what counts toward the day", () => {
     expect(summary.calories).toBe(812);
     // The same rule, applied to the list rather than the arithmetic.
     expect(day.filter(countsTowardDay)).toHaveLength(summary.meals);
+  });
+});
+
+describe("what a stored health number is allowed to be", () => {
+  it("refuses the measurement that started this: a 4cm height", () => {
+    // Pallavi's height sat on her profile as 4cm for nine days. The gate does
+    // bound this, but only where a fact is promoted to a column, and the
+    // mutation is reachable without passing through that.
+    expect(healthValueProblem("heightCm", 4)).toMatch(/outside the range/);
+    expect(healthValueProblem("heightCm", 163)).toBeNull();
+  });
+
+  it("stores an age below 18 rather than refusing it", () => {
+    // The single most important case here. The beta is adults only, but that
+    // is enforced by setupStateFor returning blocked: "minor", which it can
+    // only do if the age was written down. Refusing 17 would mean a minor's
+    // age never lands, nothing could ever block them, and they would read as
+    // merely incomplete. Refusing the write would be the safety regression,
+    // not the safety check.
+    expect(healthValueProblem("age", 17)).toBeNull();
+    expect(healthValueProblem("age", 13)).toBeNull();
+    // What is refused is a number that cannot be anybody's age at all.
+    expect(healthValueProblem("age", 0)).toMatch(/outside the range/);
+    expect(healthValueProblem("age", 500)).toMatch(/outside the range/);
+  });
+
+  it("does not argue with an unusual person", () => {
+    // The bounds exist to catch a value that cannot be a person, not to
+    // second-guess one. Every number here is somebody's real day.
+    expect(healthValueProblem("steps", 42000)).toBeNull();
+    expect(healthValueProblem("waterMl", 5000)).toBeNull();
+    expect(healthValueProblem("weightKg", 140)).toBeNull();
+    expect(healthValueProblem("workoutMinutes", 300)).toBeNull();
+    expect(healthValueProblem("calories", 4200)).toBeNull();
+  });
+
+  it("refuses negatives everywhere, because no measurement here can be one", () => {
+    for (const field of ["steps", "waterMl", "calories", "workoutMinutes", "weightKg"]) {
+      expect(healthValueProblem(field, -1)).toMatch(/outside the range|finite/);
+    }
+  });
+
+  it("refuses a number that is not one", () => {
+    expect(healthValueProblem("steps", Number.NaN)).toMatch(/finite/);
+    expect(healthValueProblem("calories", Number.POSITIVE_INFINITY)).toMatch(/finite/);
+    expect(healthValueProblem("weightKg", "70")).toMatch(/finite/);
+  });
+
+  it("lets an absent value through, since not every field is sent every time", () => {
+    expect(healthValueProblem("steps", undefined)).toBeNull();
+    expect(healthValueProblem("steps", null)).toBeNull();
+  });
+
+  it("fails open on a field nobody gave a range", () => {
+    // Adding an argument to a mutation without adding it here must not block a
+    // write that nobody meant to block.
+    expect(healthValueProblem("somethingNew", 99999)).toBeNull();
+  });
+
+  it("names the field and the number, because the log is the only record", () => {
+    const problem = healthValueProblem("heightCm", 4);
+    expect(problem).toContain("heightCm");
+    expect(problem).toContain("4");
+    expect(problem).toContain("cm");
+  });
+
+  it("reports the first problem in the caller's own field order", () => {
+    const problem = firstHealthValueProblem({ steps: -5, waterMl: -5 });
+    expect(problem).toContain("steps");
+  });
+
+  it("says nothing when every field is storable", () => {
+    expect(
+      firstHealthValueProblem({ steps: 8000, waterMl: 2000, calories: 1800 }),
+    ).toBeNull();
+  });
+
+  it("covers every number the three mutations can write", () => {
+    // A field a mutation writes but this table does not know about passes
+    // silently, so the list is worth asserting rather than trusting.
+    for (const field of [
+      "age", "heightCm", "weightKg",
+      "calories", "proteinGrams", "carbohydrateGrams", "fatGrams", "fiberGrams",
+      "steps", "waterMl", "workoutMinutes", "workoutsPerWeek",
+    ]) {
+      expect(HEALTH_RANGES[field], `${field} has no range`).toBeDefined();
+    }
   });
 });
