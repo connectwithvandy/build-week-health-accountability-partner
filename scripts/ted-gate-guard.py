@@ -224,6 +224,35 @@ def cron_tools_unscoped() -> bool:
     return True
 
 
+def unpinned_enabled_jobs() -> list[str]:
+    """Names of switched-on cron jobs with no provider or model of their own.
+
+    Hermes skips an unpinned job whose global model changed since it was created
+    (#44585), and since patch 08 that skip no longer reaches the user's chat. So
+    the reminder they asked for stops arriving and nothing at all says why.
+
+    `_pin_new_reminder_job` in the gate pins each new reminder as it is made,
+    but it deliberately swallows its own errors — losing a reminder would be
+    worse than leaving one unpinned — so a break there is silent by design. This
+    is the thing that makes it not silent. It is also the only check that sees
+    free-form jobs, which the model can still create from a chat.
+    """
+    try:
+        raw = json.loads((HERMES / "cron" / "jobs.json").read_text())
+    except (OSError, ValueError):
+        return []
+    jobs = raw.get("jobs", raw) if isinstance(raw, dict) else raw
+    jobs = list(jobs.values()) if isinstance(jobs, dict) else jobs
+    return [
+        str(job.get("name") or job.get("id"))
+        for job in jobs
+        if isinstance(job, dict)
+        and job.get("enabled")
+        and not job.get("no_agent")
+        and not (str(job.get("provider") or "").strip() and str(job.get("model") or "").strip())
+    ]
+
+
 def running_pid() -> int | None:
     """The live gateway pid, or None.
 
@@ -344,6 +373,20 @@ def main() -> int:
     else:
         report.append(_ok("cron is scoped to the ted toolset"))
 
+    unpinned = unpinned_enabled_jobs()
+    if unpinned:
+        shown = ", ".join(unpinned[:4]) + (" ..." if len(unpinned) > 4 else "")
+        report.append(
+            _fail(
+                f"{len(unpinned)} enabled cron job(s) are UNPINNED — they stop "
+                f"arriving, silently,\n        the next time the model changes. "
+                f"{shown}\n        Fix: ~/.hermes/hermes-agent/venv/bin/python3 "
+                "scripts/ted-pin-cron-jobs.py --apply"
+            )
+        )
+    else:
+        report.append(_ok("every enabled cron job is pinned to a model"))
+
     patch_lines, patches_missing = patch_guard_report()
     report.extend(patch_lines)
 
@@ -377,6 +420,13 @@ def main() -> int:
                 "\nGates are on. The Hermes gateway patches are NOT applied — "
                 "Ted will leak\nprovider diagnostics into chat and charge laptop "
                 "sleep to the provider.\nRe-apply: npm run hermes:patch"
+            )
+            return 1
+        if unpinned:
+            print(
+                "\nGates are on. Some reminders will stop arriving silently at the "
+                "next model change —\nsee above. Fix: "
+                "~/.hermes/hermes-agent/venv/bin/python3 scripts/ted-pin-cron-jobs.py --apply"
             )
             return 1
         if cron_unscoped:

@@ -10384,3 +10384,87 @@ class DefaultNudgeTimesAreSpreadTest(unittest.TestCase):
             seen.append({i["localTime"] for i in written["body"]["items"]})
         self.addCleanup(gates._forget_user, "spread-stable")
         self.assertEqual(seen[0], seen[1])
+
+
+import sys
+import types
+
+
+class NewRemindersAreBornPinnedTest(unittest.TestCase):
+    """An unpinned reminder stops arriving the next time the model changes.
+
+    Hermes skips an unpinned job whose global model drifted since creation
+    (#44585). Since patch 08 that skip is silent on WhatsApp, so the user's
+    reminder just stops and nothing says why. `hermes cron create` has no flag
+    for either axis, so the pin has to happen immediately after creation.
+    """
+
+    def _job(self, **over):
+        job = {
+            "id": "job1",
+            "name": "ted:abc:meals",
+            "provider_snapshot": "anthropic",
+            "model_snapshot": "claude-sonnet-5",
+        }
+        job.update(over)
+        return job
+
+    def test_it_pins_from_the_snapshot(self) -> None:
+        """Not from config.yaml. The snapshot is what resolution picked at
+        creation, so the job stays on the model it was born on."""
+        seen = {}
+        fake = types.ModuleType("cron.jobs")
+        fake.update_job = lambda jid, updates: seen.update(jid=jid, updates=updates)
+        with patch.dict(sys.modules, {"cron": types.ModuleType("cron"), "cron.jobs": fake}), \
+             patch.object(gates, "_load_cron_jobs", lambda: [self._job()]):
+            self.assertTrue(gates._pin_new_reminder_job("ted:abc:meals"))
+        self.assertEqual(seen["jid"], "job1")
+        self.assertEqual(
+            seen["updates"], {"provider": "anthropic", "model": "claude-sonnet-5"}
+        )
+
+    def test_it_does_not_touch_the_schedule(self) -> None:
+        """Sending a schedule would recompute next_run_at, and an interpreter
+        without croniter stores None there — a job that never fires again."""
+        seen = {}
+        fake = types.ModuleType("cron.jobs")
+        fake.update_job = lambda jid, updates: seen.update(updates=updates)
+        with patch.dict(sys.modules, {"cron": types.ModuleType("cron"), "cron.jobs": fake}), \
+             patch.object(gates, "_load_cron_jobs", lambda: [self._job()]):
+            gates._pin_new_reminder_job("ted:abc:meals")
+        self.assertNotIn("schedule", seen["updates"])
+        self.assertNotIn("id", seen["updates"])
+
+    def test_a_job_with_no_snapshot_is_left_alone(self) -> None:
+        """`no_agent` jobs have neither, and there is nothing to pin."""
+        called = []
+        fake = types.ModuleType("cron.jobs")
+        fake.update_job = lambda *a, **k: called.append(a)
+        with patch.dict(sys.modules, {"cron": types.ModuleType("cron"), "cron.jobs": fake}), \
+             patch.object(gates, "_load_cron_jobs",
+                          lambda: [self._job(provider_snapshot="", model_snapshot="")]):
+            self.assertFalse(gates._pin_new_reminder_job("ted:abc:meals"))
+        self.assertEqual(called, [])
+
+    def test_a_missing_job_is_reported_not_raised(self) -> None:
+        with patch.object(gates, "_load_cron_jobs", lambda: []):
+            self.assertFalse(gates._pin_new_reminder_job("ted:abc:meals"))
+
+    def test_a_failure_never_loses_the_reminder(self) -> None:
+        """The reminder is what the user asked for. An unpinned one is a small
+        future risk; an exception here would lose it outright."""
+        def boom():
+            raise RuntimeError("jobs.json unreadable")
+
+        with patch.object(gates, "_load_cron_jobs", boom):
+            self.assertFalse(gates._pin_new_reminder_job("ted:abc:meals"))
+
+    def test_scheduling_a_reminder_pins_it(self) -> None:
+        """End to end: the create path calls the pin. Without this the two can
+        drift apart and every new reminder is unpinned again."""
+        source = Path(gates.__file__).read_text()
+        # The `hermes cron create` call, not the several other places the word
+        # "create" appears, so this fails if the pin is detached from it.
+        cli_create = source.index('_run_cron_cli(\n            [\n                "create",')
+        after = source[cli_create:cli_create + 700]
+        self.assertIn("_pin_new_reminder_job(name)", after)

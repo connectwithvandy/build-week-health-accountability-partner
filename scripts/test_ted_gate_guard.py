@@ -14,6 +14,7 @@ case that made it lie gets a test.
 from __future__ import annotations
 
 import importlib.util
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -161,3 +162,69 @@ def test_a_later_platform_after_cron_still_reads_as_scoped(guard, tmp_path, monk
 def test_no_config_file_is_not_a_crash(guard, tmp_path, monkeypatch):
     monkeypatch.setattr(guard, "HERMES", tmp_path / "gone")
     assert guard.cron_tools_unscoped() is False
+
+
+# --- unpinned cron jobs ------------------------------------------------------
+#
+# An unpinned job is skipped when the global model changes, and since Hermes
+# patch 08 that skip never reaches the user's chat. The reminder just stops.
+# The gate pins each new one as it is created but swallows its own errors on
+# purpose, so this is the only thing that would notice it had stopped working.
+
+
+def _jobs(guard, tmp_path, monkeypatch, jobs):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    (tmp_path / "cron").mkdir(exist_ok=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps({"jobs": jobs}))
+
+
+PINNED = {"name": "ted:a:meals", "enabled": True,
+          "provider": "anthropic", "model": "claude-sonnet-5"}
+
+
+def test_a_pinned_job_is_fine(guard, tmp_path, monkeypatch):
+    _jobs(guard, tmp_path, monkeypatch, [PINNED])
+    assert guard.unpinned_enabled_jobs() == []
+
+
+def test_an_unpinned_enabled_job_is_reported(guard, tmp_path, monkeypatch):
+    _jobs(guard, tmp_path, monkeypatch,
+          [{"name": "ted:a:meals", "enabled": True, "provider": None, "model": None}])
+    assert guard.unpinned_enabled_jobs() == ["ted:a:meals"]
+
+
+def test_half_pinned_counts_as_unpinned(guard, tmp_path, monkeypatch):
+    """The drift guard checks each axis separately, so a job with a provider
+    and no model is skipped just the same."""
+    _jobs(guard, tmp_path, monkeypatch,
+          [{"name": "ted:a:meals", "enabled": True, "provider": "anthropic", "model": ""}])
+    assert guard.unpinned_enabled_jobs() == ["ted:a:meals"]
+
+
+def test_a_disabled_job_is_not_reported(guard, tmp_path, monkeypatch):
+    """It sends nothing either way. It gets pinned when it is resumed."""
+    _jobs(guard, tmp_path, monkeypatch,
+          [{"name": "ted:a:meals", "enabled": False, "provider": None, "model": None}])
+    assert guard.unpinned_enabled_jobs() == []
+
+
+def test_a_no_agent_job_is_not_reported(guard, tmp_path, monkeypatch):
+    """It makes no model call, so there is no model to pin."""
+    _jobs(guard, tmp_path, monkeypatch,
+          [{"name": "backup", "enabled": True, "no_agent": True,
+            "provider": None, "model": None}])
+    assert guard.unpinned_enabled_jobs() == []
+
+
+def test_a_missing_jobs_file_is_not_a_crash(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path / "gone")
+    assert guard.unpinned_enabled_jobs() == []
+
+
+def test_a_bare_list_shape_is_read_too(guard, tmp_path, monkeypatch):
+    """jobs.json has been written as a bare list and as {"jobs": [...]}."""
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    (tmp_path / "cron").mkdir(exist_ok=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps(
+        [{"name": "ted:a:meals", "enabled": True, "provider": None, "model": None}]))
+    assert guard.unpinned_enabled_jobs() == ["ted:a:meals"]

@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import unicodedata
@@ -9019,6 +9020,57 @@ def _run_cron_cli(args: list[str]) -> bool:
 _CRON_CLI_TIMEOUT = 20
 
 
+def _pin_new_reminder_job(name: str) -> bool:
+    """Write the model a new job was created under onto the job itself.
+
+    Hermes refuses to run an *unpinned* job whose global model changed since it
+    was created (#44585), because the change could be to something costlier that
+    nobody approved. That guard is right. The problem is that `hermes cron
+    create` has no `--provider` or `--model` flag, so every reminder Ted makes
+    is unpinned and inherits whatever the global config says that week.
+
+    When the config next changes, all of them are skipped. Since Hermes patch 08
+    the skip is silent — the failure notice no longer reaches the user's chat —
+    so the reminder they asked for simply stops arriving and nothing says why.
+    That is a worse outcome than the raw traceback patch 08 was written to stop.
+
+    The values come from the job's own `provider_snapshot` / `model_snapshot`,
+    which `create_job` fills with exactly what resolution picked a moment ago.
+    Reading config.yaml again here would be a second answer to a question
+    already answered, and copying the snapshot keeps the guard's intent intact:
+    the job stays on the model it was born on, and a later config change still
+    cannot move it silently.
+
+    Never raises. A reminder that exists but is unpinned is a small future risk;
+    an exception here would lose the reminder itself, which is the thing the
+    user actually asked for.
+    """
+    try:
+        sys.path.insert(0, str(Path.home() / ".hermes" / "hermes-agent"))
+        from cron.jobs import update_job  # takes the same file lock the CLI does
+
+        job = next(
+            (j for j in _load_cron_jobs() if str(j.get("name")) == name), None
+        )
+        if job is None:
+            LOGGER.warning("ted_reminder_pin_no_job name=%s", name)
+            return False
+        provider = str(job.get("provider_snapshot") or "").strip()
+        model = str(job.get("model_snapshot") or "").strip()
+        if not provider or not model:
+            # `no_agent` jobs legitimately have neither, and nothing to pin.
+            LOGGER.info("ted_reminder_pin_nothing_to_pin name=%s", name)
+            return False
+        update_job(job["id"], {"provider": provider, "model": model})
+        LOGGER.info(
+            "ted_reminder_pinned name=%s provider=%s model=%s", name, provider, model
+        )
+        return True
+    except Exception as error:  # noqa: BLE001 - see docstring
+        LOGGER.warning("ted_reminder_pin_failed name=%s error=%s", name, error)
+        return False
+
+
 def _reminder_prompt(label: str) -> str:
     """What the scheduled run is told to say.
 
@@ -9090,6 +9142,7 @@ def _sync_reminder_jobs(
                 f"whatsapp:{chat_id}",
             ]
         ):
+            _pin_new_reminder_job(name)
             scheduled.append(reminder_id)
             LOGGER.info(
                 "ted_reminder_scheduled user_key=%s id=%s local=%s cron=%s",
