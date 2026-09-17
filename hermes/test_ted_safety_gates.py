@@ -4770,6 +4770,53 @@ class ReminderReleaseTest(unittest.TestCase):
         self.assertEqual(reply, gates.CRON_SILENT)
 
 
+class PluginManifestMatchesRegistrationTest(unittest.TestCase):
+    """The manifest and `register()` must not be able to disagree.
+
+    They already had. `pre_tool_call` and `transform_tool_result` were
+    registered and working for weeks while the yaml named neither, and
+    `pre_gateway_dispatch` was committed missing on 17 Sep 2026. The list is
+    documentation and is not enforced at load, which is exactly why nothing
+    ever complained. A test is the only thing that will.
+    """
+
+    def manifest_hooks(self) -> set:
+        path = Path(__file__).resolve().parent / "ted_safety_gates" / "plugin.yaml"
+        hooks, in_hooks = set(), False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("hooks:"):
+                in_hooks = True
+                continue
+            if in_hooks:
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    hooks.add(stripped[2:].strip())
+                elif stripped:
+                    break
+        return hooks
+
+    def registered_hooks(self) -> set:
+        names = set()
+
+        class Ctx:
+            def register_tool(self, **kwargs):
+                pass
+
+            def register_hook(self, name, fn):
+                names.add(name)
+
+        gates.register(Ctx())
+        return names
+
+    def test_the_manifest_names_every_hook_that_is_registered(self) -> None:
+        missing = self.registered_hooks() - self.manifest_hooks()
+        self.assertEqual(missing, set(), f"plugin.yaml does not name: {sorted(missing)}")
+
+    def test_the_manifest_names_no_hook_that_is_not(self) -> None:
+        extra = self.manifest_hooks() - self.registered_hooks()
+        self.assertEqual(extra, set(), f"plugin.yaml names hooks nothing registers: {sorted(extra)}")
+
+
 class RunawayConversationCapTest(unittest.TestCase):
     """A conversation that has stopped being one gets bounded.
 
