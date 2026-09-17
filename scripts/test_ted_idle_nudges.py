@@ -96,3 +96,80 @@ class TestResumeIsNarrow:
         assert ours.startswith(mod.PAUSE_TAG)
         for theirs in ("paused by vandy", "cron error", "", "manual"):
             assert not theirs.startswith(mod.PAUSE_TAG)
+
+
+# --- running unattended ------------------------------------------------------
+#
+# A reconciler nobody runs is the same as no reconciler: the gatewatch plist sat
+# in scripts/ for days without being installed and had never run once. And a
+# reconciler that DOES run unattended can be wrong at scale, so the cap and the
+# plist's own settings are pinned here.
+
+import plistlib
+
+
+class TestTheUnattendedCap:
+    def test_a_normal_delta_is_allowed(self, mod):
+        for total in (0, 1, 5, 12):
+            assert mod.too_many_changes(total, 12) is False
+
+    def test_a_suspiciously_large_run_is_refused(self, mod):
+        assert mod.too_many_changes(13, 12) is True
+        assert mod.too_many_changes(35, 12) is True
+
+    def test_zero_means_a_human_said_yes(self, mod):
+        """After reading the list, --max-changes 0 applies the real backlog."""
+        assert mod.too_many_changes(400, 0) is False
+
+    def test_the_default_is_smaller_than_the_first_real_backlog(self, mod):
+        """35 jobs were paused by hand on 17 Sep. A cap above that would not
+        have caught the thing it exists to catch."""
+        assert mod.MAX_UNATTENDED_CHANGES < 35
+
+
+@pytest.fixture(scope="module")
+def plist(mod):
+    return plistlib.loads(mod.PLIST_SRC.read_bytes())
+
+
+class TestThePlist:
+    def test_no_double_hyphen_in_any_comment(self, mod):
+        """XML forbids `--` inside a comment, so a plist documenting a `--flag`
+        does not parse and the timer silently never loads. Caught here first."""
+        import re
+
+        text = mod.PLIST_SRC.read_text()
+        for block in re.findall(r"<!--.*?-->", text, re.S):
+            assert "--" not in block[4:-3], "a comment contains a double hyphen"
+
+    def test_it_parses(self, plist):
+        assert plist["Label"] == "ai.ted.idle-nudges"
+
+    def test_it_runs_this_script(self, mod, plist):
+        argv = plist["ProgramArguments"]
+        assert argv[1].endswith("ted-idle-nudges.py")
+        assert Path(argv[1]) == mod.PLIST_SRC.parent / "ted-idle-nudges.py"
+        assert "--apply" in argv
+
+    def test_the_interpreter_exists_and_can_import_yaml(self, plist):
+        """The system python cannot run this at all: Hermes' cron module needs
+        PyYAML. A plist naming the wrong python fails silently, hourly."""
+        import subprocess
+
+        python = plist["ProgramArguments"][0]
+        assert Path(python).exists(), f"{python} does not exist"
+        done = subprocess.run([python, "-c", "import yaml"], capture_output=True)
+        assert done.returncode == 0, "the plist's python has no PyYAML"
+
+    def test_it_does_not_run_at_load(self, plist):
+        """Installing a timer must not rewrite real schedules as a side effect
+        of installing it."""
+        assert plist["RunAtLoad"] is False
+
+    def test_it_runs_hourly(self, plist):
+        """Daily would mean a returning user waits a day for their reminders."""
+        assert plist["StartInterval"] == 3600
+
+    def test_the_path_can_find_npx(self, plist):
+        """It shells out to `npx convex`, and launchd starts with a bare PATH."""
+        assert "/usr/local/bin" in plist["EnvironmentVariables"]["PATH"]

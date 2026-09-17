@@ -3839,6 +3839,45 @@ _MENU_NONE = re.compile(
     r"koi nahi|kuch nahi)\b", re.IGNORECASE
 )
 
+# How far a menu default may be moved, in minutes. 0-14 keeps "13:07" plainly
+# the same thing as "around 1pm" while giving fifteen distinct slots.
+_DEFAULT_SPREAD_MINUTES = 15
+
+
+def _spread_default_time(slot: str, user_key: str) -> str:
+    """Move a *menu default* a few minutes, the same few every time for a user.
+
+    Every user who picks water gets 11:00 and 16:00, because that is what
+    REMINDER_MENU says. With enough users that is dozens of agent runs starting
+    in the same second, and a run that starts before any of the others has
+    finished writing the prompt cache cannot read it, so each one pays to write
+    the whole prompt again. Measured over the seven days to 17 Sep 2026: 40
+    such pile-ups, 3.66M duplicated prompt tokens, about half the cron bill.
+
+    Only the four times in REMINDER_MENU pass through here. They are the ones
+    the product picked, and `picks_gate` answers with "meals, water and
+    supplements, done" and never says an hour, so nothing Ted has said out loud
+    changes. A time the *user* named goes through `ted_set_reminder` and is
+    never touched: Ted repeats those back ("9pm it is"), and moving one would
+    be storing one number and announcing another, which is the bug class this
+    file exists to prevent.
+
+    Derived from a sha256 of the user key rather than `hash()`, which is salted
+    per process: the same user would get a different minute after every gateway
+    restart, and `_sync_reminder_jobs` matches jobs by name, so the old job
+    would be edited to a new time on every restart forever.
+    """
+    # `_CRON_TIME` is defined further down, with the rest of the scheduling
+    # code. Referenced rather than re-declared here: two definitions of what a
+    # valid time looks like is the same trap as two stores holding one fact.
+    match = _CRON_TIME.match(str(slot or "").strip())
+    if not match or not user_key:
+        return slot
+    digest = hashlib.sha256(user_key.encode("utf-8")).hexdigest()
+    offset = int(digest, 16) % _DEFAULT_SPREAD_MINUTES
+    total = (int(match.group(1)) * 60 + int(match.group(2)) + offset) % 1440
+    return f"{total // 60:02d}:{total % 60:02d}"
+
 PICKS_QUESTION = (
     "what do you want me to nudge you about? meals, water, supplements, or "
     "moving. say any of them, or say none and i'll stay quiet till you "
@@ -6140,7 +6179,9 @@ def picks_gate(user_text: str, user_key: str, context_id: str = "") -> str | Non
                     # overwrites the first in `_sync_reminder_jobs`.
                     "reminderId": name if len(slots) == 1 else f"{name}_{index + 1}",
                     "commitmentId": name,
-                    "localTime": slot,
+                    # Spread per user, so fifty people picking water do not all
+                    # wake the scheduler at 11:00:00. See _spread_default_time.
+                    "localTime": _spread_default_time(slot, user_key),
                     "enabled": True,
                 }
             )

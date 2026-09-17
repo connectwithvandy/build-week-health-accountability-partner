@@ -10250,3 +10250,137 @@ class LanguagePreferenceTest(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 self.assertTrue(gates._looks_hinglish(message))
+
+
+class DefaultNudgeTimesAreSpreadTest(unittest.TestCase):
+    """Fifty people picking water must not all wake the scheduler at 11:00:00.
+
+    REMINDER_MENU gives every user the identical four times, so agent runs pile
+    into the same second, and a run that starts before another has finished
+    writing the prompt cache cannot read it and pays to write the whole prompt
+    again. 40 such pile-ups in the seven days to 17 Sep 2026, about half the
+    scheduled-reminder bill.
+
+    The tests that matter here are the ones about what must NOT change: a time
+    the user named, the hour a default belongs to, and quiet hours.
+    """
+
+    MENU_SLOTS = ("09:00", "11:00", "13:00", "16:00", "18:00")
+    KEYS = tuple(f"whatsapp:sha256:{i:064x}" for i in range(60))
+
+    def test_the_same_user_always_gets_the_same_minute(self) -> None:
+        """`_sync_reminder_jobs` matches jobs by name. A minute that moved on
+        every call would edit the same job to a new time forever."""
+        for key in self.KEYS[:10]:
+            with self.subTest(key=key[-6:]):
+                first = gates._spread_default_time("13:00", key)
+                self.assertEqual(first, gates._spread_default_time("13:00", key))
+
+    def test_the_minute_survives_a_restart(self) -> None:
+        """Pinned literal, because `hash()` is salted per process: with it, the
+        same user gets a different time after every gateway restart."""
+        self.assertEqual(
+            gates._spread_default_time("13:00", "whatsapp:sha256:abc123"), "13:09"
+        )
+
+    def test_users_actually_land_on_different_minutes(self) -> None:
+        spread = {gates._spread_default_time("11:00", k) for k in self.KEYS}
+        self.assertGreater(len(spread), 8, "the spread is not spreading")
+
+    def test_no_single_minute_keeps_more_than_a_third_of_users(self) -> None:
+        from collections import Counter
+
+        counts = Counter(gates._spread_default_time("11:00", k) for k in self.KEYS)
+        self.assertLess(max(counts.values()), len(self.KEYS) / 3)
+
+    def test_the_hour_never_changes(self) -> None:
+        """"around 1pm" has to stay 1pm. A default pushed to 14:02 is a
+        different time of day, not a jitter."""
+        for slot in self.MENU_SLOTS:
+            for key in self.KEYS:
+                with self.subTest(slot=slot, key=key[-6:]):
+                    self.assertEqual(
+                        gates._spread_default_time(slot, key)[:2], slot[:2]
+                    )
+
+    def test_every_spread_time_is_still_outside_quiet_hours(self) -> None:
+        """The sibling of test_every_default_time_is_outside_quiet_hours, which
+        only checks the unspread menu. A nudge inside quiet hours is dropped."""
+        for name, _, times in gates.REMINDER_MENU:
+            for slot in times:
+                for key in self.KEYS:
+                    moved = gates._spread_default_time(slot, key)
+                    with self.subTest(name=name, slot=slot, moved=moved):
+                        self.assertGreaterEqual(moved, "07:00")
+                        self.assertLess(moved, "22:00")
+
+    def test_it_stays_a_readable_time(self) -> None:
+        for key in self.KEYS[:20]:
+            moved = gates._spread_default_time("16:00", key)
+            with self.subTest(moved=moved):
+                self.assertRegex(moved, r"^([01]\d|2[0-3]):[0-5]\d$")
+                self.assertIsNotNone(gates._CRON_TIME.match(moved))
+
+    def test_rubbish_in_is_returned_untouched(self) -> None:
+        for slot in ("", "nonsense", "25:00", "9am"):
+            with self.subTest(slot=slot):
+                self.assertEqual(gates._spread_default_time(slot, self.KEYS[0]), slot)
+
+    def test_no_user_key_means_no_change(self) -> None:
+        self.assertEqual(gates._spread_default_time("13:00", ""), "13:00")
+
+    def test_a_time_the_user_named_is_never_spread(self) -> None:
+        """Ted repeats those back — "9pm it is ✅". Only the four menu defaults
+        pass through the spread, and picks_gate never says an hour out loud."""
+        source = Path(gates.__file__).read_text()
+        call_sites = [
+            line.strip()
+            for line in source.splitlines()
+            if "_spread_default_time(" in line and not line.startswith("def ")
+        ]
+        self.assertEqual(
+            call_sites,
+            ['"localTime": _spread_default_time(slot, user_key),'],
+            "the spread is applied somewhere new — check the new caller is a "
+            "REMINDER_MENU default and not a time the user named out loud",
+        )
+
+    def test_picks_gate_writes_the_spread_time_not_the_menu_time(self) -> None:
+        """End to end: what actually reaches the reminders row is the moved
+        time, so the cron job built from it fires at the moved minute."""
+        written: dict = {}
+
+        def _capture(action, user_key, context_id="", facts=None, body=None):
+            written[user_key] = body
+            return {"success": True}
+
+        times: dict[str, set] = {}
+        for key in ("spread-user-a", "spread-user-b", "spread-user-c"):
+            gates._update_onboarding(key, picks_state="asking")
+            self.addCleanup(gates._forget_user, key)
+            with patch.object(gates, "_convex_write", _capture), \
+                 patch.object(gates, "_schedule_saved_reminders"):
+                gates.picks_gate("water", key)
+            slots = {i["localTime"] for i in written[key]["items"]}
+            times[key] = slots
+            # the menu says 11:00 and 16:00; the hour is kept, the minute moves
+            self.assertEqual({s[:2] for s in slots}, {"11", "16"})
+
+        # And they are not all the same pair, which is the whole point.
+        self.assertGreater(len({frozenset(v) for v in times.values()}), 1)
+
+    def test_picking_twice_gives_the_same_time_both_times(self) -> None:
+        """Otherwise `_sync_reminder_jobs` edits the job to a new time on every
+        re-save, and the user's nudge wanders across the hour."""
+        seen = []
+        for _ in range(2):
+            written: dict = {}
+            gates._update_onboarding("spread-stable", picks_state="asking")
+            with patch.object(
+                gates, "_convex_write",
+                lambda *a, **k: written.update(body=k.get("body")) or {"success": True},
+            ), patch.object(gates, "_schedule_saved_reminders"):
+                gates.picks_gate("meals", "spread-stable")
+            seen.append({i["localTime"] for i in written["body"]["items"]})
+        self.addCleanup(gates._forget_user, "spread-stable")
+        self.assertEqual(seen[0], seen[1])

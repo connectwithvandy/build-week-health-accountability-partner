@@ -189,6 +189,41 @@ def missing_env() -> list[str]:
     return [name for name in REQUIRED_ENV if name not in present]
 
 
+def cron_tools_unscoped() -> bool:
+    """Whether scheduled runs are loading the whole 52-tool default set.
+
+    `platform_toolsets` in config.yaml narrows the tool schemas a run carries.
+    `whatsapp` has been scoped since early on; `cron` was simply never added to
+    the same list, so every reminder carried a browser, a terminal, file write,
+    Home Assistant and computer use in its prompt to produce one lowercase
+    sentence. Measured 17 Sep 2026: 44,110 prompt tokens a firing against
+    26,210 for a scoped one, on every firing, forever.
+
+    It is checked here because config.yaml is NOT version controlled. The fix
+    is two lines that a reinstall silently takes away again, which is exactly
+    how `cron` came to be missing from a list that already had nine other
+    platforms in it. A stale check is worse than none, so this reads the file
+    rather than trusting that the fix was ever applied.
+
+    Reported as a warning, never a stop: an unscoped cron is expensive, not
+    ungated. Ted still refuses under-18s and still never returns a deficit.
+    """
+    try:
+        lines = (HERMES / "config.yaml").read_text().splitlines()
+    except OSError:
+        return False  # nothing to read is a different problem, reported elsewhere
+    try:
+        top = lines.index("platform_toolsets:")
+    except ValueError:
+        return False
+    for line in lines[top + 1 :]:
+        if line and not line[0].isspace():
+            break
+        if line.strip() == "cron:":
+            return False
+    return True
+
+
 def running_pid() -> int | None:
     """The live gateway pid, or None.
 
@@ -297,6 +332,18 @@ def main() -> int:
     else:
         report.append(_ok("Convex memory variables are set"))
 
+    cron_unscoped = cron_tools_unscoped()
+    if cron_unscoped:
+        report.append(
+            _fail(
+                "cron tools are UNSCOPED — every reminder carries all 52 tools "
+                "(~44k prompt tokens\n        for one line). Fix: python3 "
+                "scripts/ted-scope-cron-tools.py --apply"
+            )
+        )
+    else:
+        report.append(_ok("cron is scoped to the ted toolset"))
+
     patch_lines, patches_missing = patch_guard_report()
     report.extend(patch_lines)
 
@@ -330,6 +377,14 @@ def main() -> int:
                 "\nGates are on. The Hermes gateway patches are NOT applied — "
                 "Ted will leak\nprovider diagnostics into chat and charge laptop "
                 "sleep to the provider.\nRe-apply: npm run hermes:patch"
+            )
+            return 1
+        if cron_unscoped:
+            # Last, because it is the cheapest to be wrong about: nothing a
+            # user sees changes either way, only the bill.
+            print(
+                "\nGates are on. Scheduled runs are carrying every tool Hermes "
+                "has — see above.\nApply: python3 scripts/ted-scope-cron-tools.py --apply"
             )
             return 1
         print("\nGates are on.")

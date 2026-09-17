@@ -3,6 +3,12 @@
 
     python3 scripts/ted-idle-nudges.py            # show what would change
     python3 scripts/ted-idle-nudges.py --apply    # write it
+    python3 scripts/ted-idle-nudges.py --install  # run it hourly, unattended
+
+Needs an interpreter with PyYAML, because Hermes' cron module imports it. The
+system python does not have one:
+
+    ~/.hermes/hermes-agent/venv/bin/python3 scripts/ted-idle-nudges.py
 
 WHAT THIS IS FOR.
 
@@ -46,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -61,6 +68,47 @@ DEPLOYMENT = "hardy-scorpion-901"
 # The tag that makes a resume safe. Only jobs whose `paused_reason` starts
 # with this are ever resumed, so a hand-paused job is never woken by accident.
 PAUSE_TAG = "ted-idle-nudges"
+
+LABEL = "ai.ted.idle-nudges"
+PLIST_SRC = REPO / "scripts" / f"{LABEL}.plist"
+PLIST_DST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+def install() -> int:
+    """Copy the plist in and load it. Idempotent, so re-running is safe.
+
+    This exists because the same job was left half done once already: the
+    gatewatch plist sat in `scripts/` for days without being copied into
+    ~/Library/LaunchAgents, so a watcher that looked finished had never run. A
+    reconciler nobody runs is the same as no reconciler, and the whole point of
+    this one is that a returning user gets their reminders back without anybody
+    remembering to do it.
+
+    Mirrors `install()` in ted-watch.py deliberately, including the read-back
+    from `launchctl list`: a load that silently fails leaves you believing a
+    timer exists when it does not.
+    """
+    try:
+        plistlib.loads(PLIST_SRC.read_bytes())
+    except (OSError, ValueError) as exc:
+        print(f"refusing to install a plist that does not parse: {exc}", file=sys.stderr)
+        return 1
+    PLIST_DST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(PLIST_SRC, PLIST_DST)
+    subprocess.run(["launchctl", "unload", str(PLIST_DST)], capture_output=True)
+    done = subprocess.run(["launchctl", "load", str(PLIST_DST)], capture_output=True, text=True)
+    if done.returncode != 0:
+        print(f"launchctl load failed: {(done.stdout + done.stderr).strip()}", file=sys.stderr)
+        return 1
+    listed = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    if LABEL not in listed.stdout:
+        print(f"{LABEL} did not appear in launchctl list", file=sys.stderr)
+        return 1
+    print(f"installed and loaded {LABEL} -> {PLIST_DST}")
+    print("Runs hourly. First run is in an hour, not now: installing a timer "
+          "should not\nrewrite real schedules as a side effect.")
+    print(f"Undo: launchctl unload {PLIST_DST} && rm {PLIST_DST}")
+    return 0
 
 
 def convex_rows(table: str) -> list[dict]:
@@ -101,11 +149,46 @@ def gate_blocks_every_send(policy: dict, now_ms: float) -> str:
     return ""
 
 
+# How many jobs one unattended run may touch before it stops and asks.
+#
+# Running on a timer is what makes the resume real, and it is also what makes a
+# mistake unattended. The failure that matters is pausing everybody: a bad read
+# of `reminders`, or a schema change to `awaitingBreakReply`, would look exactly
+# like every user going quiet at once.
+#
+# The read already fails safe — an unreachable Convex leaves `policy_by_key`
+# empty, every job lands in `unresolved`, and nothing is paused — so this covers
+# the other shape, where the data arrives and is wrong. Under an hourly timer a
+# real delta is nought to a handful; twelve is two full users' worth of jobs
+# changing at once. Above that a human should look, so it refuses rather than
+# acting and reports what it would have done.
+MAX_UNATTENDED_CHANGES = 12
+
+
+def too_many_changes(total: int, limit: int) -> bool:
+    """Whether one run is touching more than a human agreed to leave it alone for.
+
+    `limit` of 0 means no limit, which is how somebody says "yes, that backlog
+    is real" after reading the list.
+    """
+    return bool(limit) and total > limit
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true",
                         help="write the change (default is a dry run)")
+    parser.add_argument("--install", action="store_true",
+                        help="load the launchd timer that runs this hourly, then exit")
+    parser.add_argument(
+        "--max-changes", type=int, default=MAX_UNATTENDED_CHANGES,
+        help=f"refuse to apply more than this many changes at once "
+             f"(default {MAX_UNATTENDED_CHANGES}; 0 means no limit)",
+    )
     args = parser.parse_args()
+
+    if args.install:
+        return install()
 
     sys.path.insert(0, str(HERMES_AGENT))
     try:
@@ -174,6 +257,17 @@ def main() -> int:
     if not args.apply:
         print("\nDry run. Re-run with --apply to write it.")
         return 0
+
+    total = len(to_pause) + len(to_resume)
+    if too_many_changes(total, args.max_changes):
+        print(
+            f"\nREFUSING: {total} changes in one run, limit {args.max_changes}.\n"
+            "Nothing was written. This many at once is either a real backlog or\n"
+            "a bad read of the reminders table, and the two look identical from\n"
+            "here. Check the list above, then re-run with --max-changes 0 if it\n"
+            "is right."
+        )
+        return 1
 
     backup = JOBS_FILE.with_suffix(f".json.bak.{time.strftime('%Y%m%d_%H%M%S')}")
     shutil.copy2(JOBS_FILE, backup)

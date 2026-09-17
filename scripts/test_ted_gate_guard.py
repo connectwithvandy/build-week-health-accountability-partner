@@ -107,3 +107,57 @@ def test_oddly_named_sibling_never_outranks_a_real_rotation(guard):
     )
     guard.AGENT_LOG.write_text("nothing\n")
     assert guard.last_registration() == _epoch("2026-09-09 12:28:12")
+
+
+# --- cron tool scoping -------------------------------------------------------
+#
+# config.yaml is not version controlled, so the fix it checks for is always one
+# reinstall away from being gone. These pin the reading, because a check that
+# quietly answers "fine" for a file it cannot parse is worse than no check.
+
+
+def _config(guard, tmp_path, monkeypatch, text: str):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    (tmp_path / "config.yaml").write_text(text)
+
+
+SCOPED = """platform_toolsets:
+  cron:
+    - ted
+  whatsapp:
+    - ted
+"""
+
+UNSCOPED = """platform_toolsets:
+  whatsapp:
+    - ted
+  telegram:
+    - hermes-telegram
+"""
+
+
+def test_scoped_cron_passes(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, SCOPED)
+    assert guard.cron_tools_unscoped() is False
+
+
+def test_missing_cron_key_is_caught(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, UNSCOPED)
+    assert guard.cron_tools_unscoped() is True
+
+
+def test_top_level_cron_key_does_not_count(guard, tmp_path, monkeypatch):
+    """The real config has a top-level `cron:` block for the scheduler itself.
+    Reading that as the scoping would report a fix that was never applied."""
+    _config(guard, tmp_path, monkeypatch, "cron:\n  enabled: true\n" + UNSCOPED)
+    assert guard.cron_tools_unscoped() is True
+
+
+def test_a_later_platform_after_cron_still_reads_as_scoped(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, SCOPED + "image_gen:\n  use_gateway: true\n")
+    assert guard.cron_tools_unscoped() is False
+
+
+def test_no_config_file_is_not_a_crash(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path / "gone")
+    assert guard.cron_tools_unscoped() is False

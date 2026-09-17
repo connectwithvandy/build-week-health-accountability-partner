@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.idle-nudges</string>
+
+  <!-- Keeps the scheduler and the reminder gate agreeing with each other, in
+       both directions, every hour.
+
+       Pausing was the half that got written first, on 17 Sep 2026, because it
+       was the half that was costing money: 34 jobs firing into a gate that had
+       already refused every send. The resume is the half that matters to a
+       person. A user who comes back clears `awaitingBreakReply`, and until
+       something runs this again their reminders stay off forever. One user is
+       paused until 22 Sep 2026 by their own request and gets nothing back
+       after that date unless this runs.
+
+       Hourly, not daily, because the wait is a real person's reminders being
+       missing. It makes no model call: two Convex reads and a write to
+       jobs.json, so the cost of running it often is nil.
+
+       Never pauses a job the gate would let through — see the header of
+       ted-idle-nudges.py — and refuses to touch more than MAX_UNATTENDED_CHANGES
+       jobs in one run, because "every user went quiet at once" and "the read
+       was wrong" look identical from in here. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/vandana.agarwal/.hermes/hermes-agent/venv/bin/python3</string>
+    <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-idle-nudges.py</string>
+    <string>--apply</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+
+  <!-- Deliberately NOT RunAtLoad. Installing it should not immediately rewrite
+       real people's schedules as a side effect of installing it; the first run
+       comes an hour later, and running it by hand is there if you want it now. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-idle-nudges.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-idle-nudges.log</string>
+
+  <!-- launchd starts with a bare PATH, and this shells out to `npx convex`. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/vandana.agarwal/.hermes/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner</string>
+</dict>
+</plist>
