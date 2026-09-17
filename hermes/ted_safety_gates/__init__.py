@@ -121,22 +121,64 @@ _MAX_NAME_ASKS = 3
 _MAX_VISIBLE_NAME_ASKS = 2
 
 
+# Roadmap T03. This file is a safety asset, not a cache.
+#
+# The 18+ block lives here and nowhere else, deliberately: the conversation
+# gets compacted and `userFacts` is writable by the model, so neither can hold
+# the one rule that must not be talked around. On 17 Sep 2026 it held 55 users
+# and one person under 18.
+#
+# It used to return {} for every kind of failure. A truncated write, a bad
+# hand-edit or a disk error therefore emptied every block at once, and nothing
+# anywhere said so: the plugin still imported, so `ted-gate-guard.py` still
+# reported "Gates are on" while the minor it was protecting had become a new
+# adult user.
+#
+# Raising here would be worse, not better. Hermes catches a plugin's import
+# error, logs one WARNING and carries on, so a raise trades an empty state for
+# *no gates at all* until the guard's next 15-minute sweep. So the gate stays
+# loaded and refuses to serve instead: `_STATE_DEGRADED` is what
+# `_degraded_state_gate` reads to answer with STATE_UNAVAILABLE rather than an
+# unguarded model reply.
+#
+# The two normal states must never be mistaken for the broken one, because the
+# blast radius of a false positive is every user at once:
+#
+#   no file at all          -> first run, empty is correct
+#   valid file, no users    -> nobody has onboarded yet, empty is correct
+#   file present, unreadable/unparseable/wrong shape -> degraded
+_STATE_DEGRADED: str = ""
+
+
 def _load_onboarding_state() -> dict[str, dict[str, Any]]:
+    global _STATE_DEGRADED
+    if not _ONBOARDING_STATE_PATH.exists():
+        _STATE_DEGRADED = ""
+        return {}
     try:
-        payload = json.loads(_ONBOARDING_STATE_PATH.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError):
+        raw = _ONBOARDING_STATE_PATH.read_text(encoding="utf-8")
+    except OSError as error:
+        _STATE_DEGRADED = f"unreadable: {error}"
         return {}
-    users = payload.get("users")
-    if not isinstance(users, dict):
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as error:
+        _STATE_DEGRADED = f"unparseable: {error}"
         return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("users"), dict):
+        _STATE_DEGRADED = "unexpected shape: no users mapping"
+        return {}
+    _STATE_DEGRADED = ""
     return {
         str(key): dict(value)
-        for key, value in users.items()
+        for key, value in payload["users"].items()
         if key and isinstance(value, dict)
     }
 
 
 _ONBOARDING_STATE = _load_onboarding_state()
+if _STATE_DEGRADED:
+    LOGGER.error("ted_safety_state_degraded %s", _STATE_DEGRADED)
 
 
 def _persist_onboarding_state() -> None:
@@ -5403,6 +5445,29 @@ def transform_response(
     stale_turn: bool = False,
     context_id: str = "",
 ) -> str | None:
+    # Roadmap T03, first thing in the gate and above every other rule.
+    #
+    # `_STATE_DEGRADED` means the file holding the 18+ blocks was present and
+    # could not be read. The gate is alive, so it can still refuse; what it
+    # cannot do is answer, because every answer below this line assumes it
+    # knows who it is talking to and it no longer does.
+    #
+    # Deliberately here and not on `pre_gateway_dispatch`. That hook could
+    # refuse earlier and save the model call, but patch 13 settled that a hook
+    # must never put its own words into a user's thread: it would be an
+    # outbound path that skips the output gates every other message passes.
+    # This IS the output gate, so the refusal leaves by the normal road.
+    #
+    # The cost of the wasted model call is accepted. A degraded state is an
+    # alarm condition, not a mode, and `ted-watch.py` is already looking.
+    if _STATE_DEGRADED:
+        LOGGER.error(
+            "ted_reply_refused_state_degraded user_key=%s %s",
+            user_key,
+            _STATE_DEGRADED,
+        )
+        return STATE_UNAVAILABLE
+
     history = list(history)
     # Every intent below reads this, never `user_message`. The raw string still
     # carries whatever the gateway prepended: a quoted reply, a vision
@@ -8346,6 +8411,118 @@ def _reminder_name_key(name: str) -> str:
     return " ".join((name or "").lower().split())
 
 
+# Removing the `file` toolset from WhatsApp closes one door. `vision_analyze`
+# is the other one, and the lock does not touch it.
+#
+# Its schema accepts "a URL, local file path, or data URL", and Hermes resolves
+# a local path through `_permitted_host_read_target`, which says in its own
+# docstring: "Local backend: any path is permitted (chosen posture)." Local is
+# anything but a sandboxed terminal backend, and TERMINAL_ENV is unset on this
+# machine, so that posture is the live one. Two guards survive underneath it:
+# `agent.file_safety` refuses credential files by name, and `_finalize` sniffs
+# magic bytes, so a text file is not readable this way. What is readable is any
+# *image* on the laptop, which is squarely outside "that user's own TED data
+# area" and so squarely inside T01.
+#
+# An allowlist rather than a denylist, because a denylist of interesting
+# directories is a list somebody has to keep adding to. These are Hermes' own
+# media cache roots (`tools/image_source.py::_media_cache_roots`): where the
+# gateway puts the photo somebody actually sent to Ted.
+_MEDIA_CACHE_ROOTS = (
+    Path.home() / ".hermes" / "cache",
+    Path.home() / ".hermes" / "image_cache",
+    Path.home() / ".hermes" / "audio_cache",
+    Path.home() / ".hermes" / "video_cache",
+    Path.home() / ".hermes" / "temp_vision_images",
+    Path.home() / ".hermes" / "temp_video_files",
+)
+
+_RESOLVED_MEDIA_ROOTS: tuple[tuple, tuple] | None = None
+
+STATE_UNAVAILABLE = (
+    "sorry, i can't answer properly right now 🙏 something on my end needs "
+    "fixing and i don't want to guess at your numbers while it's broken. "
+    "vandana has been alerted. try me again in a bit."
+)
+
+
+VISION_OUT_OF_SCOPE = (
+    "i can only look at pictures you send me here 🙂 pop the photo into this "
+    "chat and i'll take a look."
+)
+
+
+def _resolved_media_roots() -> tuple[Path, ...]:
+    """The cache roots, resolved once and kept.
+
+    This runs inside a hook on every tool call, so the six `resolve()` calls
+    it used to make per photo are made once instead. They are fixed paths
+    under HERMES_HOME and do not move while the gateway is up. Cached after
+    the first call rather than at import so a test can repoint the roots.
+    """
+    global _RESOLVED_MEDIA_ROOTS
+    if _RESOLVED_MEDIA_ROOTS is None or _RESOLVED_MEDIA_ROOTS[0] != _MEDIA_CACHE_ROOTS:
+        resolved = []
+        for root in _MEDIA_CACHE_ROOTS:
+            try:
+                resolved.append(Path(root).resolve())
+            except (OSError, ValueError, RuntimeError):
+                continue
+        _RESOLVED_MEDIA_ROOTS = (_MEDIA_CACHE_ROOTS, tuple(resolved))
+    return _RESOLVED_MEDIA_ROOTS[1]
+
+
+def _is_cached_media(source: str) -> bool:
+    """True when this is a photo Ted was actually sent.
+
+    Resolved before it is compared, so `..` and a symlink are both walked out
+    to where they really land rather than matched as text.
+    """
+    candidate = source[len("file://"):] if source.lower().startswith("file://") else source
+    try:
+        real = Path(os.path.expanduser(candidate)).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    for root in _resolved_media_roots():
+        try:
+            real.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _vision_scope_guard(**kwargs: Any) -> dict[str, str] | None:
+    """pre_tool_call: refuse to look at a file this chat was never sent.
+
+    Scoped to identified WhatsApp turns, the same posture `_cron_scope_guard`
+    takes. The CLI is deliberately left alone: it is the machine's owner, not
+    the threat model, and guarding it here would break unrelated work.
+
+    data: and http(s) sources are passed through. Neither reads this disk, and
+    Hermes screens URLs in `_http_block_reason`. This gate is about the
+    filesystem, which is what T01 is about.
+    """
+    if str(kwargs.get("tool_name") or "") != "vision_analyze":
+        return None
+    session_id = str(kwargs.get("session_id") or "")
+    if not _whatsapp_chat_for_session(session_id):
+        return None
+    args = kwargs.get("args")
+    args = args if isinstance(args, dict) else {}
+    source = str(args.get("image_url") or "").strip()
+    if not source:
+        return None  # Hermes' own "image_url is required" is the better error
+    if source.lower().startswith(("data:", "http://", "https://")):
+        return None
+    if _is_cached_media(source):
+        return None
+    LOGGER.info(
+        "ted_vision_path_blocked session=%s source=%s", session_id, source[:120]
+    )
+    return {"action": "block", "message": VISION_OUT_OF_SCOPE}
+
+
 def _cron_scope_guard(**kwargs: Any) -> dict[str, str] | None:
     """pre_tool_call: refuse to act on a reminder this chat does not own."""
     if str(kwargs.get("tool_name") or "") != "cronjob":
@@ -9891,6 +10068,7 @@ def register(ctx: Any) -> None:
         )
     ctx.register_hook("pre_llm_call", _capture_turn)
     ctx.register_hook("pre_tool_call", _cron_scope_guard)
+    ctx.register_hook("pre_tool_call", _vision_scope_guard)
     ctx.register_hook("post_tool_call", _record_tool_success)
     ctx.register_hook("transform_tool_result", _filter_cron_listing)
     ctx.register_hook("pre_gateway_dispatch", _runaway_conversation_guard)
