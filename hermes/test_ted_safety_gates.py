@@ -10468,3 +10468,175 @@ class NewRemindersAreBornPinnedTest(unittest.TestCase):
         cli_create = source.index('_run_cron_cli(\n            [\n                "create",')
         after = source[cli_create:cli_create + 700]
         self.assertIn("_pin_new_reminder_job(name)", after)
+
+
+class OneCalorieTargetNotTwoTest(unittest.TestCase):
+    """The number Ted says out loud has to reach both stores, on both routes.
+
+    `_tracked_kcal` reads the gate's `tracking_kcal` and is what every meal card
+    counts against. `targets.calories` in Convex is what the reports, the weekly
+    recap and the metrics page read. Nothing copied one to the other, so on
+    17 Sep 2026 six of fifty-four users had two different numbers: Hari was told
+    1,870 and scored against 2,200.
+    """
+
+    def test_an_accepted_target_reaches_the_gate(self) -> None:
+        key = "mirror-a"
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_active_user_key", lambda *a: key), \
+             patch.object(gates, "_convex_write", lambda *a, **k: {"success": True}):
+            gates._set_target({"calories": 1870}, session_id="s")
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1870)
+
+    def test_a_refused_target_does_not(self) -> None:
+        """The mutation throws below resting energy. A number Convex rejected
+        must never become the one the day is counted against."""
+        key = "mirror-refused"
+        gates._update_onboarding(key, tracking_kcal=2000)
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_active_user_key", lambda *a: key), \
+             patch.object(gates, "_convex_write",
+                          lambda *a, **k: {"success": False, "refused": True,
+                                           "error": "below resting energy"}):
+            gates._set_target({"calories": 900}, session_id="s")
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 2000)
+
+    def test_a_storage_outage_does_not_move_the_number_either(self) -> None:
+        key = "mirror-outage"
+        gates._update_onboarding(key, tracking_kcal=2000)
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_active_user_key", lambda *a: key), \
+             patch.object(gates, "_convex_write",
+                          lambda *a, **k: {"success": False, "storage_error": True}):
+            gates._set_target({"calories": 1500}, session_id="s")
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 2000)
+
+    def test_a_steps_goal_never_touches_the_calorie_target(self) -> None:
+        """The mutation patches only the fields supplied. So does this."""
+        key = "mirror-steps"
+        gates._update_onboarding(key, tracking_kcal=1870)
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_active_user_key", lambda *a: key), \
+             patch.object(gates, "_convex_write", lambda *a, **k: {"success": True}):
+            gates._set_target({"steps": 8000}, session_id="s")
+        self.assertEqual(gates._onboarding(key).get("tracking_kcal"), 1870)
+
+    def test_rubbish_calories_are_ignored(self) -> None:
+        for value in (None, "1870", -100, 0, True, [1870]):
+            with self.subTest(value=value):
+                self.assertFalse(gates._mirror_tracked_kcal("mirror-junk", value))
+
+    def test_the_chosen_target_reaches_convex(self) -> None:
+        """The other direction: Ted says "*1,870* it is" and the record agrees."""
+        seen = {}
+
+        def _write(action, user_key, context_id="", facts=None, body=None):
+            seen.update(action=action, body=body)
+            return {"success": True}
+
+        with patch.object(gates, "_convex_write", _write):
+            self.assertTrue(gates._mirror_chosen_target_to_convex("k", 1870, "ctx"))
+        self.assertEqual(seen["action"], "target")
+        self.assertEqual(seen["body"], {"calories": 1870})
+
+    def test_a_convex_failure_never_becomes_an_error_to_the_user(self) -> None:
+        """They have already been told their number and the gate has it. A
+        plumbing failure must not turn that into a message about plumbing."""
+        def _boom(*a, **k):
+            raise RuntimeError("convex unreachable")
+
+        with patch.object(gates, "_convex_write", _boom):
+            self.assertFalse(gates._mirror_chosen_target_to_convex("k", 1870))
+
+    def test_the_unanswered_path_writes_nothing_to_convex(self) -> None:
+        """It closes on maintenance deliberately, as the number they would have
+        had anyway. Recording that as an agreed target would be inventing one,
+        and would mask a real agreement made later."""
+        source = Path(gates.__file__).read_text()
+        unanswered = source.index("ted_target_unanswered")
+        window = source[unanswered - 900:unanswered]
+        self.assertNotIn("_mirror_chosen_target_to_convex", window)
+
+
+class TheProfileReachesTheGateTooTest(unittest.TestCase):
+    """`_save_onboarding` sent the profile to Convex and mirrored only `done`.
+
+    So the gate could hold a stale age, height or weight indefinitely. That is
+    what ted-repair-profile-drift.py has been fixing by hand, and the two things
+    it names both bite the user: `setup_gate` sees no age and restarts the
+    counted questions mid-conversation, and `_tracked_kcal` has nothing so the
+    meal card loses its "left" figure.
+    """
+
+    def test_it_fills_a_gap(self) -> None:
+        key = "profmirror-gap"
+        self.addCleanup(gates._forget_user, key)
+        changed = gates._mirror_profile_to_gate(
+            key, {"heightCm": 170.0, "weightKg": 63.0, "sex": "female"}
+        )
+        self.assertEqual(changed, ["height_cm", "sex", "weight_kg"])
+        self.assertEqual(gates._onboarding(key).get("height_cm"), 170.0)
+
+    def test_it_never_overwrites_an_answer_somebody_typed(self) -> None:
+        """A disagreement about height is not worth discarding a typed answer."""
+        key = "profmirror-held"
+        gates._update_onboarding(key, height_cm=182.88, weight_kg=58)
+        self.addCleanup(gates._forget_user, key)
+        gates._mirror_profile_to_gate(key, {"heightCm": 150.0, "weightKg": 99.0})
+        record = gates._onboarding(key)
+        self.assertEqual(record.get("height_cm"), 182.88)
+        self.assertEqual(record.get("weight_kg"), 58)
+
+    def test_an_age_can_come_down(self) -> None:
+        """Tanishka answered 17 and the gate held 50, her weight on the wrong
+        question. Convex being right has to be able to reach the gate."""
+        key = "profmirror-younger"
+        gates._update_onboarding(key, age=50)
+        self.addCleanup(gates._forget_user, key)
+        gates._mirror_profile_to_gate(key, {"age": 17})
+        record = gates._onboarding(key)
+        self.assertEqual(record.get("age"), 17)
+        self.assertTrue(record.get("minor"))
+
+    def test_a_known_minor_is_never_aged_up(self) -> None:
+        """The one bug here that would reach a child. `_remember_age` returns
+        early for a known minor, which is why the rule is not re-derived."""
+        key = "profmirror-minor"
+        gates._update_onboarding(key, age=16, minor=True)
+        self.addCleanup(gates._forget_user, key)
+        gates._mirror_profile_to_gate(key, {"age": 40})
+        self.assertEqual(gates._onboarding(key).get("age"), 16)
+        self.assertTrue(gates._onboarding(key).get("minor"))
+
+    def test_an_implausible_age_is_refused(self) -> None:
+        key = "profmirror-silly"
+        self.addCleanup(gates._forget_user, key)
+        gates._mirror_profile_to_gate(key, {"age": 3})
+        self.assertIsNone(gates._onboarding(key).get("age"))
+
+    def test_nothing_to_mirror_is_not_an_error(self) -> None:
+        for profile in ({}, None, "nonsense", {"unknownField": 1}):
+            with self.subTest(profile=profile):
+                self.assertEqual(gates._mirror_profile_to_gate("profmirror-none", profile), [])
+
+    def test_the_field_map_matches_the_repair_script(self) -> None:
+        """Two definitions of which facts live in both stores is the trap this
+        whole change is about."""
+        source = (Path(gates.__file__).resolve().parents[2]
+                  / "scripts" / "ted-repair-profile-drift.py").read_text()
+        for convex_name, gate_name in gates._PROFILE_MIRROR.items():
+            with self.subTest(field=convex_name):
+                self.assertIn(f'"{convex_name}": "{gate_name}"', source)
+
+    def test_a_refused_write_does_not_move_the_gate(self) -> None:
+        key = "profmirror-refused"
+        gates._update_onboarding(key, done=[])
+        self.addCleanup(gates._forget_user, key)
+        with patch.object(gates, "_active_user_key", lambda *a: key), \
+             patch.object(gates, "_convex_write",
+                          lambda *a, **k: {"success": False, "refused": True}), \
+             patch.object(gates, "_persist_onboarding_reminders", lambda *a, **k: None):
+            gates._save_onboarding(
+                {"current_field": "age", "profile": {"height_cm": 170}}, session_id="s"
+            )
+        self.assertIsNone(gates._onboarding(key).get("height_cm"))

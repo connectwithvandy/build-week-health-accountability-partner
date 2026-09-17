@@ -5516,7 +5516,7 @@ def transform_response(
     target_was_open = (
         bool(user_key) and _onboarding(user_key).get("target_state") == "asking"
     )
-    chosen_target = target_choice_gate(user_text, user_key)
+    chosen_target = target_choice_gate(user_text, user_key, context_id)
     if chosen_target:
         return chosen_target
     if not target_was_open:
@@ -6063,7 +6063,41 @@ _PICKS_SMALLER = re.compile(
 )
 
 
-def target_choice_gate(user_text: str, user_key: str) -> str | None:
+def _mirror_chosen_target_to_convex(
+    user_key: str, kcal: int, context_id: str = ""
+) -> bool:
+    """Record an agreed target in Convex as well as in the gate's own file.
+
+    The mirror of `_mirror_tracked_kcal`, which carries the same fact the other
+    way. Between them the number Ted says out loud reaches both stores on both
+    routes, which is what stops the two disagreeing a week later.
+
+    Never raises. The user has already been told their number and the gate has
+    already stored it; a storage failure here must not turn that into an error
+    message about plumbing. `_convex_write` notes the failure against the turn
+    in the usual way, and ted-repair-profile-drift.py still catches the gap.
+    """
+    try:
+        result = _convex_write(
+            "target", user_key, context_id, body={"calories": int(kcal)}
+        )
+    except Exception as error:  # noqa: BLE001 - see docstring
+        LOGGER.warning("ted_target_mirror_failed user_key=%s error=%s", user_key, error)
+        return False
+    if not result.get("success"):
+        LOGGER.warning(
+            "ted_target_mirror_refused user_key=%s error=%s",
+            user_key,
+            result.get("error"),
+        )
+        return False
+    LOGGER.info("ted_target_mirrored user_key=%s kcal=%s", user_key, int(kcal))
+    return True
+
+
+def target_choice_gate(
+    user_text: str, user_key: str, context_id: str = ""
+) -> str | None:
     """Read which number they picked, and move on to the nudges.
 
     The choice is the whole reason Ted is allowed to name a cut at all, so it
@@ -6144,6 +6178,21 @@ def target_choice_gate(user_text: str, user_key: str) -> str | None:
     _update_onboarding(
         user_key, tracking_kcal=chosen, target_state="done", picks_state="asking"
     )
+    # And into Convex, which is the other half of the same fact.
+    #
+    # Ted says this number out loud — "*1,870* it is" — and until now it was
+    # written only to a file on the gateway machine. Every report, the weekly
+    # recap and the metrics page read `targets.calories`, so the number the user
+    # was told and the number the product recorded could differ from the moment
+    # it was agreed, with nothing to notice.
+    #
+    # Only on the answered path. The unanswered one above closes on maintenance
+    # deliberately, as "the number they would have had before any of this
+    # existed", and writing that to Convex would record a target nobody agreed
+    # to. It would also destroy the signal ted-repair-profile-drift.py reads —
+    # a gate figure equal to maintenance is its tell that no target was ever
+    # chosen — and mask a real agreement made later.
+    _mirror_chosen_target_to_convex(user_key, chosen, context_id)
     LOGGER.info("ted_target_chosen user_key=%s kcal=%s", user_key, chosen)
     return f"*{chosen:,}* it is.\n\n{PICKS_QUESTION}"
 
@@ -8886,6 +8935,39 @@ def _week_summary(
     return json.dumps(result, ensure_ascii=False)
 
 
+def _mirror_tracked_kcal(user_key: str, calories: Any) -> bool:
+    """Copy a calorie target Convex has *accepted* onto the gate's own copy.
+
+    `_tracked_kcal` reads the gate's `tracking_kcal`, and its docstring calls it
+    "the number the day is counted against, and the only one". Convex holds the
+    same fact in `targets.calories`. Nothing has ever copied one to the other,
+    so a target agreed in open conversation reached Convex through
+    `ted_set_target` and the gate went on counting against whatever it had.
+
+    Measured 17 Sep 2026, six of fifty-four users: Hari was told 1,870 and
+    scored against 2,200; venky is trying to gain at 2,100 and was scored
+    against his 1,910 maintenance, which removes the surplus his goal needs;
+    John was told 2,100 and scored against 2,010. Ten repair scripts exist
+    because of this one missing copy.
+
+    WHY THIS CANNOT SMUGGLE IN A DEFICIT, which is the thing `_tracked_kcal`
+    guards. Its docstring says `tracking_kcal` may only ever hold a number the
+    gate itself computed and floored. This writes a number the *model* supplied,
+    so the floor has to have run somewhere else, and it has: `ted.setTarget` in
+    convex/ted.ts calls `calorieFloorFor` and **throws** on anything below
+    resting energy rather than clamping it. So a value that came back successful
+    is a value the floor already passed. That is why this is called only after
+    success, and never on a refusal.
+    """
+    if not isinstance(calories, (int, float)) or isinstance(calories, bool):
+        return False
+    if calories <= 0:
+        return False
+    _update_onboarding(user_key, tracking_kcal=int(calories))
+    LOGGER.info("ted_tracked_kcal_mirrored user_key=%s kcal=%s", user_key, int(calories))
+    return True
+
+
 def _set_target(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -8894,10 +8976,13 @@ def _set_target(
         return _refused("No WhatsApp user is active")
     if not isinstance(args, dict) or not args:
         return _refused("Send at least one target field")
-    return json.dumps(
-        _convex_write("target", user_key, session_id or task_id, body=_camel(args)),
-        ensure_ascii=False,
-    )
+    result = _convex_write("target", user_key, session_id or task_id, body=_camel(args))
+    # Only on success, and only when calories were actually part of this write:
+    # setting a step goal must not touch the calorie target, the same rule the
+    # mutation itself follows when it patches only the fields supplied.
+    if result.get("success"):
+        _mirror_tracked_kcal(user_key, args.get("calories"))
+    return json.dumps(result, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -9291,6 +9376,75 @@ def _note_abandoned_field(
     return sorted(unanswered)
 
 
+# Convex's name for a profile fact -> the gate's name for the same fact.
+# Kept identical to PROFILE_FIELDS in scripts/ted-repair-profile-drift.py, which
+# is the script that has been cleaning up after these two disagreeing.
+_PROFILE_MIRROR = {
+    "age": "age",
+    "heightCm": "height_cm",
+    "weightKg": "weight_kg",
+    "sex": "sex",
+    "goal": "goal",
+    "name": "name",
+}
+
+
+def _mirror_profile_to_gate(user_key: str, profile: dict[str, Any]) -> list[str]:
+    """Copy profile facts Convex accepted onto the gate's copy. Names changed.
+
+    Same missing copy as `_mirror_tracked_kcal`, for the rest of the profile.
+    `_save_onboarding` has always sent age, height, weight, sex and goal to
+    Convex and mirrored only `done` back, so the gate could hold a stale answer
+    indefinitely. Two things break when it does, both reported on 7 Sep 2026:
+    `setup_gate` sees no age and restarts the counted questions mid-conversation,
+    and `_tracked_kcal` has nothing so the meal card loses its "left" figure.
+
+    THE RULES ARE THE ONES THAT ALREADY EXIST, NOT NEW ONES.
+
+    Age goes through `_remember_age`, which is the single place an age is
+    recorded. It refuses anything outside the plausible band, and it returns
+    early for a known minor, so a mirror can never raise a child's age to an
+    adult one. That matters more here than anywhere: the gate is what
+    `calorie_gate` consults, and on 4 Sep Tanishka answered "17 I said u
+    brother" while the gate held 50 — her weight, landed on the wrong question.
+    Re-deriving that rule here instead of calling it would be a second
+    definition of who counts as a child.
+
+    Everything else fills a gap and never overwrites, which is
+    ted-repair-profile-drift.py's rule: a disagreement about height is not worth
+    discarding an answer somebody typed, and the model's account of a profile is
+    exactly what cannot be trusted over the counted questions that collected it.
+    """
+    if not isinstance(profile, dict) or not profile:
+        return []
+    record = _onboarding(user_key)
+    changed: list[str] = []
+    changes: dict[str, Any] = {}
+    for convex_name, gate_name in _PROFILE_MIRROR.items():
+        value = profile.get(convex_name)
+        if value in (None, ""):
+            continue
+        if gate_name == "age":
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                before = _stored_age(user_key)
+                _remember_age(user_key, int(value))
+                if _stored_age(user_key) != before:
+                    changed.append("age")
+            continue
+        if record.get(gate_name) in (None, ""):
+            changes[gate_name] = value
+    if changes:
+        _update_onboarding(user_key, **changes)
+        changed.extend(changes)
+    if changed:
+        LOGGER.info(
+            "ted_profile_mirrored user_key=%s fields=%s",
+            user_key,
+            ",".join(sorted(changed)),
+        )
+    return sorted(changed)
+
+
 def _save_onboarding(
     args: dict[str, Any], session_id: str = "", task_id: str = "", **_: Any
 ) -> str:
@@ -9330,6 +9484,12 @@ def _save_onboarding(
         done = set(_onboarding(user_key).get("done") or ())
         done.add(str(completed))
         _update_onboarding(user_key, done=sorted(done))
+    # And the facts themselves, not just which steps closed. Convex has had
+    # these since the first user and the gate's copy was never updated from
+    # them, which is the gap ted-repair-profile-drift.py has been closing by
+    # hand. Only on success: a refused write must not move the gate.
+    if result.get("success"):
+        _mirror_profile_to_gate(user_key, body.get("profile") or {})
     if result.get("success"):
         _persist_onboarding_reminders(
             args, completed, user_key, session_id or task_id, result
