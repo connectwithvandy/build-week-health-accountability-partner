@@ -97,6 +97,50 @@ def convex_rows(table: str) -> list[dict]:
     return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
+def tracked_kcal_change(
+    record: dict, convex_kcal: object
+) -> tuple[int, str] | None:
+    """The gate's tracked calorie figure to write, and why, or None.
+
+    Two cases, and the second is the one `bfe6c7c` did not reach.
+
+    The gate has nothing at all, so `_tracked_kcal` returns nothing,
+    `_daily_overview` drops the "left" figure and the progress bar, and the
+    user gets a bare calorie total — the "old format" meal card.
+
+    Or the gate never recorded an agreed target and fell back to the
+    maintenance figure while Convex holds one that was agreed. Ted then counts
+    the day against maintenance and the record says something else. John was
+    scored against 2,010 having been told 2,100; venky is trying to gain at
+    2,100 and was counted against his 1,910 maintenance, which removes the
+    surplus his goal needs; Hari is losing weight, was told 1,870, and was
+    being scored against 2,200.
+
+    Deliberately narrow. Only when the gate's tracked figure IS its maintenance
+    figure, which is the tell that no target was ever stored there. A gate
+    number that differs from both is a real second opinion, and
+    `ted-target-direction.py` is explicit that those need a conversation and
+    not a write.
+    """
+    if not isinstance(convex_kcal, (int, float)) or convex_kcal <= 0:
+        return None
+    tracking = record.get("tracking_kcal")
+    maintenance = record.get("maintenance_kcal")
+    if tracking in (None, "") and maintenance in (None, ""):
+        return int(convex_kcal), f"tracking_kcal missing -> {int(convex_kcal)}"
+    if (
+        isinstance(tracking, (int, float))
+        and isinstance(maintenance, (int, float))
+        and int(tracking) == int(maintenance)
+        and int(convex_kcal) != int(tracking)
+    ):
+        return int(convex_kcal), (
+            f"tracking_kcal {int(tracking)} was only maintenance "
+            f"-> {int(convex_kcal)} (the agreed target)"
+        )
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
@@ -145,13 +189,10 @@ def main() -> int:
 
         # The tracked figure, so the meal card can show "left" again.
         target = targets.get(user["_id"], {})
-        if (
-            record.get("tracking_kcal") in (None, "")
-            and record.get("maintenance_kcal") in (None, "")
-            and isinstance(target.get("calories"), (int, float))
-        ):
-            changes["tracking_kcal"] = int(target["calories"])
-            notes.append(f"tracking_kcal missing -> {int(target['calories'])}")
+        tracked = tracked_kcal_change(record, target.get("calories"))
+        if tracked:
+            changes["tracking_kcal"], note = tracked
+            notes.append(note)
 
         final_age = changes.get("age", record.get("age"))
         if isinstance(final_age, (int, float)) and final_age < MINIMUM_AGE:
