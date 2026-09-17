@@ -1,0 +1,130 @@
+diff --git a/cron/scheduler.py b/cron/scheduler.py
+index a9239ab..f8c6e07 100644
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -2933,16 +2933,81 @@ def run_job(
+         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+         return True, "", SILENT_MARKER, None
+     origin = _resolve_origin(job)
+     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+ 
+     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+     logger.info("Prompt: %s", prompt[:100])
+ 
++    # Ted patch 13. The last exit before the model is paid for.
++    #
++    # Everything above has decided WHAT to say. Nothing above has asked
++    # WHETHER to say it, because until now the only place a plugin could
++    # refuse a scheduled message was ``transform_llm_output`` — which runs on
++    # the way out, with the call already made and billed. For a one-line
++    # WhatsApp nudge that is about 49,000 input tokens spent on a sentence
++    # that is then dropped.
++    #
++    # Measured on this box over 1-17 Sep 2026: 331 suppressed runs, 15.8M
++    # input tokens, 13% of all spend on the account, delivered to nobody. The
++    # reasons were awaitingReply (256), dailyCap (37), paused_until (22) and
++    # quietHours (16). Every one of those is a lookup against stored state, so
++    # the answer was always available here, one model call cheaper.
++    #
++    # Placed AFTER the two log lines above on purpose. A skipped run still
++    # reads as "Running job" in the log, so anything counting firings keeps
++    # counting the same things it counted before this patch.
++    try:
++        from hermes_cli.plugins import invoke_hook as _invoke_hook
++        _pre_cron_results = _invoke_hook(
++            "pre_cron_agent",
++            job=job,
++            job_id=job_id,
++            job_name=job_name,
++            session_id=_cron_session_id,
++            prompt=prompt,
++            origin=origin,
++        )
++    except Exception as _pre_cron_exc:
++        # A plugin that cannot answer must never be the reason a reminder
++        # somebody set up stops arriving. Falling through runs the job exactly
++        # as it ran before this patch existed.
++        logger.warning("pre_cron_agent invocation failed: %s", _pre_cron_exc)
++        _pre_cron_results = []
++
++    for _pre_cron in _pre_cron_results:
++        if not isinstance(_pre_cron, dict):
++            continue
++        _pre_cron_action = _pre_cron.get("action")
++        if _pre_cron_action == "skip":
++            _pre_cron_reason = str(_pre_cron.get("reason") or "unspecified")
++            logger.info(
++                "pre_cron_agent skip: job='%s' (ID: %s) reason=%s — no model call",
++                job_name,
++                job_id,
++                _pre_cron_reason,
++            )
++            # Written rather than returned empty, because the output file is
++            # where the record of a silent run lives. The ``prompt is None``
++            # path above returns "" and leaves nothing behind, which made
++            # counting silent runs a log-scraping exercise. A skip that
++            # explains itself costs one small file.
++            skip_doc = (
++                f"# Cron Job: {job_name}\n\n"
++                f"**Job ID:** {job_id}\n"
++                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
++                f"**Status:** SKIPPED BEFORE MODEL\n\n"
++                f"A `pre_cron_agent` hook refused this run: {_pre_cron_reason}\n\n"
++                "No model call was made and nothing was delivered.\n"
++            )
++            return True, skip_doc, SILENT_MARKER, None
++        if _pre_cron_action == "allow":
++            break
++
+     agent = None
+ 
+     # Mark this as a cron session so the approval system can apply cron_mode.
+     # This env var is process-wide and persists for the lifetime of the
+     # scheduler process — every job this process runs is a cron job.
+     os.environ["HERMES_CRON_SESSION"] = "1"
+ 
+     # Use ContextVars for per-job session/delivery state so parallel jobs
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 6ca393f..03914d0 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -166,16 +166,39 @@ VALID_HOOKS: Set[str] = {
+     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+     # after the internal-event guard but BEFORE auth/pairing and agent
+     # dispatch. Plugins may return a dict to influence flow:
+     #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+     #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+     #   {"action": "allow"}  /  None             -> normal dispatch
+     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+     "pre_gateway_dispatch",
++    # Ted patch 13. Cron pre-agent hook. Fired once per cron job in
++    # ``cron/scheduler.py::run_job``, after the prompt is assembled and the
++    # session id is minted, but BEFORE AIAgent is constructed and before any
++    # model call. Plugins may return a dict to influence flow:
++    #   {"action": "skip", "reason": "..."}  -> no agent run, nothing delivered
++    #   {"action": "allow"}  /  None         -> normal agent run
++    # Kwargs: job: dict, job_id: str, job_name: str, session_id: str,
++    #         prompt: str, origin: Any.
++    #
++    # There is deliberately no "respond" action. A hook that could put its own
++    # words into a user's thread would be an outbound path that never passes
++    # the output gates every other message goes through. A plugin with
++    # something to say lets the run proceed and says it in
++    # ``transform_llm_output``, where the gates are.
++    #
++    # This exists because ``transform_llm_output`` was the only place a plugin
++    # could refuse a scheduled message, and by then the model has already been
++    # paid for. Measured over 1-17 Sep 2026: 331 of Ted's cron runs were
++    # suppressed after the fact by the reminder gate, costing 15.8M input
++    # tokens, 13% of all spend on the account, to produce text nobody
++    # received. Every input to that decision is stored state, so the same
++    # answer is available before the call as after it.
++    "pre_cron_agent",
+     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+     # command needs an approval decision -- fires for CLI-interactive prompts,
+     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
+     # Observers only: return values are ignored. Plugins cannot veto or
+     # pre-answer an approval from these hooks (use pre_tool_call to block
+     # a tool before it reaches approval).
+     #
+     # Kwargs for pre_approval_request:

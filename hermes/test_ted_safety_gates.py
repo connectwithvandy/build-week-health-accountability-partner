@@ -6,6 +6,7 @@ import urllib.error
 from datetime import date, datetime, timedelta, timezone as dt_timezone
 import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -4767,6 +4768,350 @@ class ReminderReleaseTest(unittest.TestCase):
                 response_text="that is 1,800 calories",
             )
         self.assertEqual(reply, gates.CRON_SILENT)
+
+
+class RunawayConversationCapTest(unittest.TestCase):
+    """A conversation that has stopped being one gets bounded.
+
+    7 Sep 2026: one WhatsApp thread ran 330 turns and 333 model calls in an
+    afternoon, 231 of them inside one hour, for 44.2M input tokens — 35% of
+    everything the account has ever spent. It opened with Ted's own voice
+    arriving as somebody's input. The per-turn budget is `api_calls=N/60` and
+    never came close, because 330 turns of one call each is 330 separate
+    turns, each well inside its own allowance.
+    """
+
+    CHAT = "222222222222222@lid"
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+        gates._CONVERSATION_TURNS.clear()
+        self.addCleanup(gates._CONVERSATION_TURNS.clear)
+        self._state = patch.object(
+            gates, "_RUNAWAY_STATE_PATH", Path(self.tmp) / "runaway.json"
+        )
+        self._state.start()
+        self.addCleanup(self._state.stop)
+
+    def event(self, chat_id: str | None = None, platform: str = "whatsapp"):
+        return SimpleNamespace(
+            text="hey ted",
+            source=SimpleNamespace(
+                platform=SimpleNamespace(value=platform),
+                chat_id=self.CHAT if chat_id is None else chat_id,
+            ),
+        )
+
+    def drive(self, turns: int, **kwargs):
+        last = None
+        for _ in range(turns):
+            last = gates._runaway_conversation_guard(event=self.event(**kwargs))
+        return last
+
+    def test_an_ordinary_conversation_is_never_touched(self) -> None:
+        """The busiest real hour on record was 31 turns. This is that, plus one."""
+        self.assertIsNone(self.drive(32))
+
+    def test_the_busiest_real_hour_on_record_still_passes(self) -> None:
+        self.assertIsNone(self.drive(gates._CONVERSATION_CAP))
+
+    def test_the_turn_after_the_cap_is_dropped(self) -> None:
+        verdict = self.drive(gates._CONVERSATION_CAP + 1)
+        self.assertEqual(verdict["action"], "skip")
+        self.assertIn("runaway", verdict["reason"])
+
+    def test_the_seventh_of_september_would_have_been_stopped(self) -> None:
+        """231 turns in an hour. It should not get past 60."""
+        blocked = sum(
+            1
+            for _ in range(231)
+            if gates._runaway_conversation_guard(event=self.event()) is not None
+        )
+        self.assertEqual(blocked, 231 - gates._CONVERSATION_CAP)
+
+    def test_the_window_rolls_so_a_capped_chat_recovers(self) -> None:
+        """An hour later the same person is answered again, with no intervention."""
+        self.drive(gates._CONVERSATION_CAP + 1)
+        key = gates._user_state_key("whatsapp", self.CHAT, "")
+        aged = time.time() - gates._CONVERSATION_WINDOW_SECONDS - 1
+        gates._CONVERSATION_TURNS[key] = [aged] * (gates._CONVERSATION_CAP + 1)
+        self.assertIsNone(gates._runaway_conversation_guard(event=self.event()))
+
+    def test_one_loud_chat_cannot_silence_another_person(self) -> None:
+        self.drive(gates._CONVERSATION_CAP + 1)
+        self.assertIsNone(
+            gates._runaway_conversation_guard(event=self.event(chat_id="333@lid"))
+        )
+
+    def test_the_builders_own_terminal_is_left_alone(self) -> None:
+        """Capping the thread she fixes things from would be the wrong half."""
+        self.assertIsNone(self.drive(200, platform="cli"))
+
+    def test_a_tripped_cap_is_written_down_for_the_watcher(self) -> None:
+        """It cannot announce itself over the channel it has stopped answering."""
+        self.drive(gates._CONVERSATION_CAP + 3)
+        payload = json.loads(gates._RUNAWAY_STATE_PATH.read_text(encoding="utf-8"))
+        chats = payload["chats"]
+        self.assertEqual(len(chats), 1)
+        record = next(iter(chats.values()))
+        self.assertEqual(record["dropped"], 3)
+        self.assertGreater(record["turnsInWindow"], gates._CONVERSATION_CAP)
+
+    def test_the_stored_key_is_not_a_phone_number(self) -> None:
+        self.drive(gates._CONVERSATION_CAP + 1)
+        raw = gates._RUNAWAY_STATE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn(self.CHAT, raw)
+        self.assertIn("sha256", raw)
+
+    def test_an_unwritable_state_file_still_drops_the_turn(self) -> None:
+        """The cap is the point. The note about it is not."""
+        with patch.object(
+            gates, "_RUNAWAY_STATE_PATH", Path(self.tmp) / "nope" / "x" / "y.json"
+        ), patch.object(Path, "mkdir", side_effect=OSError("read-only")):
+            verdict = self.drive(gates._CONVERSATION_CAP + 1)
+        self.assertEqual(verdict["action"], "skip")
+
+    def test_a_malformed_event_is_not_an_exception(self) -> None:
+        for bad in (None, SimpleNamespace(source=None), SimpleNamespace(text="x")):
+            with self.subTest(event=bad):
+                self.assertIsNone(gates._runaway_conversation_guard(event=bad))
+
+    def test_the_guard_is_registered(self) -> None:
+        registered: dict = {}
+
+        class Ctx:
+            def register_tool(self, **kwargs):
+                pass
+
+            def register_hook(self, name, fn):
+                registered[name] = fn
+
+        gates.register(Ctx())
+        self.assertIs(
+            registered.get("pre_gateway_dispatch"), gates._runaway_conversation_guard
+        )
+
+
+class CronSilenceDecidedBeforeTheModelTest(unittest.TestCase):
+    """The refusal moved in front of the model call, and cost nothing else.
+
+    Until Hermes patch 13 the only place this plugin could refuse a scheduled
+    message was `transform_llm_output`, which runs with the call already made
+    and billed. Measured 1-17 Sep 2026: 331 suppressed runs, 15.8M input
+    tokens, 13% of everything spent on the account, to write text nobody
+    received.
+
+    The property every test here defends is that moving the decision earlier
+    changed only WHEN it is made. The same users are refused for the same
+    reasons, and Convex is still asked exactly once per firing.
+    """
+
+    SESSION = "cron_111111111111_20260917_090000"
+    CHAT = "111111111111111@lid"
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+        gates._CRON_VERDICT.clear()
+        self.addCleanup(gates._CRON_VERDICT.clear)
+
+    def jobs_file(self, platform: str = "whatsapp") -> object:
+        path = Path(self.tmp) / "jobs.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "111111111111",
+                        "name": "ted:111111111111:water_1",
+                        "origin": {"platform": platform, "chat_id": self.CHAT},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return patch.object(gates, "_CRON_JOBS_PATH", path)
+
+    def responder(self, calls: list, *, allowed: bool, reason: str = "ok"):
+        def respond(action, user_key, context_id="", body=None, **_):
+            calls.append(action)
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": allowed,
+                    "reason": reason,
+                    "deliveryId": "gate-id-1",
+                }
+            if action == "reminderMissed":
+                return {"success": True, "released": True}
+            return {"success": True}
+
+        return respond
+
+    def test_a_refused_nudge_never_reaches_the_model(self) -> None:
+        """awaitingReply was 256 of the 331. This is that run, made free."""
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates,
+            "_convex_request",
+            side_effect=self.responder(calls, allowed=False, reason="awaitingReply"),
+        ):
+            verdict = gates._cron_pre_agent_gate(session_id=self.SESSION)
+        self.assertEqual(verdict, {"action": "skip", "reason": "awaitingReply"})
+
+    def test_a_cleared_nudge_lets_the_run_carry_on(self) -> None:
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.responder(calls, allowed=True)
+        ):
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=self.SESSION))
+
+    def test_convex_is_asked_once_per_firing_not_twice(self) -> None:
+        """The load-bearing one.
+
+        `_reminder_allowed` is not a read. It increments the unanswered-nudge
+        count and mints a deliveryId, so a firing that asked it in both halves
+        would march a present user towards a break offer at double speed.
+        """
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.responder(calls, allowed=True)
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text="water time"
+            )
+        self.assertIsNone(reply)
+        self.assertEqual(calls.count("reminderGate"), 1)
+
+    def test_the_outbound_half_still_decides_on_an_unpatched_gateway(self) -> None:
+        """A Hermes upgrade that drops patch 13 makes Ted expensive, never unsafe."""
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates,
+            "_convex_request",
+            side_effect=self.responder(calls, allowed=False, reason="quietHours"),
+        ):
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text="water time"
+            )
+        self.assertEqual(reply, gates.CRON_SILENT)
+        self.assertEqual(calls.count("reminderGate"), 1)
+
+    def test_the_calorie_drop_still_gives_the_send_back(self) -> None:
+        """The release reads its id from the verdict now. It still happens."""
+        released: list = []
+
+        def respond(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "deliveryId": "gate-id-1",
+                }
+            if action == "reminderMissed":
+                released.append(dict(body or {}))
+                return {"success": True, "released": True}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=respond
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION,
+                response_text="time for your 1,800 calorie dinner",
+            )
+        self.assertEqual(reply, gates.CRON_SILENT)
+        self.assertEqual(len(released), 1)
+        self.assertEqual(released[0]["deliveryId"], "gate-id-1")
+
+    def test_the_break_offer_still_comes_from_the_outbound_half(self) -> None:
+        """Kept there on purpose: it is text, and text goes through the gates."""
+
+        def respond(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "offerBreak": True,
+                    "deliveryId": "gate-id-1",
+                }
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=respond
+        ):
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=self.SESSION))
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text="water time"
+            )
+        self.assertEqual(reply, gates.BREAK_OFFER)
+
+    def test_a_run_that_dies_before_delivery_gives_the_send_back(self) -> None:
+        """Cleared to send, then the model never answered.
+
+        Nothing else would notice: the gate's own release only runs on paths
+        that reach the outbound hook, which is the half that did not happen.
+        """
+        released: list = []
+
+        def respond(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "deliveryId": "gate-id-1",
+                }
+            if action == "reminderMissed":
+                released.append(dict(body or {}))
+                return {"success": True, "released": True}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=respond
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            # The outbound half never runs. Age the verdict past its TTL and
+            # let the next firing find it.
+            for value in gates._CRON_VERDICT.values():
+                value["at"] = time.time() - gates._CRON_VERDICT_TTL_SECONDS - 1
+            gates._stash_cron_verdict("cron_111111111111_20260917_100000", {})
+        self.assertEqual(len(released), 1)
+        self.assertEqual(released[0]["deliveryId"], "gate-id-1")
+        self.assertEqual(released[0]["reason"], "abandoned")
+
+    def test_a_verdict_can_only_be_used_once(self) -> None:
+        gates._stash_cron_verdict(self.SESSION, {"user_key": "k", "send": True})
+        self.assertIsNotNone(gates._take_cron_verdict(self.SESSION))
+        self.assertIsNone(gates._take_cron_verdict(self.SESSION))
+
+    def test_another_platforms_cron_job_is_left_alone(self) -> None:
+        """Every other cron job on the box runs exactly as it did before."""
+        with self.jobs_file(platform="telegram"):
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=self.SESSION))
+        self.assertEqual(gates._CRON_VERDICT, {})
+
+    def test_the_hook_is_registered_against_the_name_the_patch_fires(self) -> None:
+        """A rename on either side would silently restore the old spend."""
+        registered: dict = {}
+
+        class Ctx:
+            def register_tool(self, **kwargs):
+                pass
+
+            def register_hook(self, name, fn):
+                registered[name] = fn
+
+        gates.register(Ctx())
+        self.assertIs(registered.get("pre_cron_agent"), gates._cron_pre_agent_gate)
 
 
 class NudgeCountResetTest(unittest.TestCase):

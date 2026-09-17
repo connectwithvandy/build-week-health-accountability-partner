@@ -7966,9 +7966,76 @@ def _release_reminder(user_key: str, delivery_id: str, reason: str) -> None:
     )
 
 
-def _cron_reminder_gate(**kwargs: Any) -> str | None:
-    """Put cron-delivered WhatsApp messages back under Ted's rules."""
-    session_id = str(kwargs.get("session_id") or "")
+# A cron reminder's verdict, carried from the pre-model hook to the outbound
+# one. Keyed by cron session id, which is minted once per firing.
+#
+# It exists because the decision and the text now happen at two different
+# moments. `_reminder_allowed` is not a read: it increments the unanswered-
+# nudge count in Convex and mints a deliveryId, so asking it twice for one
+# firing would march a user towards a break offer at double speed. The verdict
+# is taken exactly once, by whichever half runs second.
+_CRON_VERDICT: dict[str, dict[str, Any]] = {}
+_CRON_VERDICT_LOCK = threading.Lock()
+
+# Long enough to outlast any cron run, short enough that a crashed one gives
+# its send back the same day. A cron turn that takes fifteen minutes has
+# already lost the moment the reminder was for.
+_CRON_VERDICT_TTL_SECONDS = 15 * 60
+
+
+def _stash_cron_verdict(session_id: str, verdict: dict[str, Any]) -> None:
+    """Hold an allowed verdict for the outbound half of the same firing.
+
+    Sweeps on the way in. A run that is cleared to send and then dies before
+    the model answers has taken one of the day's reminders and one step
+    towards the break offer, and given nothing back. Nothing else would ever
+    notice: the gate's own release only runs on paths that reach the outbound
+    hook, which is exactly the half that did not happen.
+    """
+    now = time.time()
+    with _CRON_VERDICT_LOCK:
+        stale = [
+            (key, value)
+            for key, value in _CRON_VERDICT.items()
+            if now - float(value.get("at") or 0.0) > _CRON_VERDICT_TTL_SECONDS
+        ]
+        for key, _ in stale:
+            _CRON_VERDICT.pop(key, None)
+        _CRON_VERDICT[session_id] = {**verdict, "at": now}
+    # Released outside the lock: this talks to Convex over the network, and
+    # nothing else may wait on a socket to read its own verdict.
+    for key, value in stale:
+        LOGGER.warning(
+            "ted_reminder_verdict_abandoned user_key=%s session=%s — cleared to "
+            "send and never delivered, releasing it",
+            value.get("user_key"),
+            key,
+        )
+        _release_reminder(
+            str(value.get("user_key") or ""),
+            str(value.get("delivery_id") or ""),
+            "abandoned",
+        )
+
+
+def _take_cron_verdict(session_id: str) -> dict[str, Any] | None:
+    """The verdict for this firing, removed so it can only be used once."""
+    with _CRON_VERDICT_LOCK:
+        return _CRON_VERDICT.pop(session_id, None)
+
+
+def _cron_reminder_verdict(session_id: str) -> dict[str, Any] | None:
+    """Whether this cron firing may speak, decided from stored state alone.
+
+    Deliberately reads nothing the model produces. That is the whole property
+    that lets it run before the call instead of after: a paused user, a dead
+    WhatsApp link, quiet hours, the daily cap and the unanswered-nudge count
+    are all facts on disk or in Convex, and none of them changes because a
+    sentence was generated.
+
+    Returns None when this job is not one of Ted's WhatsApp reminders, which
+    leaves every other cron job on the box untouched.
+    """
     recipient = _cron_whatsapp_recipient(session_id)
     if not recipient:
         return None
@@ -7985,7 +8052,7 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             paused,
             session_id,
         )
-        return CRON_SILENT
+        return {"user_key": user_key, "send": False, "reason": f"paused_until:{paused}"}
 
     # Above _reminder_allowed, because that is the call that increments the
     # unanswered-nudge counter in Convex. Asking it anything while the link is
@@ -7996,7 +8063,7 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             user_key,
             session_id,
         )
-        return CRON_SILENT
+        return {"user_key": user_key, "send": False, "reason": "linkDown"}
 
     kind = _cron_job_kind(session_id)
     allowed, reason, offer_break, delivery_id = _reminder_allowed(user_key, kind)
@@ -8008,17 +8075,195 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             kind,
             session_id,
         )
-        return CRON_SILENT
+        return {"user_key": user_key, "send": False, "reason": reason}
 
     # A reminder is about to go out, so the cached engagement count is now one
     # behind. Dropped here rather than on a timer because the chat path reads
     # it to decide whether a reply owes a reset, and a stale zero there would
     # march a user who is present towards a break offer they never earned.
     _invalidate_user_memory(user_key)
+    return {
+        "user_key": user_key,
+        "send": True,
+        "reason": reason,
+        "offer_break": offer_break,
+        "delivery_id": delivery_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# The runaway conversation cap.
+#
+# On 7 Sep 2026 one WhatsApp thread ran 330 turns and 333 model calls in a
+# single session, 231 of those turns inside one hour. It cost 44.2M input
+# tokens: 35% of everything this account has ever spent, in one conversation,
+# in one afternoon. It opened "hey ted, good to hear from you! still need
+# those meal deta…", which is Ted's own voice arriving as somebody's input.
+#
+# Nothing stopped it and nothing would today. The agent's own budget is
+# `api_calls=N/60` and it is PER TURN, so 330 turns of one call each never
+# came close to it. There is no bound on a conversation, only on a reply.
+#
+# Sixty turns an hour, because that is roughly twice the busiest hour any real
+# person has had with Ted. Measured over 185 WhatsApp sessions from 30 Aug to
+# 17 Sep 2026: the busiest genuine one reached 31, the next 28, then 26, and
+# the median peak is well under ten. Only the runaway is anywhere near this
+# line, and it would have been stopped at turn 60 instead of turn 330.
+_CONVERSATION_TURNS: dict[str, list[float]] = {}
+_CONVERSATION_LOCK = threading.Lock()
+_CONVERSATION_WINDOW_SECONDS = 60 * 60
+_CONVERSATION_CAP = 60
+
+# Written for `ted-watch.py`, which alerts over macOS notifications rather than
+# WhatsApp. A cap that drops a real person's messages with nobody knowing is
+# the same failure as a reminder that stops arriving and never says so, and it
+# cannot announce itself down the channel it has just stopped answering.
+_RUNAWAY_STATE_PATH = _STATE_DIR / "ted-runaway-conversations.json"
+
+
+def _note_conversation_turn(chat_key: str, now: float | None = None) -> int:
+    """Record one inbound turn and return how many are inside the window."""
+    moment = time.time() if now is None else now
+    cutoff = moment - _CONVERSATION_WINDOW_SECONDS
+    with _CONVERSATION_LOCK:
+        seen = [stamp for stamp in _CONVERSATION_TURNS.get(chat_key, ()) if stamp > cutoff]
+        seen.append(moment)
+        _CONVERSATION_TURNS[chat_key] = seen
+        # Chats that went quiet are dropped so a long-running gateway does not
+        # hold every thread it has ever seen.
+        for key in [k for k, v in _CONVERSATION_TURNS.items() if not v or v[-1] <= cutoff]:
+            _CONVERSATION_TURNS.pop(key, None)
+        return len(seen)
+
+
+def _record_runaway(chat_key: str, count: int, moment: float) -> None:
+    """Leave the tripped cap somewhere an out-of-band watcher can find it.
+
+    Best-effort. A state file that cannot be written must never be the reason
+    a message is answered that the cap just refused.
+    """
+    try:
+        payload: dict[str, Any] = {}
+        if _RUNAWAY_STATE_PATH.exists():
+            payload = json.loads(_RUNAWAY_STATE_PATH.read_text(encoding="utf-8"))
+        chats = payload.get("chats") if isinstance(payload.get("chats"), dict) else {}
+        existing = chats.get(chat_key) if isinstance(chats.get(chat_key), dict) else {}
+        chats[chat_key] = {
+            "firstAt": existing.get("firstAt", moment),
+            "lastAt": moment,
+            "turnsInWindow": count,
+            "dropped": int(existing.get("dropped", 0)) + 1,
+        }
+        _RUNAWAY_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = _RUNAWAY_STATE_PATH.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps({"chats": chats}, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(_RUNAWAY_STATE_PATH)
+    except (OSError, ValueError) as error:
+        LOGGER.warning("ted_runaway_state_unwritable error=%s", error)
+
+
+def _runaway_conversation_guard(**kwargs: Any) -> dict[str, str] | None:
+    """Stop a conversation that has stopped being one.
+
+    Fires on `pre_gateway_dispatch`, which is before auth, before the session
+    is built and before any model call, so a refused turn costs nothing.
+
+    Counted per chat rather than per session on purpose: a session is a window
+    onto a conversation and a new one opens whenever the old one is reset, so
+    a loop that reconnects would otherwise get a fresh allowance each time.
+
+    WhatsApp only. Every other platform on this box is the builder at a
+    terminal, and capping her own thread would be capping the person trying to
+    fix it.
+    """
+    event = kwargs.get("event")
+    source = getattr(event, "source", None)
+    if source is None:
+        return None
+    platform = getattr(getattr(source, "platform", None), "value", "")
+    if platform != "whatsapp":
+        return None
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    if not chat_id:
+        return None
+
+    # The same key shape the cron path and the gate's own state use, so a
+    # tripped cap can be read against a user without ever storing a number.
+    chat_key = _user_state_key("whatsapp", chat_id, "")
+    moment = time.time()
+    count = _note_conversation_turn(chat_key, moment)
+    if count <= _CONVERSATION_CAP:
+        return None
+
+    LOGGER.warning(
+        "ted_runaway_conversation chat=%s turns_in_hour=%d cap=%d — dropping this "
+        "message unanswered. A real conversation has never reached this rate; the "
+        "one that did was Ted answering himself for 330 turns on 7 Sep 2026.",
+        chat_key,
+        count,
+        _CONVERSATION_CAP,
+    )
+    _record_runaway(chat_key, count, moment)
+    return {
+        "action": "skip",
+        "reason": f"runaway conversation: {count} turns in an hour, cap {_CONVERSATION_CAP}",
+    }
+
+
+def _cron_pre_agent_gate(**kwargs: Any) -> dict[str, str] | None:
+    """Refuse a scheduled message before the model is paid to write it.
+
+    Hermes patch 13 added the `pre_cron_agent` hook this hangs on, because
+    until it existed `transform_llm_output` was the only place a plugin could
+    say no, and by then the call has been made. Measured 1-17 Sep 2026: 331
+    suppressed runs, 15.8M input tokens, 13% of everything spent on the
+    account, to write text nobody received.
+
+    Nothing about WHAT Ted would have said is consulted, so nothing about the
+    user's experience changes. The suppressed message was already suppressed.
+    """
+    session_id = str(kwargs.get("session_id") or "")
+    verdict = _cron_reminder_verdict(session_id)
+    if verdict is None:
+        return None
+    if not verdict["send"]:
+        return {"action": "skip", "reason": str(verdict["reason"])}
+    # Cleared to send, so the model has to run and write the line. The verdict
+    # travels with the firing rather than being asked for twice.
+    _stash_cron_verdict(session_id, verdict)
+    return None
+
+
+def _cron_reminder_gate(**kwargs: Any) -> str | None:
+    """Put cron-delivered WhatsApp messages back under Ted's rules."""
+    session_id = str(kwargs.get("session_id") or "")
+    verdict = _take_cron_verdict(session_id)
+    if verdict is None:
+        # No verdict waiting means the pre-model hook never ran, and the only
+        # way that happens is a Hermes upgrade dropping patch 13. Deciding it
+        # here is what this function did for its whole life before the hook
+        # existed, so an unpatched gateway is expensive, never unsafe.
+        # `_missing_hermes_patches` at boot is what says so out loud.
+        verdict = _cron_reminder_verdict(session_id)
+        if verdict is None:
+            return None
+        if not verdict["send"]:
+            return CRON_SILENT
+
+    user_key = str(verdict["user_key"])
+    delivery_id = str(verdict.get("delivery_id") or "")
 
     # Four nudges, nothing back. Asking costs one message; continuing to nudge
     # costs the user, and a muted thread is not something Ted can see or undo.
-    if offer_break:
+    #
+    # Still decided here rather than in the pre-model hook, even though the
+    # answer is known there and the model call could have been skipped. A hook
+    # that returns its own text would be an outbound path that never passes
+    # the gates below, and two dozen runs a month is not worth that.
+    if verdict.get("offer_break"):
         LOGGER.info("ted_break_offered user_key=%s session=%s", user_key, session_id)
         return BREAK_OFFER
 
@@ -9648,6 +9893,8 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_tool_call", _cron_scope_guard)
     ctx.register_hook("post_tool_call", _record_tool_success)
     ctx.register_hook("transform_tool_result", _filter_cron_listing)
+    ctx.register_hook("pre_gateway_dispatch", _runaway_conversation_guard)
+    ctx.register_hook("pre_cron_agent", _cron_pre_agent_gate)
     ctx.register_hook("transform_llm_output", _transform_live_response)
     ctx.register_hook("post_llm_call", _log_disclosure)
 

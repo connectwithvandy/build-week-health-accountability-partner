@@ -380,6 +380,53 @@ def check_dropped() -> tuple[bool, str]:
     return False, f"{len(rows)} {people} never got a reply, longest waiting {waited}"
 
 
+RUNAWAY_STATE = HERMES / "state" / "ted-runaway-conversations.json"
+RUNAWAY_WINDOW_SECONDS = 6 * 60 * 60
+
+
+def check_runaway() -> tuple[bool, str]:
+    """Whether Ted has hit the conversation cap and gone quiet on somebody.
+
+    The cap in `ted_safety_gates` drops inbound turns once a single chat passes
+    sixty in an hour. It exists because of 7 Sep 2026, when one thread ran 330
+    turns and 44.2M input tokens with Ted answering what reads like his own
+    voice. Nothing bounded a conversation then, and the per-turn call budget
+    never noticed, because every one of those turns was individually small.
+
+    The cap is worth having and it is also the kind of thing that must never be
+    silent. Whoever is on the other end is being ignored, and if they are a
+    real person that is a bug with a person attached to it. It cannot be said
+    over WhatsApp: the cap works by not answering WhatsApp.
+    """
+    if not RUNAWAY_STATE.exists():
+        return True, "no conversation has hit the cap"
+    try:
+        payload = json.loads(RUNAWAY_STATE.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return True, f"cannot read the runaway record: {exc}"
+    chats = payload.get("chats")
+    if not isinstance(chats, dict):
+        return True, "no conversation has hit the cap"
+
+    cutoff = time.time() - RUNAWAY_WINDOW_SECONDS
+    recent = [
+        record
+        for record in chats.values()
+        if isinstance(record, dict) and float(record.get("lastAt") or 0) > cutoff
+    ]
+    if not recent:
+        return True, "no conversation has hit the cap"
+
+    dropped = sum(int(record.get("dropped") or 0) for record in recent)
+    busiest = max(int(record.get("turnsInWindow") or 0) for record in recent)
+    threads = "thread" if len(recent) == 1 else "threads"
+    return (
+        False,
+        f"{len(recent)} {threads} hit the conversation cap, {dropped} messages "
+        f"dropped, busiest ran {busiest} turns in an hour",
+    )
+
+
 def _reached_by_cron_since(chat_id: str, since: float) -> bool:
     """Whether a scheduled job delivered to this chat after `since`.
 
@@ -739,6 +786,7 @@ def main() -> int:
     link_ok, link_detail, needs_human = check_link()
     model_ok, model_detail = check_model()
     dropped_ok, dropped_detail = check_dropped()
+    runaway_ok, runaway_detail = check_runaway()
 
     state = read_state()
     now = time.time()
@@ -751,6 +799,7 @@ def main() -> int:
         ("link", link_ok, "Ted's WhatsApp"),
         ("model", model_ok, "Ted's model"),
         ("dropped", dropped_ok, "Someone Ted never answered"),
+        ("runaway", runaway_ok, "A conversation Ted stopped answering"),
     ]
 
     for key, ok, label in components:
@@ -783,6 +832,14 @@ def main() -> int:
                 f"{model_detail}.\n\n"
                 "Ted is still replying, on the fallback model, so nothing looks "
                 "broken from the outside. Top up the primary provider."
+            )
+        elif key == "runaway":
+            title = f"⚠️ {label}"
+            body = (
+                f"{runaway_detail}.\n\n"
+                "The cap did its job, so this cost nothing. If the other end "
+                "is a real person they are being ignored right now. On the "
+                "laptop: grep ted_runaway_conversation ~/.hermes/logs/agent.log"
             )
         elif key == "dropped":
             title = f"⚠️ {label}"

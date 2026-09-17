@@ -418,6 +418,91 @@ class TestCheckDropped:
         assert ok is True
 
 
+class TestCheckRunaway:
+    """The conversation cap must never be the thing nobody hears about.
+
+    7 Sep 2026: one thread ran 330 turns and 44.2M input tokens, 35% of
+    everything the account has spent, with Ted answering what reads like his
+    own voice. The cap that now stops that also stops answering somebody, and
+    it cannot say so over WhatsApp, because not answering WhatsApp is how it
+    works.
+    """
+
+    def _state(self, watch, tmp_path, monkeypatch, chats):
+        import json
+
+        path = tmp_path / "runaway.json"
+        path.write_text(json.dumps({"chats": chats}), encoding="utf-8")
+        monkeypatch.setattr(watch, "RUNAWAY_STATE", path)
+        return path
+
+    def test_no_record_is_not_a_failure(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "RUNAWAY_STATE", tmp_path / "nope.json")
+        ok, detail = watch.check_runaway()
+        assert ok is True
+        assert "no conversation has hit the cap" in detail
+
+    def test_a_corrupt_record_is_not_a_failure(self, watch, tmp_path, monkeypatch):
+        path = tmp_path / "runaway.json"
+        path.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr(watch, "RUNAWAY_STATE", path)
+        ok, _ = watch.check_runaway()
+        assert ok is True
+
+    def test_a_live_cap_is_reported(self, watch, tmp_path, monkeypatch):
+        import time
+
+        self._state(watch, tmp_path, monkeypatch, {
+            "whatsapp:sha256:abc": {
+                "firstAt": time.time() - 600,
+                "lastAt": time.time() - 60,
+                "turnsInWindow": 231,
+                "dropped": 171,
+            },
+        })
+        ok, detail = watch.check_runaway()
+        assert ok is False
+        assert "171 messages dropped" in detail
+        assert "231 turns" in detail
+
+    def test_an_old_cap_has_stopped_mattering(self, watch, tmp_path, monkeypatch):
+        """It recovers on its own after an hour. A day later it is history."""
+        import time
+
+        self._state(watch, tmp_path, monkeypatch, {
+            "whatsapp:sha256:abc": {
+                "firstAt": time.time() - 3 * 24 * 3600,
+                "lastAt": time.time() - 3 * 24 * 3600,
+                "turnsInWindow": 61,
+                "dropped": 1,
+            },
+        })
+        ok, detail = watch.check_runaway()
+        assert ok is True
+        assert "no conversation has hit the cap" in detail
+
+    def test_two_threads_are_counted_as_two(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._state(watch, tmp_path, monkeypatch, {
+            "whatsapp:sha256:a": {"lastAt": now, "turnsInWindow": 61, "dropped": 2},
+            "whatsapp:sha256:b": {"lastAt": now, "turnsInWindow": 90, "dropped": 5},
+        })
+        ok, detail = watch.check_runaway()
+        assert ok is False
+        assert "2 threads" in detail
+        assert "7 messages dropped" in detail
+        assert "90 turns" in detail
+
+    def test_the_watcher_reports_it_as_its_own_component(self, watch):
+        """A flapping gate must not swallow the alert for an ignored person."""
+        import inspect
+
+        source = inspect.getsource(watch.main)
+        assert '("runaway", runaway_ok' in source
+
+
 class TestEmailRetry:
     """A blip used to lose the alert outright.
 

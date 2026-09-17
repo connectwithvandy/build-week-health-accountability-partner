@@ -27,7 +27,7 @@
     },
     {
       "file": "03-voice-listening-ack.patch",
-      "what": "the voice-note 'Listening\u2026' acknowledgement",
+      "what": "the voice-note 'Listening…' acknowledgement",
       "checks": [
         {
           "path": "gateway/run.py",
@@ -62,7 +62,7 @@
             "one sec, finishing the last one first"
           ],
           "absent": [
-            "\u26a1 Interrupting current task"
+            "⚡ Interrupting current task"
           ]
         }
       ]
@@ -91,7 +91,7 @@
             "_gateway_provider_message"
           ],
           "absent": [
-            "    return \"\u23f1\ufe0f The model provider is rate-limiting requests. Please wait a moment and try again.\""
+            "    return \"⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.\""
           ]
         }
       ]
@@ -194,6 +194,27 @@
           "path": "gateway/run.py",
           "present": [
             "agent\\s+inactive\\s+for\\s+\\d+\\s+min"
+          ],
+          "absent": []
+        }
+      ]
+    },
+    {
+      "file": "13-decide-cron-silence-before-the-model.patch",
+      "what": "a scheduled message being refused before the model is paid for, rather than after",
+      "checks": [
+        {
+          "path": "hermes_cli/plugins.py",
+          "present": [
+            "\"pre_cron_agent\","
+          ],
+          "absent": []
+        },
+        {
+          "path": "cron/scheduler.py",
+          "present": [
+            "\"pre_cron_agent\",",
+            "return True, skip_doc, SILENT_MARKER, None"
           ],
           "absent": []
         }
