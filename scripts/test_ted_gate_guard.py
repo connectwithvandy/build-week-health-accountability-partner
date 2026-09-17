@@ -275,3 +275,93 @@ def test_a_bare_list_shape_is_read_too(guard, tmp_path, monkeypatch):
     (tmp_path / "cron" / "jobs.json").write_text(json.dumps(
         [{"name": "ted:a:meals", "enabled": True, "provider": None, "model": None}]))
     assert guard.unpinned_enabled_jobs() == ["ted:a:meals"]
+
+
+# Roadmap T03: fail closed when the safety asset itself is missing or broken.
+#
+# Hermes catches every exception a plugin raises at load time, logs one
+# WARNING and carries on. For this plugin that means a rename, a syntax error
+# or a missing file leaves Ted answering real people with no 18+ check and no
+# forced disclosure, and nothing in the chat or the log says so. `shim_imports`
+# is the stop. It had no test for any of the cases it exists to catch.
+
+WORKING_SHIM = '''
+def register(ctx):
+    return None
+'''
+
+
+def shim_at(tmp_path, monkeypatch, body: str | None):
+    """Point the guard at a shim of our choosing. None means no file at all."""
+    module = _load_guard()
+    path = tmp_path / "plugins" / "ted-safety-gates" / "__init__.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if body is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(module, "SHIM", path)
+    return module
+
+
+def test_a_working_shim_passes(tmp_path, monkeypatch):
+    module = shim_at(tmp_path, monkeypatch, WORKING_SHIM)
+    assert module.shim_imports() is None
+
+
+def test_a_missing_safety_file_is_caught(tmp_path, monkeypatch):
+    """The rename case. Nothing is loaded, so nothing may serve."""
+    module = shim_at(tmp_path, monkeypatch, None)
+    problem = module.shim_imports()
+    assert problem is not None
+    assert "no plugin shim" in problem
+
+
+def test_a_syntax_error_is_caught(tmp_path, monkeypatch):
+    module = shim_at(tmp_path, monkeypatch, "def register(ctx:\n    return None\n")
+    assert module.shim_imports() is not None
+
+
+def test_a_shim_without_register_is_caught(tmp_path, monkeypatch):
+    """It imports cleanly and is still useless. Importing is not enough."""
+    module = shim_at(tmp_path, monkeypatch, "VERSION = 1\n")
+    assert module.shim_imports() is not None
+
+
+def test_a_register_that_is_not_callable_is_caught(tmp_path, monkeypatch):
+    module = shim_at(tmp_path, monkeypatch, "register = 'not a function'\n")
+    assert module.shim_imports() is not None
+
+
+def test_a_shim_that_raises_on_import_is_caught(tmp_path, monkeypatch):
+    """What the real shim does when the repo gate file has gone missing."""
+    module = shim_at(
+        tmp_path, monkeypatch,
+        "raise RuntimeError('Ted safety gates source not found')\n"
+        "def register(ctx):\n    return None\n",
+    )
+    problem = module.shim_imports()
+    assert problem is not None
+    assert "source not found" in problem
+
+
+def test_an_empty_shim_is_caught(tmp_path, monkeypatch):
+    module = shim_at(tmp_path, monkeypatch, "")
+    assert module.shim_imports() is not None
+
+
+def test_the_real_shim_refuses_when_its_source_is_gone(tmp_path, monkeypatch):
+    """The live shim's own contract: no gates source means no gates.
+
+    Checked against the shipped file rather than a copy, so a rewrite that
+    quietly dropped the guard would fail here.
+    """
+    real = Path(__file__).resolve().parents[1] / "hermes" / "machine" / "plugin-shim.py"
+    text = real.read_text(encoding="utf-8")
+    assert "Ted must not run without its gates" in text
+    assert "raise RuntimeError" in text
+
+
+def test_gate_source_is_none_when_the_shim_is_missing(tmp_path, monkeypatch):
+    module = shim_at(tmp_path, monkeypatch, None)
+    assert module.gate_source() is None
