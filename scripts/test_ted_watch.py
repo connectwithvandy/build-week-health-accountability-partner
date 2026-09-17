@@ -26,6 +26,13 @@ def watch(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "HERMES_ENV", tmp_path / ".env")
+    # Never the live gateway's database. `check_model` asks it whether the
+    # primary model has answered since the last failure, and without this a
+    # test asserting "an empty balance is caught" passes or fails according to
+    # whether this laptop's Ted happens to be healthy right now. A path that
+    # does not exist is also the right default: it leaves the alarm raised,
+    # which is the direction every unknown here fails in.
+    monkeypatch.setattr(module, "STATE_DB", tmp_path / "no-state.db")
     # Real backoff belongs in production, not in a test run. Attempts are left
     # alone so the retry itself is still exercised.
     monkeypatch.setattr(module, "EMAIL_RETRY_SECONDS", 0)
@@ -485,3 +492,139 @@ class TestEmailRetry:
             watch, "remote_alerts", lambda *a, **k: [("email", "sent")]
         )
         assert watch.notify("t", "b", dry_run=False) is True
+
+
+# --- the model coming back ---------------------------------------------------
+#
+# check_model reads a 24-hour window, so without a recovery test an outage that
+# ended at lunchtime keeps raising the same alarm until the following lunchtime.
+# On 17 Sep the balance had been topped up, the primary had answered every call
+# for seventeen hours, and the watchdog still said FAILING. An alarm that cries
+# wolf for a day after the fact is one nobody reads on the day it matters.
+#
+# Every test here also pins the direction of failure: anything unknowable leaves
+# the alarm raised. A false alarm costs a look; a missed outage cost ten days.
+
+import sqlite3
+from datetime import datetime, timedelta
+
+
+def _usage_db(path, rows):
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE session_model_usage "
+        "(session_id TEXT, model TEXT, billing_provider TEXT, last_seen REAL)"
+    )
+    connection.executemany(
+        "INSERT INTO session_model_usage VALUES (?,?,?,?)", rows
+    )
+    connection.commit()
+    connection.close()
+
+
+FAILED_AT = datetime(2026, 9, 16, 22, 0, 0)
+
+
+class TestPrimaryModelRecovery:
+    def test_a_success_after_the_failure_is_a_recovery(self, watch, tmp_path, monkeypatch):
+        db = tmp_path / "state.db"
+        later = FAILED_AT + timedelta(hours=18)
+        _usage_db(db, [("s1", "claude-sonnet-5", "anthropic", later.timestamp())])
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) == later
+
+    def test_a_success_before_the_failure_is_not(self, watch, tmp_path, monkeypatch):
+        db = tmp_path / "state.db"
+        earlier = FAILED_AT - timedelta(hours=3)
+        _usage_db(db, [("s1", "claude-sonnet-5", "anthropic", earlier.timestamp())])
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_the_fallback_answering_is_not_a_recovery(self, watch, tmp_path, monkeypatch):
+        """The fallback working is exactly what makes the outage invisible.
+        Only the configured primary counts."""
+        db = tmp_path / "state.db"
+        later = FAILED_AT + timedelta(hours=18)
+        _usage_db(db, [("s1", "openai/gpt-5.3-codex", "openrouter", later.timestamp())])
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_the_same_model_on_another_provider_is_not_a_recovery(self, watch, tmp_path, monkeypatch):
+        """claude-sonnet-5 through OpenRouter is still not the primary billing
+        route, and the dead end being repaired is an Anthropic balance."""
+        db = tmp_path / "state.db"
+        later = FAILED_AT + timedelta(hours=18)
+        _usage_db(db, [("s1", "claude-sonnet-5", "openrouter", later.timestamp())])
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_no_database_leaves_the_alarm_raised(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "STATE_DB", tmp_path / "gone.db")
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_an_unreadable_config_leaves_the_alarm_raised(self, watch, tmp_path, monkeypatch):
+        db = tmp_path / "state.db"
+        _usage_db(db, [("s1", "claude-sonnet-5", "anthropic",
+                        (FAILED_AT + timedelta(hours=18)).timestamp())])
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: None)
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_a_table_that_is_not_there_leaves_the_alarm_raised(self, watch, tmp_path, monkeypatch):
+        db = tmp_path / "state.db"
+        sqlite3.connect(db).close()
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        assert watch.primary_model_recovered_since(FAILED_AT) is None
+
+    def test_no_failure_to_recover_from(self, watch):
+        assert watch.primary_model_recovered_since(None) is None
+
+
+class TestCheckModelUsesTheRecovery:
+    """The end-to-end behaviour, not just the helper."""
+
+    def _log(self, watch, tmp_path, monkeypatch, when: datetime):
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{when:%Y-%m-%d %H:%M:%S} ERROR credit balance is too low to access\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+
+    def test_a_live_outage_still_raises(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(minutes=5))
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: None)
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert "credit balance is empty" in detail
+
+    def test_a_healed_outage_does_not(self, watch, tmp_path, monkeypatch):
+        """Seventeen hours of the primary answering, inside a 24-hour window."""
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(hours=19))
+        recovered = datetime.now() - timedelta(hours=1)
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: recovered)
+        ok, detail = watch.check_model()
+        assert ok is True
+        assert "recovered" in detail
+
+    def test_the_healed_message_still_says_it_failed(self, watch, tmp_path, monkeypatch):
+        """Recovered is not the same as nothing happened. The count stays, or
+        a run of daily outages reads as a clean week."""
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(hours=19))
+        monkeypatch.setattr(
+            watch, "primary_model_recovered_since",
+            lambda when: datetime.now() - timedelta(hours=1),
+        )
+        _ok, detail = watch.check_model()
+        assert "failed calls earlier" in detail
+
+    def test_an_error_outside_the_window_is_not_a_failure_at_all(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(hours=30))
+        ok, detail = watch.check_model()
+        assert ok is True
+        assert detail == "primary model answering"

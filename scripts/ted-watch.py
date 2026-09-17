@@ -186,6 +186,64 @@ MODEL_WINDOW_HOURS = 24
 LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
+def configured_primary() -> tuple[str, str] | None:
+    """(provider, model) the gateway is meant to be using, or None.
+
+    Read through ted-pin-cron-jobs.py's own parser rather than a second copy
+    here. Which model counts as "the primary" is exactly the kind of fact that
+    goes wrong when two files answer it differently.
+    """
+    import importlib.util
+
+    source = Path(__file__).resolve().parent / "ted-pin-cron-jobs.py"
+    if not source.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("ted_pin_cron_jobs", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.current_config()
+    except Exception:  # noqa: BLE001 - a missing config must not break the check
+        return None
+
+
+def primary_model_recovered_since(last_failure: "datetime | None") -> "datetime | None":
+    """When the primary model last answered, if that was after `last_failure`.
+
+    Reads `session_model_usage`, which records a row per model actually billed,
+    so a successful call on the configured provider is positive evidence rather
+    than an absence of errors.
+
+    Fails towards the alarm. Anything unreadable here returns None, which leaves
+    the failure reported: a false alarm costs a look, a missed outage cost ten
+    days last time.
+    """
+    if last_failure is None:
+        return None
+    primary = configured_primary()
+    if not primary:
+        return None
+    provider, model = primary
+    try:
+        connection = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = connection.execute(
+            "SELECT MAX(last_seen) FROM session_model_usage "
+            "WHERE model = ? AND billing_provider = ?",
+            (model, provider),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+    if not row or not row[0]:
+        return None
+    when = datetime.fromtimestamp(float(row[0]))
+    return when if when > last_failure else None
+
+
 def check_model() -> tuple[bool, str]:
     """Whether Ted is still talking to the model it is supposed to be.
 
@@ -207,6 +265,7 @@ def check_model() -> tuple[bool, str]:
     hits = 0
     reason = ""
     first_seen = ""
+    last_hit: datetime | None = None
     try:
         with AGENT_LOG.open(errors="replace") as handle:
             for line in handle:
@@ -222,11 +281,29 @@ def check_model() -> tuple[bool, str]:
                 if when >= cutoff:
                     hits += 1
                     reason = found
+                    if last_hit is None or when > last_hit:
+                        last_hit = when
     except OSError as exc:
         return True, f"cannot read agent.log: {exc}"
 
     if not hits:
         return True, "primary model answering"
+
+    # Has it since come back? The window is 24 hours wide, so without this an
+    # outage that ended at lunchtime keeps raising the same alarm until the
+    # following lunchtime. That is how an alarm stops being read: on 17 Sep the
+    # balance had been topped up, the primary had answered every call for
+    # seventeen hours, and this still said FAILING because errors from the
+    # previous evening were inside the window.
+    #
+    # The test is not "how long ago" but "which happened last": a success on the
+    # primary model *after* the newest dead end means the bill is paid.
+    recovered_at = primary_model_recovered_since(last_hit)
+    if recovered_at:
+        return True, (
+            f"primary model answering (recovered {recovered_at:%H:%M}; "
+            f"{hits} failed calls earlier in the window)"
+        )
 
     # first_seen is a floor, not the truth: the log rotates, so the real start
     # may be older than anything still on disk.
