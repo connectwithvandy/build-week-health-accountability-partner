@@ -11,7 +11,7 @@ model:
   # still has somewhere to go.
   provider: anthropic
   default: claude-sonnet-5
-  max_tokens: 1024
+  max_tokens: 4096
 agent:
   max_turns: 60
   verbose: false
@@ -87,7 +87,7 @@ compression:
   protect_last_n: 20
   protect_first_n: 3
 prompt_caching:
-  cache_ttl: 5m
+  cache_ttl: 1h
 display:
   compact: false
   # One phone number, one turn at a time, in the order the messages arrived.
@@ -213,6 +213,8 @@ session_reset:
   notify: false
 group_sessions_per_user: true
 platform_toolsets:
+  cron:
+    - ted
   cli:
     - browser
     - clarify
@@ -235,7 +237,6 @@ platform_toolsets:
     - hermes-discord
   whatsapp:
     - cronjob
-    - file
     - ted
     - vision
   slack:

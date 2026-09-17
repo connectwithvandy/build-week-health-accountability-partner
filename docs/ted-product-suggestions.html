@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ted — Product Review and Prioritised Suggestions</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #fffaf2;
+      --ink: #171513;
+      --muted: #665f58;
+      --line: #ded4c8;
+      --orange: #e96024;
+      --red: #a9382c;
+      --amber: #91650a;
+      --blue: #315e76;
+      --green: #31664d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 64px 0 96px; }
+    header { padding-bottom: 32px; border-bottom: 2px solid var(--ink); }
+    .eyebrow { margin: 0 0 12px; color: var(--orange); font-size: 13px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { max-width: 760px; margin: 0; font-size: clamp(34px, 7vw, 64px); line-height: 1; letter-spacing: -.04em; }
+    .summary { max-width: 720px; margin: 22px 0 0; color: var(--muted); font-size: 18px; }
+    .meta { margin-top: 20px; color: var(--muted); font-size: 14px; }
+    section { margin-top: 48px; }
+    h2 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.025em; }
+    .priority-note { margin: 0 0 22px; color: var(--muted); }
+    ol { margin: 0; padding: 0; list-style: none; counter-reset: item; }
+    li {
+      counter-increment: item;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 12px;
+      padding: 16px 0;
+      border-top: 1px solid var(--line);
+    }
+    li::before {
+      content: counter(item, decimal-leading-zero);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      padding-top: 3px;
+    }
+    li:last-child { border-bottom: 1px solid var(--line); }
+    li strong { display: block; margin-bottom: 3px; }
+    li span { color: var(--muted); }
+    .p0 h2 { color: var(--red); }
+    .p1 h2 { color: var(--amber); }
+    .p2 h2 { color: var(--blue); }
+    .p3 h2 { color: var(--green); }
+    .order {
+      margin-top: 56px;
+      padding: 24px;
+      border: 2px solid var(--ink);
+      background: #fff;
+    }
+    .order h2 { margin-bottom: 12px; }
+    .order p { margin: 0; font-size: 18px; }
+    footer { margin-top: 48px; color: var(--muted); font-size: 13px; }
+    @media print {
+      body { background: #fff; }
+      main { width: 100%; padding: 24px; }
+      section { break-inside: avoid; }
+      .order { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">Product review · 17 September 2026</p>
+      <h1>Ted: prioritised product suggestions</h1>
+      <p class="summary">Ted has a strong product idea, a clear voice, and good automated safety coverage. The next work should focus on privacy, user separation, delivery reliability, and simpler onboarding before adding more features.</p>
+      <p class="meta">Suggestions only. This document does not claim that any item has been implemented or verified in production.</p>
+    </header>
+
+    <section class="p0">
+      <h2>P0 — before inviting more testers</h2>
+      <p class="priority-note">These items protect users from privacy, safety, or serious reliability failures.</p>
+      <ol>
+        <li><div><strong>Remove general file access from WhatsApp.</strong><span>WhatsApp users should never be able to read, write, search, or alter unrelated files on the machine running Ted.</span></div></li>
+        <li><div><strong>Prove two-user separation.</strong><span>Test two accounts at the same time across meals, targets, corrections, reminders, short “done” replies, summaries, and deletion.</span></div></li>
+        <li><div><strong>Make safety failures stop service.</strong><span>If Ted’s safety checks do not load, Ted should refuse to answer instead of continuing without them.</span></div></li>
+        <li><div><strong>Move Ted to an always-on machine.</strong><span>A sleeping laptop, closed lid, restart, or logged-out WhatsApp session should not take the product down for every tester.</span></div></li>
+        <li><div><strong>Make deletion one complete workflow.</strong><span>One confirmed request should clear database records, local chats, media, reminders, queued replies, routing data, and delivery records.</span></div></li>
+        <li><div><strong>Track each reminder until delivery.</strong><span>Every message needs its own permanent record and a status such as pending, delivered, failed, or abandoned.</span></div></li>
+        <li><div><strong>Alert outside WhatsApp.</strong><span>Gateway, model, and WhatsApp connection failures need an alert channel that still works when Ted does not.</span></div></li>
+      </ol>
+    </section>
+
+    <section class="p1">
+      <h2>P1 — next product sprint</h2>
+      <p class="priority-note">These changes improve conversion, trust, and the ability to operate the beta safely.</p>
+      <ol>
+        <li><div><strong>Shorten compulsory onboarding.</strong><span>Start with name and disclosure/goal. Ask for a check-in time when the person wants a review or reminder.</span></div></li>
+        <li><div><strong>Let people log immediately.</strong><span>Body and activity details should appear only when somebody requests a calorie target.</span></div></li>
+        <li><div><strong>Allow calorie setup to be skipped.</strong><span>Meal, water, movement, and commitment coaching should still work without a calorie target.</span></div></li>
+        <li><div><strong>Measure real activation.</strong><span>Track first useful log and second-day return separately from profile completion.</span></div></li>
+        <li><div><strong>Create one onboarding contract.</strong><span>The product documents, safety gate, database, and dashboard should describe the same requirements.</span></div></li>
+        <li><div><strong>Use one calorie-safety rule.</strong><span>Never go below the calculated safety floor and never choose weight loss for the user.</span></div></li>
+        <li><div><strong>Save calorie calculation evidence.</strong><span>Keep the inputs, maintenance estimate, formula version, chosen target, source, and confirmation time.</span></div></li>
+        <li><div><strong>Separate normal and administrator access.</strong><span>Routine Ted actions should not use the same secret as cross-user reports and repair tools.</span></div></li>
+        <li><div><strong>Add traffic limits.</strong><span>Public analytics and administrator endpoints should reject abusive request volumes.</span></div></li>
+        <li><div><strong>Create a safe preview environment.</strong><span>Every proposed change should be testable before it reaches production.</span></div></li>
+        <li><div><strong>Add automatic release checks.</strong><span>Tests, lint, type checks, production build, and Hermes patch checks should run for every proposed change.</span></div></li>
+        <li><div><strong>Record operational events without chat content.</strong><span>Measure processing, delivery, response time, provider failures, and fallback use without copying health messages.</span></div></li>
+        <li><div><strong>Get legal review before public launch.</strong><span>The privacy notice should clearly cover data, purpose, retention, processors, user rights, complaints, and breach handling.</span></div></li>
+      </ol>
+    </section>
+
+    <section class="p2">
+      <h2>P2 — performance and product quality</h2>
+      <p class="priority-note">These items improve speed, accuracy, cost, and maintainability after the main risks are closed.</p>
+      <ol>
+        <li><div><strong>Compress landing-page images.</strong><span>Use responsive WebP or AVIF files instead of placing large photographs directly inside the HTML.</span></div></li>
+        <li><div><strong>Remove image metadata.</strong><span>Strip phone model, capture time, and other hidden details before publishing images.</span></div></li>
+        <li><div><strong>Self-host landing-page fonts.</strong><span>A visitor should not need to contact Google to read the page.</span></div></li>
+        <li><div><strong>Pause off-screen animation.</strong><span>Do not perform animation work for sections the visitor cannot see.</span></div></li>
+        <li><div><strong>Add browser security rules.</strong><span>Restrict scripts, framing, referrers, file types, and unused browser capabilities.</span></div></li>
+        <li><div><strong>Make marketing claims exact.</strong><span>Say “a useful estimate” rather than “the same numbers,” and remove automatic workout rescheduling unless it is implemented.</span></div></li>
+        <li><div><strong>Describe reminders honestly.</strong><span>Say that Ted sends only the reminders and reviews the user chooses.</span></div></li>
+        <li><div><strong>Use a neutral calorie example.</strong><span>A public 1,400-calorie target can normalise a low target without context.</span></div></li>
+        <li><div><strong>Stop analytics when its private salt is missing.</strong><span>Do not fall back to a public, guessable value.</span></div></li>
+        <li><div><strong>Suppress duplicate analytics events.</strong><span>Prevent refreshes and automated traffic from inflating product numbers.</span></div></li>
+        <li><div><strong>Remove the metrics key from the URL.</strong><span>Use a short-lived secure browser session so the key does not enter history, screenshots, or logs.</span></div></li>
+        <li><div><strong>Replace full database scans.</strong><span>Store daily totals before the number of events and health records becomes large.</span></div></li>
+        <li><div><strong>Use smaller processing for routine reminders.</strong><span>Reserve the main model for interpretation, uncertain meals, and personalised coaching.</span></div></li>
+        <li><div><strong>Split the large safety file carefully.</strong><span>Separate identity, onboarding, nutrition, reminders, delivery, and claims without mixing that refactor with behaviour changes.</span></div></li>
+        <li><div><strong>Shorten the live personality prompt.</strong><span>Move old incident stories into tests and keep only the current rules in the prompt.</span></div></li>
+        <li><div><strong>Decide the PDF boundary.</strong><span>Either implement isolated read-only PDF extraction or remove PDF support from the current contract.</span></div></li>
+        <li><div><strong>Add backups and a restore drill.</strong><span>Protect the local chats and media that are not stored in Convex.</span></div></li>
+        <li><div><strong>Set log retention.</strong><span>Remove health content from operational logs wherever possible and delete old logs on a fixed schedule.</span></div></li>
+        <li><div><strong>Test the real browser experience.</strong><span>Check mobile layout, keyboard use, screen readers, reduced motion, and page speed.</span></div></li>
+      </ol>
+    </section>
+
+    <section class="p3">
+      <h2>P3 — maintenance</h2>
+      <p class="priority-note">These changes reduce future confusion and development cost.</p>
+      <ol>
+        <li><div><strong>Correct the Hermes patch count.</strong><span>The README should describe the current 13 patches, not 8.</span></div></li>
+        <li><div><strong>Resolve onboarding documentation conflicts.</strong><span>Remove the competing three-, five-, six-, and eight-requirement descriptions.</span></div></li>
+        <li><div><strong>Archive old design experiments.</strong><span>Keep the shipped page obvious and mark earlier versions as historical.</span></div></li>
+        <li><div><strong>Rename the stored user identifier later.</strong><span>`whatsappUserId` contains a protected user key, not a phone number.</span></div></li>
+        <li><div><strong>Remove unused application code.</strong><span>Review the global Convex browser provider and the production-disabled legacy Hermes route.</span></div></li>
+        <li><div><strong>Upgrade dependencies in small groups.</strong><span>Keep routine framework updates separate from major TypeScript, ESLint, and Vitest changes.</span></div></li>
+        <li><div><strong>Upgrade the Vercel command-line tool.</strong><span>Run <code>npm i -g vercel@latest</code> when ready.</span></div></li>
+        <li><div><strong>Keep progress records current.</strong><span>After each session, record what was implemented, tested, deployed, and still unverified.</span></div></li>
+      </ol>
+    </section>
+
+    <aside class="order">
+      <h2>Recommended order</h2>
+      <p>File access → two-user separation → fail-closed safety and reliable hosting → deletion → delivery records → simpler onboarding → privacy and release operations → website and cost optimisation.</p>
+    </aside>
+
+    <footer>
+      <p>Ted product review · Suggestions only · Prepared 17 September 2026</p>
+    </footer>
+  </main>
+</body>
+</html>

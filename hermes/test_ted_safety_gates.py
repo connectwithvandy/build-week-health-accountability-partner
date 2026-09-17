@@ -5146,6 +5146,176 @@ class CronSilenceDecidedBeforeTheModelTest(unittest.TestCase):
             self.assertIsNone(gates._cron_pre_agent_gate(session_id=self.SESSION))
         self.assertEqual(gates._CRON_VERDICT, {})
 
+    # ── A Convex outage, decided in front of the model ──────────────
+    #
+    # `_reminder_allowed` falls back to default quiet hours when the stored
+    # policy cannot be read, rather than suppressing everything. That fallback
+    # was written for the outbound hook, and patch 13 moved the decision in
+    # front of the model without moving the fallback with it.
+    #
+    # Nothing would report a regression here. A pre-model skip is silent by
+    # design: no model call, no message, one INFO line. If this path ever
+    # started reading a storage failure as "do not send", every reminder every
+    # user set up would stop during any Convex blip and the only evidence would
+    # be an absence.
+
+    def unreachable_convex(self, calls: list):
+        """Convex answers nothing useful, the way a real outage does."""
+
+        def respond(action, user_key, context_id="", body=None, **_):
+            calls.append(action)
+            if action == "reminderGate":
+                return {"success": False, "error": gates._STORAGE_UNAVAILABLE}
+            return {"success": True}
+
+        return respond
+
+    def test_a_convex_outage_does_not_silence_a_daytime_reminder(self) -> None:
+        """The dangerous one. A blip must not cancel everybody's reminders."""
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.unreachable_convex(calls)
+        ), patch.object(gates, "_now_local_time", return_value="11:00"), patch.object(
+            gates, "_whatsapp_can_deliver", return_value=True
+        ):
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=self.SESSION))
+
+    def test_a_convex_outage_still_respects_default_quiet_hours(self) -> None:
+        """3am is still 3am when the database is down."""
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.unreachable_convex(calls)
+        ), patch.object(gates, "_now_local_time", return_value="03:00"), patch.object(
+            gates, "_whatsapp_can_deliver", return_value=True
+        ):
+            verdict = gates._cron_pre_agent_gate(session_id=self.SESSION)
+        self.assertIsNotNone(verdict)
+        self.assertEqual(verdict["action"], "skip")
+
+    def test_an_outage_spends_nothing_it_cannot_give_back(self) -> None:
+        """No deliveryId is minted on the fallback, so none needs releasing.
+
+        A stashed verdict carrying an empty id would send `reminderMissed` for
+        a send that was never counted, against a Convex that just said it
+        could not read the row.
+        """
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.unreachable_convex(calls)
+        ), patch.object(gates, "_now_local_time", return_value="11:00"), patch.object(
+            gates, "_whatsapp_can_deliver", return_value=True
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            stashed = gates._CRON_VERDICT.get(self.SESSION)
+        self.assertIsNotNone(stashed)
+        # The stash is the verdict itself plus an "at" stamp, so the id is read
+        # straight off it. Empty here because the fallback counted nothing.
+        self.assertEqual(stashed.get("delivery_id") or "", "")
+        self.assertNotIn("reminderMissed", calls)
+
+    def test_a_dead_whatsapp_link_is_refused_before_convex_is_asked(self) -> None:
+        """Asking while the link is down is what marched a present user to a
+        break offer. The pre-model half must not undo that ordering."""
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.responder(calls, allowed=True)
+        ), patch.object(gates, "_whatsapp_can_deliver", return_value=False):
+            verdict = gates._cron_pre_agent_gate(session_id=self.SESSION)
+        self.assertEqual(verdict, {"action": "skip", "reason": "linkDown"})
+        self.assertNotIn("reminderGate", calls)
+
+    # ── Malformed invocations ───────────────────────────────────────
+
+    def test_a_hook_call_with_no_session_skips_nothing(self) -> None:
+        """The patch passes session_id by keyword. A Hermes refactor that
+        stopped doing so must fail open, never silently cancel every job on
+        the box."""
+        with self.jobs_file():
+            self.assertIsNone(gates._cron_pre_agent_gate())
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=""))
+            self.assertIsNone(gates._cron_pre_agent_gate(session_id=None))
+        self.assertEqual(gates._CRON_VERDICT, {})
+
+    def test_a_non_cron_session_id_is_left_alone(self) -> None:
+        """A chat turn must never be read as a firing."""
+        with self.jobs_file():
+            self.assertIsNone(
+                gates._cron_pre_agent_gate(session_id="20260917_173621_28e3b888")
+            )
+        self.assertEqual(gates._CRON_VERDICT, {})
+
+    def test_a_slow_run_keeps_its_own_verdict(self) -> None:
+        """Age alone does not lose a verdict.
+
+        `_take_cron_verdict` pops by session and never checks the stamp, so a
+        run that outlives the 15-minute TTL still finds its own answer waiting
+        and Convex is still asked exactly once. The sweep in
+        `_stash_cron_verdict` only ever collects OTHER sessions.
+        """
+        calls: list = []
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=self.responder(calls, allowed=True)
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            for value in gates._CRON_VERDICT.values():
+                value["at"] = time.time() - gates._CRON_VERDICT_TTL_SECONDS - 1
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text="water time"
+            )
+        self.assertIsNone(reply)
+        self.assertEqual(calls.count("reminderGate"), 1)
+
+    def test_a_swept_verdict_costs_the_user_a_second_count(self) -> None:
+        """The one ordering that does double-count, pinned so it is known.
+
+        A firing slower than the TTL whose verdict is swept by a LATER firing
+        comes back to an empty stash, asks Convex again, and takes a second
+        step towards the break offer for one reminder. The first id is released
+        as abandoned, so nothing is double-delivered and nothing is lost — the
+        user is nudged once, as intended — but the count moves twice.
+
+        Reachable only when a run outlives 15 minutes AND another firing lands
+        in the window. The cron idle limit is 600s and measures idleness rather
+        than total runtime, so it does not rule this out. Left as it is because
+        the alternative, holding verdicts forever, leaks a real send on every
+        run that dies; this is the cheaper of the two failures. Asserted so a
+        future change to either timeout is made with the cost in view.
+        """
+        calls: list = []
+        released: list = []
+
+        def respond(action, user_key, context_id="", body=None, **_):
+            calls.append(action)
+            if action == "reminderGate":
+                return {
+                    "success": True,
+                    "allowed": True,
+                    "reason": "ok",
+                    "deliveryId": f"gate-id-{calls.count('reminderGate')}",
+                }
+            if action == "reminderMissed":
+                released.append(dict(body or {}))
+                return {"success": True, "released": True}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=respond
+        ):
+            gates._cron_pre_agent_gate(session_id=self.SESSION)
+            for value in gates._CRON_VERDICT.values():
+                value["at"] = time.time() - gates._CRON_VERDICT_TTL_SECONDS - 1
+            # A later firing lands and sweeps the slow run's verdict away.
+            gates._stash_cron_verdict("cron_222222222222_20260917_092000", {})
+            reply = gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text="water time"
+            )
+        self.assertIsNone(reply)
+        self.assertEqual(calls.count("reminderGate"), 2)
+        self.assertEqual(len(released), 1)
+        self.assertEqual(released[0]["deliveryId"], "gate-id-1")
+        self.assertGreater(gates._CRON_VERDICT_TTL_SECONDS, 600)
+
+
     def test_the_hook_is_registered_against_the_name_the_patch_fires(self) -> None:
         """A rename on either side would silently restore the old spend."""
         registered: dict = {}

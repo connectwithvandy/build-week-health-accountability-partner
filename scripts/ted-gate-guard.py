@@ -38,6 +38,7 @@ HERMES_ENV = HERMES / ".env"
 REGISTERED = "ted_safety_gates_registered"
 REQUIRED_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
 LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+WHATSAPP_ALLOWED_TOOLSETS = frozenset({"cronjob", "ted", "vision"})
 
 
 def _fail(message: str) -> str:
@@ -187,6 +188,55 @@ def missing_env() -> list[str]:
         if re.search(rf"^\s*{name}\s*=\s*\S", text, re.MULTILINE):
             present.add(name)
     return [name for name in REQUIRED_ENV if name not in present]
+
+
+def _platform_toolsets(platform: str) -> list[str] | None:
+    """The explicitly scoped toolsets for one platform.
+
+    ``None`` means the config could not prove a scope. Hermes' default in that
+    case is broad, so security callers must treat it as unsafe rather than as
+    an empty set.
+    """
+    try:
+        lines = (HERMES / "config.yaml").read_text().splitlines()
+    except OSError:
+        return None
+
+    try:
+        top = lines.index("platform_toolsets:")
+    except ValueError:
+        return None
+
+    header = f"  {platform}:"
+    for index, line in enumerate(lines[top + 1 :], start=top + 1):
+        if line and not line[0].isspace():
+            break
+        if line == header:
+            toolsets: list[str] = []
+            for child in lines[index + 1 :]:
+                if child and not child[0].isspace():
+                    break
+                if child.startswith("  ") and not child.startswith("    "):
+                    break
+                match = re.fullmatch(r"\s{4}-\s+([^\s#]+)\s*(?:#.*)?", child)
+                if match:
+                    toolsets.append(match.group(1))
+            return toolsets
+    return None
+
+
+def unsafe_whatsapp_toolsets() -> list[str]:
+    """Anything beyond Ted, reminders, and image understanding is unsafe.
+
+    WhatsApp is untrusted public input. A general file, terminal, browser, or
+    future power tool there turns a health conversation into access to the
+    machine running it. An allowlist also makes a new Hermes tool fail closed.
+    """
+    toolsets = _platform_toolsets("whatsapp")
+    if toolsets is None:
+        config = HERMES / "config.yaml"
+        return ["<unreadable>" if not config.is_file() else "<unscoped>"]
+    return sorted(set(toolsets) - WHATSAPP_ALLOWED_TOOLSETS)
 
 
 def cron_tools_unscoped() -> bool:
@@ -360,6 +410,20 @@ def main() -> int:
         )
     else:
         report.append(_ok("Convex memory variables are set"))
+
+    unsafe_whatsapp = unsafe_whatsapp_toolsets()
+    if unsafe_whatsapp:
+        names = ", ".join(unsafe_whatsapp)
+        ungated.append(f"WhatsApp has unsafe or unscoped tool access: {names}")
+        report.append(
+            _fail(
+                "WhatsApp tool access is UNSAFE — "
+                + names
+                + ". Allowed: cronjob, ted, vision"
+            )
+        )
+    else:
+        report.append(_ok("WhatsApp is scoped to cronjob, ted, and vision"))
 
     cron_unscoped = cron_tools_unscoped()
     if cron_unscoped:

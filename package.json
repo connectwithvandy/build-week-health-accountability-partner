@@ -18,7 +18,8 @@
     "convex:check": "python3 scripts/ted-convex-check.py",
     "setup:reconcile": "python3 scripts/ted-reconcile-setup.py",
     "timezones": "python3 scripts/ted-backfill-timezone.py",
-    "forget": "python3 scripts/ted-forget-user.py"
+    "forget": "python3 scripts/ted-forget-user.py",
+    "spend": "python3 scripts/ted-api-spend.py"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",

@@ -136,6 +136,53 @@ UNSCOPED = """platform_toolsets:
     - hermes-telegram
 """
 
+SAFE_WHATSAPP = """platform_toolsets:
+  whatsapp:
+    - cronjob
+    - ted
+    - vision
+  telegram:
+    - hermes-telegram
+"""
+
+UNSAFE_WHATSAPP = """platform_toolsets:
+  whatsapp:
+    - cronjob
+    - file
+    - ted
+    - vision
+"""
+
+
+def test_safe_whatsapp_toolsets_pass(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, SAFE_WHATSAPP)
+    assert guard.unsafe_whatsapp_toolsets() == []
+
+
+def test_file_tool_is_never_available_in_whatsapp(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, UNSAFE_WHATSAPP)
+    assert guard.unsafe_whatsapp_toolsets() == ["file"]
+
+
+def test_unknown_whatsapp_toolset_fails_closed(guard, tmp_path, monkeypatch):
+    _config(
+        guard,
+        tmp_path,
+        monkeypatch,
+        SAFE_WHATSAPP.replace("    - vision\n", "    - future-power-tool\n"),
+    )
+    assert guard.unsafe_whatsapp_toolsets() == ["future-power-tool"]
+
+
+def test_missing_whatsapp_scope_fails_closed(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, "platform_toolsets:\n  cron:\n    - ted\n")
+    assert guard.unsafe_whatsapp_toolsets() == ["<unscoped>"]
+
+
+def test_unreadable_config_fails_closed(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path / "gone")
+    assert guard.unsafe_whatsapp_toolsets() == ["<unreadable>"]
+
 
 def test_scoped_cron_passes(guard, tmp_path, monkeypatch):
     _config(guard, tmp_path, monkeypatch, SCOPED)
