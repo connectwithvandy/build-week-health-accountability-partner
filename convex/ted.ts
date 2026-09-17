@@ -1045,10 +1045,17 @@ export const listSetupState = internalQuery({
           disagrees: user.status !== (state.ready ? "active" : "onboarding"),
           missing: state.missing,
           blocked: state.blocked,
-          // The two values the gate keeps its own copy of. Returned here, on a
+          // The values the gate keeps its own copy of. Returned here, on a
           // builder read-back, rather than added to getUserMemory, which runs
           // on every single turn and does not need them. Without these a
           // drift check has to guess which store is stale.
+          //
+          // `sex` joined them on 17 Sep. It is not one of `setupStateFor`'s
+          // requirements, so it never appears in `missing`, so the reconcile
+          // had nothing to compare against and planned the same write on every
+          // run: after backfilling 30 users it still reported 29 outstanding.
+          // A report that cannot go quiet cannot tell you anything.
+          sex: user.sex ?? null,
           goal: snapshot.goal ?? null,
           calorieTarget: snapshot.calories ?? null,
           createdAt: user.createdAt,

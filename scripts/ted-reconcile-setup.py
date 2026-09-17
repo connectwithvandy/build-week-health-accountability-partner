@@ -268,8 +268,14 @@ def evidence_for(
         except (TypeError, ValueError):
             unprovable.append(want)
 
+    # Planned only when the two stores actually disagree. `sex` is not one of
+    # `setupStateFor`'s requirements, so it never lands in `missing` and this
+    # block cannot key off that like the others do. Without the comparison it
+    # re-planned the same write forever: the 17 Sep run wrote 30 and the next
+    # dry run still offered 29, which makes "can be closed from local evidence"
+    # a number nobody can act on.
     stored_sex = record.get("sex")
-    if stored_sex in SEX_VALUES:
+    if stored_sex in SEX_VALUES and row.get("sex") != stored_sex:
         profile["sex"] = stored_sex
 
     if "goal" in missing:
