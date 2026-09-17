@@ -1308,6 +1308,113 @@ standing there then, now with more users already behind it.
 - Hermes `SOUL.md` was rolled back from the compressed 5,715-character rewrite to the exact earlier Ted persona recovered from the 9:24 PM request snapshot (11,270 bytes). WhatsApp access and gateway settings were not changed.
 - A static `/privacy` route now answers what is stored, who can see it, how long it is kept, and exactly how to request deletion. The existing landing-page footer links to it. It is live at `https://heyted.vercel.app/privacy` and returned HTTP 200 from an unauthenticated public request. All 9 web tests, lint, and the production build pass; no interactive browser was connected in this session.
 
+## Order 27 — 17 Sep 2026, night, the roadmap's first four, and three faults it did not know about
+
+Roadmap v2 arrived with all 48 tasks marked "Not started". Four of them were
+not, and the first job was finding out which, because planning 23 days on top
+of a status column that is wrong in four places is how the wrong work gets
+done. T00 to T03 were taken in dependency order. All four are closed except
+one bullet, deferred on purpose, and one thing that needs two real people.
+
+### The one that matters
+
+`_load_onboarding_state` returned `{}` for every kind of failure. That file
+holds the 18+ blocks and nothing else does — deliberately, because the
+conversation gets compacted and `userFacts` is writable by the model, so
+neither can hold the one rule that must not be talked around.
+
+So a truncated write or a bad hand-edit emptied every block at once, and
+nothing anywhere said so. The plugin still imported. `ted-gate-guard.py` still
+printed "Gates are on". The most serious alarm in the project would have stayed
+green while the person it was protecting became a new adult user.
+
+Proven on a truncated copy of the live file: 55 users and 1 minor block become
+0, and Ted answers "eat 1200 a day". It now separates the two legitimate empty
+states — no file, and a valid file with no users — from a fault, and refuses
+with `STATE_UNAVAILABLE` rather than an unguarded reply. Raising was rejected:
+Hermes swallows a plugin's import error, so a raise trades an empty state for
+no gates at all until the guard's next 15-minute sweep. The refusal sits in
+`transform_response`, not `pre_gateway_dispatch`, because patch 13 settled that
+a hook must never put its own words into a user's thread.
+
+### The second door
+
+Removing the `file` toolset from WhatsApp (T01) closes one door.
+`vision_analyze` is the other, and the lock does not touch it: its schema takes
+a local file path, and Hermes' `_permitted_host_read_target` says in its own
+docstring "Local backend: any path is permitted (chosen posture)". TERMINAL_ENV
+is unset here, so that was the live posture. Credential files and the
+magic-byte sniff meant a text file was never readable that way; any *image* on
+the laptop was.
+
+Had the lock been applied alone, T01 would have been marked done while the door
+stood open. `_vision_scope_guard` now allows the media cache roots and nothing
+else, resolved before comparison so `..` and symlinks walk out to where they
+really land.
+
+### The deletion that stopped at photos
+
+"delete my data" found 7 of 7 photos and **0 of 29 voice notes**. A voice note
+is transcribed on arrival, so the message holds the words and never the path,
+and nothing else held it either: not `api_content`, not `tool_calls`, not
+`delivery_obligations`, not the session dumps. Recordings of people describing
+their meals survived erasure completely and nothing could say whose they were.
+Matched by arrival time now, claimed only when exactly one person was messaging
+within 60s. All 29 attributed, none ambiguous, none claimed twice.
+
+The same shape of gap sat in the gate's own snapshots: 20 files beside the live
+one, holding every user's profile, written by nine repair scripts and cleared
+by nothing.
+
+### Status, in the roadmap's own words
+
+| Task | Implemented | Tested | Deployed | Unverified |
+|---|---|---|---|---|
+| T00 truth sheet | yes | n/a | n/a | goes stale fast; was wrong twice on the day |
+| T01 file + vision boundary | yes | yes | 22:15 and 22:33 | dedicated OS account, deferred to T04 |
+| T02 two-user separation | yes | yes | n/a (tests) | two real users at once, never observed |
+| T03 fail closed | yes | yes | 22:33 | — |
+| T09 deletion completeness | yes | yes | n/a (operator script) | never run with `--apply` on a real person |
+
+1039 tests at the start of the session, 1118 at the end. Five suites are
+mutation-proven: the isolation set fails 6 when users share one row, the Convex
+set fails 4 when the memory cache ignores the user key, the fail-closed set
+fails 3 when one assertion is dropped from the import probe.
+
+### Rollback
+
+`~/.hermes/config.yaml.bak.pre-t01` holds the pre-lock toolset. Restoring it
+and restarting undoes the `file` lock only; the vision guard and the T03
+refusal live in the repo and come back on any restart, so undoing those is a
+git revert of `6527665` plus a restart. The lock was applied, verified, rolled
+back and re-applied during the session, and the rollback path was exercised for
+real rather than assumed.
+
+### Verified live, not just in tests
+
+A real food photo at 22:41: `vision_analyze` 170KB in 0.08s, `ted_food_lookup`,
+`ted_log_entry`, delivered first attempt with no retries, and
+`ted_vision_path_blocked` still at 0. That is the end-to-end proof the unit
+tests could not give.
+
+### Follow-up, in the order it should be picked up
+
+1. **T04.** Still a laptop. It carries T01's remaining bullet: moving to a VM
+   or container provides the low-privilege boundary once, instead of paying a
+   WhatsApp re-link and an outage twice.
+2. **T35, raised from P2.** `~/.hermes/logs/agent.log` holds 23 of 40 recent
+   user messages verbatim, 2.8 MB of it. `ted-forget-user.py` already says out
+   loud that it cannot reach that log. It undercuts the deletion promise the
+   rest of this session strengthened.
+3. **T41, raised from P3.** `src/lib/hermes/handle-message.ts` returns a
+   hardcoded reply and `scripts/simulate-hermes-message.mjs` posts to it. It
+   looks exactly like a test harness for the live WhatsApp path and tests
+   nothing.
+4. **`known_plugin_toolsets.whatsapp`** is read by neither the lock nor the
+   guard. `spotify` is listed there and not installed, so it is inert — until
+   something is.
+
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
