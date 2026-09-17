@@ -48,6 +48,7 @@ deletion nobody performed is a deletion performed on the wrong person.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -69,6 +70,215 @@ AGENT_LOG = HERMES / "logs" / "agent.log"
 DELETABLE_ROOTS = tuple(CACHE_DIRS)
 
 MEDIA_PATH = re.compile(r"(/[^\s\"'<>|]+\.(?:jpg|jpeg|png|gif|webp|ogg|oga|opus|m4a|mp3|wav|pdf))")
+
+# The gate keeps its own copy of age, weight, goal and target, keyed by a hash
+# rather than a number. `_forget_user` clears the live file when somebody is
+# deleted. It does not clear the snapshots beside it, and nothing else does
+# either: nine repair scripts write one before touching a profile and none of
+# them ever comes back for it. On 17 Sep 2026 there were twenty, holding all
+# 55 users. This reports them. It does not delete them yet.
+GATE_STATE_DIR = HERMES / "state"
+
+
+# Voice notes are not findable the way photos are.
+#
+# `media_for` scrapes paths out of message text, which works for images: all 7
+# on disk on 17 Sep 2026 were found that way. Not one of the 29 voice notes
+# was. A voice note is transcribed on arrival, so the message holds the words
+# and never the path, and nothing else in the database holds it either: not
+# `api_content`, not `tool_calls`, not `delivery_obligations`, not the session
+# dumps. Somebody's voice describing their meals therefore survived "delete my
+# data" completely, and nothing could even say whose it was.
+#
+# Time is the only link left. A voice note is written when it arrives, and the
+# message it produced lands seconds later. At +/-60s every one of the 29 real
+# files resolved to exactly one person, none ambiguous, none unowned; the
+# window only smears at 180s (2 ambiguous) and 600s (7).
+#
+# The rule is exactly-one-owner. Nobody matching, or two people matching, means
+# the file is reported and left. Leaving one behind is visible and fixable by
+# hand. Deleting somebody else's voice note is neither.
+VOICE_WINDOW_SECONDS = 60
+
+
+def _person_identifiers(session_ids: list[str]) -> set[str]:
+    if not session_ids:
+        return set()
+    con = connect_ro()
+    try:
+        marks = ",".join("?" * len(session_ids))
+        rows = con.execute(
+            "select distinct coalesce(user_id,''), coalesce(chat_id,'') "
+            f"from sessions where id in ({marks})",
+            session_ids,
+        ).fetchall()
+    finally:
+        con.close()
+    return {value for row in rows for value in row if value}
+
+
+def unreferenced_audio_for(
+    session_ids: list[str], window: float = VOICE_WINDOW_SECONDS
+) -> tuple[list[Path], list[Path]]:
+    """(this person's voice notes, the ones too ambiguous to touch)."""
+    mine = _person_identifiers(session_ids)
+    if not mine:
+        return [], []
+    con = connect_ro()
+    try:
+        stamps = con.execute(
+            "select m.timestamp, coalesce(s.user_id, s.chat_id, '') "
+            "from messages m join sessions s on m.session_id = s.id "
+            "where s.source='whatsapp' and m.role='user' and m.timestamp is not null"
+        ).fetchall()
+    finally:
+        con.close()
+
+    owned: list[Path] = []
+    ambiguous: list[Path] = []
+    audio_dir = HERMES / "cache" / "audio"
+    if not audio_dir.is_dir():
+        return owned, ambiguous
+    for path in sorted(audio_dir.iterdir()):
+        if not path.is_file():
+            continue
+        try:
+            when = path.stat().st_mtime
+        except OSError:
+            continue
+        owners = {who for stamp, who in stamps if who and abs(stamp - when) <= window}
+        if owners == mine or (len(owners) == 1 and owners <= mine):
+            owned.append(path)
+        elif owners & mine:
+            ambiguous.append(path)
+    return owned, ambiguous
+
+
+def gate_key(sender_id: str) -> str:
+    """The gate's key for one user, derived the way the gate derives it.
+
+    Mirrors `_user_state_key` in hermes/ted_safety_gates/__init__.py. Copied
+    rather than imported because this has to run with the gateway stopped and
+    the plugin possibly uninstalled. If that function ever changes, this finds
+    nothing and says so rather than reporting a clean result: the count of
+    derived keys is printed next to the count of records found, so a silent
+    miss reads as 2 keys, 0 records instead of looking like success.
+    """
+    identity = f"whatsapp:{sender_id}".encode("utf-8")
+    return f"whatsapp:sha256:{hashlib.sha256(identity).hexdigest()}"
+
+
+def gate_keys_for(session_ids: list[str]) -> set[str]:
+    """Every gate key this person's sessions could be stored under."""
+    if not session_ids:
+        return set()
+    con = connect_ro()
+    try:
+        marks = ",".join("?" * len(session_ids))
+        rows = con.execute(
+            "select distinct coalesce(user_id,''), coalesce(chat_id,'') "
+            f"from sessions where id in ({marks})",
+            session_ids,
+        ).fetchall()
+    finally:
+        con.close()
+    return {gate_key(value) for row in rows for value in row if value}
+
+
+def scrub_gate_snapshots(keys: set[str]) -> tuple[int, int, list[str]]:
+    """Remove these keys from the snapshots, leaving every other user intact.
+
+    Snapshots only. The live files belong to the running gateway, which
+    rewrites them wholesale from memory, so editing one from out here either
+    loses to the gateway or clobbers state newer than what we read. The gate's
+    own `_forget_user` already clears the live pair and leaves a tombstone;
+    this is the half nothing owned.
+
+    One key is removed, never the file. Nine repair scripts write these before
+    touching a profile and they are the only undo those scripts have. Dropping
+    a snapshot to erase one person would take the rollback away from the other
+    fifty-four.
+    """
+    scrubbed_files = 0
+    scrubbed_records = 0
+    failures: list[str] = []
+    if not keys or not GATE_STATE_DIR.is_dir():
+        return 0, 0, failures
+
+    for path in sorted(GATE_STATE_DIR.glob("ted-safety-gates-*.json*")):
+        if path.name.endswith(".json"):
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # Already unreadable, so it is not a store anybody can restore
+            # from. Left alone rather than rewritten into something that looks
+            # repaired.
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        removed = 0
+        listed = payload.get("user_keys")
+        if isinstance(listed, list):
+            kept = [k for k in listed if k not in keys]
+            removed = len(listed) - len(kept)
+            if removed:
+                payload["user_keys"] = kept
+        else:
+            users = payload.get("users") if isinstance(payload.get("users"), dict) else payload
+            for key in keys & set(users):
+                del users[key]
+                removed += 1
+        if not removed:
+            continue
+
+        temporary = path.with_name(path.name + ".scrub.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        except OSError as error:
+            temporary.unlink(missing_ok=True)
+            failures.append(f"{path.name}: {error}")
+            continue
+        scrubbed_files += 1
+        scrubbed_records += removed
+
+    return scrubbed_files, scrubbed_records, failures
+
+
+def gate_records_for(keys: set[str]) -> list[tuple[Path, str, list[str]]]:
+    """Gate state files still holding a record for these keys.
+
+    A file whose name still ends in .json is the live one the gate maintains.
+    Everything else is a snapshot somebody took by hand.
+    """
+    found: list[tuple[Path, str, list[str]]] = []
+    if not keys or not GATE_STATE_DIR.is_dir():
+        return found
+    for path in sorted(GATE_STATE_DIR.glob("ted-safety-gates-*.json*")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        # the disclosure file is a list of keys, the onboarding file a map
+        listed = payload.get("user_keys")
+        if isinstance(listed, list):
+            for key in sorted(keys & set(listed)):
+                found.append((path, key, ["disclosure-sent"]))
+            continue
+        users = payload.get("users", payload)
+        if not isinstance(users, dict):
+            continue
+        for key in sorted(keys & set(users)):
+            record = users[key]
+            found.append((path, key, sorted(record) if isinstance(record, dict) else []))
+    return found
 
 
 def connect_ro() -> sqlite3.Connection:
@@ -211,11 +421,41 @@ def main() -> int:
     print(f"  {len(c['dumps']):>5}  request dumps on disk")
     print(f"  {c['obligations']:>5}  delivery obligations (these carry reply text)")
     print(f"  {c['routing']:>5}  routing entries")
-    print(f"  {len(media):>5}  photos and voice notes")
+    voice, voice_ambiguous = unreferenced_audio_for(session_ids)
+    print(f"  {len(media):>5}  photos and voice notes found by path")
+    print(f"  {len(voice):>5}  voice notes matched by arrival time "
+          f"(+/-{VOICE_WINDOW_SECONDS:g}s, one owner only)")
+    if voice_ambiguous:
+        print(f"  {len(voice_ambiguous):>5}  voice note(s) LEFT: more than one person "
+              f"was messaging at that moment")
+        for path in voice_ambiguous[:4]:
+            print(f"         {path}")
     for p in media[:8]:
         print(f"         {p}")
     if len(media) > 8:
         print(f"         ... and {len(media) - 8} more")
+
+    keys = gate_keys_for(session_ids)
+    records = gate_records_for(keys)
+    live = [r for r in records if r[0].name.endswith(".json")]
+    snapshots = [r for r in records if not r[0].name.endswith(".json")]
+    print(f"\n  {len(records):>5}  gate state records, from {len(keys)} derived key(s)")
+    for path, _key, fields in live:
+        print(f"         live   {path.name}  [{', '.join(fields[:6])}]")
+    for path, _key, fields in snapshots:
+        print(f"         SNAP   {path.name}  [{', '.join(fields[:6])}]")
+    if keys and not records:
+        print("         none. Either this person never reached the gate, or the")
+        print("         key derivation no longer matches the gate's. Check before")
+        print("         treating this as clean.")
+    if snapshots:
+        print(f"\n  {len(snapshots)} snapshot(s) will have this one record removed.")
+        print("  The files stay: they are the undo for the repair scripts, and the")
+        print("  other users in them are untouched.")
+    if live:
+        print("\n  the live file(s) above are left to the gate's own _forget_user,")
+        print("  which clears them and leaves a tombstone. Editing them from here")
+        print("  would race the running gateway.")
 
     print(f"\n  not reachable: {AGENT_LOG} holds message text and rotates on its")
     print( "  own. Editing a log the gateway is writing to is worse than leaving it.")
@@ -232,7 +472,7 @@ def main() -> int:
     # Media first: once the messages are gone nothing links a hashed filename
     # to a person, so a failure here must not be able to strand a file.
     removed_media = 0
-    for path in media:
+    for path in list(media) + list(voice):
         if not any(path.is_relative_to(root) for root in DELETABLE_ROOTS):
             continue
         try:
@@ -243,6 +483,14 @@ def main() -> int:
 
     rows = delete_rows("delivery_obligations", "chat_id", c["chats"])
     rows += delete_rows("gateway_routing", "session_key", c["keys"])
+
+    # `keys` was derived above, before this block. It has to be: the derivation
+    # reads the sessions table and `hermes sessions delete` below destroys it,
+    # so deriving here would find nothing and report a clean scrub. Same class
+    # of ordering constraint as the media collection.
+    scrubbed_files, scrubbed_records, scrub_failures = scrub_gate_snapshots(keys)
+    for failure in scrub_failures:
+        print(f"  could not scrub {failure}")
 
     deleted_sessions = 0
     for sid in session_ids:
@@ -257,6 +505,11 @@ def main() -> int:
 
     print(f"\n  {deleted_sessions}/{len(session_ids)} sessions deleted, "
           f"{removed_media} media files removed, {rows} other rows removed.")
+    print(f"  {scrubbed_records} gate record(s) scrubbed from "
+          f"{scrubbed_files} snapshot(s).")
+    if voice_ambiguous:
+        print(f"  {len(voice_ambiguous)} voice note(s) deliberately left: one owner "
+              "could not be established.")
     print("  Convex is a separate half and is untouched: the user's own "
           "\"delete my data\" does that.\n")
     return 0 if deleted_sessions == len(session_ids) else 1
