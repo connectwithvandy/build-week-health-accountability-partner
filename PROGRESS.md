@@ -1386,12 +1386,22 @@ Ordered by what a real user hits first.
 - `main` is **52 commits ahead** of `ship/landing-v6` and 0 behind, and in sync
   with `origin/main`. The old warning that main was 11 behind, and the held-back
   `c2d82be`, no longer apply.
-- The test suite is **743 Python tests** (1,404 subtests) and **144 vitest
-  tests**, measured 16 Sep — earlier counts of 81, 464, 179, 536 and 78 are all
-  superseded. Run the
+- The test suite is **964 Python tests** (2,120 subtests) and **164 vitest
+  tests**, measured 17 Sep — earlier counts of 81, 464, 179, 536, 78, 743 and
+  144 are all superseded. Run the
   Python tests with pytest and the root `conftest.py`; `python3 -m unittest` skips
   conftest and writes fixture keys into `~/.hermes/state`, which happened again on
   4 Sep and had to be cleaned by hand.
+- **Which python.** Several scripts import Hermes' own `cron.jobs`, which needs
+  PyYAML, and any script that rewrites a schedule also needs `croniter` or
+  `update_job` stores `next_run_at: null` and the reminder silently never fires
+  again. The repo's `.venv` has the first and not the second. Use
+  `~/.hermes/hermes-agent/venv/bin/python3` for anything touching jobs.json;
+  `ted-spread-reminder-times.py` and `ted-repair-ghost-jobs.py` now refuse to
+  start under an interpreter that cannot do the job, and
+  `ted-repair-ghost-jobs.py` finds that state whatever made it.
+- **Lint is clean**, 0 errors and 0 warnings. The `index` warning in
+  `scripts/recap/card.mjs` was an unused parameter and is gone.
 - The live landing page is the **v8** design, not v6. Only the filename
   (`public/landing-v6.html`) still says v6.
 - Test counts and branch positions quoted inside the dated order entries above are

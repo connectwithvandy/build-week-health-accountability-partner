@@ -61,7 +61,7 @@ function bubble(body, mine) {
 
 /** One dot per day, filled where they logged something. */
 function dayStrip(days) {
-  return div({ gap: 18 }, days.map((day, index) => div(
+  return div({ gap: 18 }, days.map((day) => div(
     { flexDirection: "column", alignItems: "center", gap: 12 },
     [
       div({
