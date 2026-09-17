@@ -1357,6 +1357,70 @@ class CalorieProfileParsingTest(unittest.TestCase):
         self.assertEqual(profile.activity, "sedentary")
 
 
+class AgeStorageBandTest(unittest.TestCase):
+    """Order 05: what `_remember_age` will and will not write to its own store.
+
+    The parsing tests above keep stray numbers from being read as an age. This
+    one covers the door they do not cover: a number that reaches the writer
+    anyway. On 17 Sep 2026 Vandy's 33 became 3, which set the sticky `minor`
+    flag and refused her every calorie number until the state file was edited
+    by hand and the gateway restarted.
+    """
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_the_live_incident_cannot_happen_again(self) -> None:
+        """33 losing a digit must not cost somebody the product."""
+        key = "whatsapp:sha256:vandy"
+        gates._remember_age(key, 33)
+        gates._remember_age(key, 3)
+        self.assertEqual(gates._stored_age(key), 33)
+        self.assertFalse(gates._is_known_minor(key))
+
+    def test_an_implausible_age_is_refused_from_a_blank_record(self) -> None:
+        """With nothing stored there is no 33 to fall back on, and 3 is still not an age."""
+        for age in (0, 3, 4, 121, 900):
+            with self.subTest(age=age):
+                key = f"whatsapp:sha256:blank{age}"
+                gates._remember_age(key, age)
+                self.assertIsNone(gates._stored_age(key))
+                self.assertFalse(gates._is_known_minor(key))
+
+    def test_a_real_minor_is_still_blocked(self) -> None:
+        """The band must not become a way around the under-18 refusal."""
+        for age in (13, 15, 17):
+            with self.subTest(age=age):
+                key = f"whatsapp:sha256:minor{age}"
+                gates._remember_age(key, age)
+                self.assertEqual(gates._stored_age(key), age)
+                self.assertTrue(gates._is_known_minor(key))
+
+    def test_an_ordinary_adult_age_still_stores(self) -> None:
+        for age in (18, 33, 71, 120):
+            with self.subTest(age=age):
+                key = f"whatsapp:sha256:adult{age}"
+                gates._remember_age(key, age)
+                self.assertEqual(gates._stored_age(key), age)
+                self.assertFalse(gates._is_known_minor(key))
+
+    def test_the_band_matches_the_one_convex_enforces(self) -> None:
+        """convex/model.ts stores `age: {min: 5, max: 120}`. Two stores, one rule."""
+        self.assertEqual((gates.AGE_MIN_YEARS, gates.AGE_MAX_YEARS), (5, 120))
+
+    def test_a_later_minor_answer_still_wins_over_a_stored_adult(self) -> None:
+        """Ted keeps the hole shut: 33 then a real 15 must still lock the account."""
+        key = "whatsapp:sha256:changed"
+        gates._remember_age(key, 33)
+        gates._remember_age(key, 15)
+        self.assertTrue(gates._is_known_minor(key))
+
+
 class CalorieGateReachTest(unittest.TestCase):
     """Order 05: the 18+ check belongs to the target flow, not every mention."""
 

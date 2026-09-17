@@ -234,14 +234,52 @@ def _is_known_minor(user_key: str) -> bool:
     return bool(_onboarding(user_key).get("minor"))
 
 
+# The band `convex/model.ts` already enforces on the `age` column, repeated
+# here because this file keeps its own copy of the age and nothing checked it.
+#
+# On 17 Sep 2026 Vandy's stored 33 was overwritten with 3. Convex would have
+# refused that write — 3 is below the minimum — but the gate's own JSON has no
+# schema, so it landed, set `minor`, and locked her out of every calorie number
+# in the product. The flag is sticky by design, so telling Ted "i'm 33" could
+# not undo it; it took a hand-edit of the state file and a gateway restart.
+#
+# The two stores disagreeing about what an age may be is the actual fault. A
+# number this file will not accept should be the same number Convex will not
+# accept, and now it is.
+AGE_MIN_YEARS = 5
+AGE_MAX_YEARS = 120
+
+
 def _remember_age(user_key: str, age: int | None) -> None:
     """Record an age the user stated. Never downgrades a known minor."""
     if not user_key or age is None:
         return
+    # Refused before the minor check, deliberately. An implausible age must not
+    # be able to set the flag on its way to being rejected, which is exactly
+    # the order that cost Vandy her account.
+    if not (AGE_MIN_YEARS <= age <= AGE_MAX_YEARS):
+        LOGGER.warning(
+            "ted_age_refused_implausible user_key=%s age=%s band=%s-%s",
+            user_key,
+            age,
+            AGE_MIN_YEARS,
+            AGE_MAX_YEARS,
+        )
+        return
     if _is_known_minor(user_key):
         return
-    if _stored_age(user_key) == age:
+    stored = _stored_age(user_key)
+    if stored == age:
         return
+    # In band and still a big jump: plausible enough to store, odd enough to
+    # want a line in the log. Ankie reads 71 in this file and 38 in Convex, and
+    # nothing anywhere noticed. This does not refuse the write — refusing would
+    # reopen the under-18 hole the parsing tests exist to keep shut — it just
+    # stops the next one being invisible.
+    if stored is not None and abs(stored - age) >= 10:
+        LOGGER.warning(
+            "ted_age_jumped user_key=%s from=%s to=%s", user_key, stored, age
+        )
     fields: dict[str, Any] = {"age": age}
     if age < 18:
         fields["minor"] = True
