@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
  */
 const html = readFileSync(join(process.cwd(), "public/landing-v6.html"), "utf8");
 
-const openingMessage = "Okay Ted, let's do this 💪";
+const openingMessage = "Okay Ted, let's do this ❤️";
 
 /** The page is static, so it cannot read NEXT_PUBLIC_TED_WHATSAPP_NUMBER at
  *  runtime; the number is written into the markup, and this constant is what
@@ -69,7 +69,7 @@ describe("the v6 landing page", () => {
     for (const href of links) {
       expect(href).toContain(`wa.me/${whatsappNumber}`);
       expect(decodeURIComponent(href)).toContain(openingMessage);
-      expect(decodeURIComponent(href)).toContain("💪");
+      expect(decodeURIComponent(href)).toContain("❤️");
     }
   });
 
