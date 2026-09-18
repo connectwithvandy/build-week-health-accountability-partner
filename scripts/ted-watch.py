@@ -50,6 +50,16 @@ flapping gate can never mask a dead link.
     python3 scripts/ted-watch.py --install    # load the launchd job, then exit
     python3 scripts/ted-watch.py --install-awake   # load the stay-awake job
 
+WHAT 19 SEP 2026 ADDED. `check_silent`. `check_dropped` watches a reply that
+was written and could not be sent; nothing watched a turn that wrote nothing at
+all. On 4 Sep 2026 two people said hello, got 402 on the primary model and on
+the fallback, and were never answered — found fifteen days later by a check
+written for something else. It is written against the outcome rather than the
+error string, because the next cause will not be a 402.
+
+Also fixed there: the logged-out alert answered for whichever component failed
+first, so a dead model during a WhatsApp logout was announced as the logout.
+
 WHAT 17 SEP 2026 ADDED. `check_power`. The host was the weakest part of the
 system and nothing watched it: one unsupervised `caffeinate` in a Terminal
 window, on battery, with fifty-six chats depending on it. A watcher that reports
@@ -490,6 +500,111 @@ def check_dropped() -> tuple[bool, str]:
     waited = f"{hours:.0f}h" if hours < 48 else f"{hours / 24:.0f} days"
     people = "person" if len(rows) == 1 else "people"
     return False, f"{len(rows)} {people} never got a reply, longest waiting {waited}"
+
+
+SILENT_WINDOW_DAYS = 7
+
+# A turn in flight is not a turn that failed. The slowest honest reply in the
+# record is Ankiita's thirty-minute hang on 15 Sep 2026, so anything younger
+# than this is left alone; the watcher runs every fifteen minutes and will
+# catch it on a later pass if it really did die.
+SILENT_GRACE_SECONDS = 45 * 60
+
+
+def ordering_check():
+    """ted-ordering-check.py as a module, or None if it cannot be loaded.
+
+    Read through T08's own check rather than keeping a second copy of the word
+    "unanswered" here. Which message counts as answered is exactly the kind of
+    fact that goes wrong when two files answer it differently, and that one has
+    the tests, the per-person grouping and the 119 mid-turn arrivals behind it.
+    """
+    import importlib.util
+
+    source = Path(__file__).resolve().parent / "ted-ordering-check.py"
+    if not source.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("ted_ordering_check", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:  # noqa: BLE001 - a broken helper must not break the check
+        return None
+
+
+def check_silent() -> tuple[bool, str]:
+    """Anyone who wrote to Ted and had nothing composed for them at all.
+
+    `check_dropped` watches the ledger, so it sees a reply that was written and
+    could not be sent. On 4 Sep 2026 there was no reply to write. OpenRouter
+    answered 402 on the primary model and on the fallback, the turn ended
+    having composed nothing, and nothing anywhere recorded that a person had
+    been left standing there. Palak and Vishwas Mishra each said "Okay Ted,
+    let's do this", heard nothing, and never wrote again. Vinit answered Ted's
+    own question at 01:51 and got the same silence. It took fifteen days and a
+    check written for a different task to find them.
+
+    Half of that is fixed: Hermes patch 2 and `display.provider_messages` mean
+    a provider failure now produces a reply in Ted's voice. The half this
+    closes is that nobody knew.
+
+    Written against the outcome, not the cause. A 402, a crash, a hung turn and
+    a gate that refuses without saying so all look identical from where the
+    person sits — they wrote to Ted and nothing came back — and a watcher
+    pinned to the error string of the last outage only ever catches the last
+    outage.
+
+    THE LINE BETWEEN THIS AND `check_dropped`. A delivery obligation created
+    after their message means Ted composed something; whether it arrived is the
+    other check's question, and reporting both would wake Vandy twice for one
+    person. No obligation at all is this one: nothing was written, so there is
+    nothing to retry and no apology waiting in a queue either.
+    """
+    if not STATE_DB.exists():
+        return True, "no message history yet"
+
+    ordering = ordering_check()
+    if ordering is None:
+        return True, "cannot load ted-ordering-check.py"
+
+    try:
+        database = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return True, f"cannot open the message history: {exc}"
+    database.row_factory = sqlite3.Row
+    try:
+        unanswered = ordering.unanswered(ordering.conversation(database, SILENT_WINDOW_DAYS))
+        fresh = time.time() - SILENT_GRACE_SECONDS
+        silent = []
+        for row in unanswered:
+            if row["timestamp"] > fresh:
+                continue
+            attempted = database.execute(
+                "SELECT 1 FROM delivery_obligations "
+                "WHERE chat_id = ? AND created_at > ? LIMIT 1",
+                (row["chat_id"], row["timestamp"]),
+            ).fetchone()
+            if attempted:
+                continue
+            silent.append(row)
+    except sqlite3.Error as exc:
+        return True, f"cannot read the message history: {exc}"
+    finally:
+        database.close()
+
+    if not silent:
+        return True, "every message got a turn that wrote something"
+
+    people = {row["chat_id"] for row in silent}
+    oldest = min(row["timestamp"] for row in silent)
+    hours = (time.time() - oldest) / 3600
+    waited = f"{hours:.0f}h" if hours < 48 else f"{hours / 24:.0f} days"
+    who = "person" if len(people) == 1 else "people"
+    return False, (
+        f"{len(people)} {who} wrote and Ted composed nothing back, "
+        f"longest waiting {waited}"
+    )
 
 
 RUNAWAY_STATE = HERMES / "state" / "ted-runaway-conversations.json"
@@ -1127,6 +1242,7 @@ def main() -> int:
     link_ok, link_detail, needs_human = check_link()
     model_ok, model_detail = check_model()
     dropped_ok, dropped_detail = check_dropped()
+    silent_ok, silent_detail = check_silent()
     runaway_ok, runaway_detail = check_runaway()
     power_ok, power_detail = check_power()
     jobs_ok, jobs_detail = check_jobs()
@@ -1142,6 +1258,7 @@ def main() -> int:
         ("link", link_ok, "Ted's WhatsApp"),
         ("model", model_ok, "Ted's model"),
         ("dropped", dropped_ok, "Someone Ted never answered"),
+        ("silent", silent_ok, "Someone Ted wrote nothing back to"),
         ("runaway", runaway_ok, "A conversation Ted stopped answering"),
         ("power", power_ok, "The laptop Ted runs on"),
         ("jobs", jobs_ok, "Ted's reminders"),
@@ -1164,7 +1281,7 @@ def main() -> int:
                 "Ted is still answering people, without the 18+ check or the "
                 "no-deficit rule. On the laptop: npm run gates:guard"
             )
-        elif needs_human:
+        elif key == "link" and needs_human:
             title = "🔴 Ted is logged out of WhatsApp"
             body = (
                 f"{link_detail} at {stamp}. Retrying cannot fix this, it needs "
@@ -1202,6 +1319,16 @@ def main() -> int:
                 "never fires looks exactly like a quiet day. On the laptop: "
                 "npm run ordering, then hermes cron list."
             )
+        elif key == "silent":
+            title = f"⚠️ {label}"
+            body = (
+                f"{silent_detail}.\n\n"
+                "Not a slow reply and not a dropped one: the turn ended having "
+                "written nothing, so there is no apology sitting in a queue "
+                "either. Two people were lost this way on 4 Sep and nobody "
+                "knew for fifteen days. On the laptop: npm run ordering, then "
+                "find the session in ~/.hermes/logs/agent.log"
+            )
         elif key == "dropped":
             title = f"⚠️ {label}"
             body = (
@@ -1218,6 +1345,7 @@ def main() -> int:
             "link": link_detail,
             "model": model_detail,
             "dropped": dropped_detail,
+            "silent": silent_detail,
             "power": power_detail,
             "jobs": jobs_detail,
         }.get(key, stamp)

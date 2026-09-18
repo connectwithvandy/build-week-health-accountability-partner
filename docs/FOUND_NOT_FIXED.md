@@ -84,7 +84,16 @@ not be sent. Nothing watches for a turn that ended having composed nothing at
 all, which is what a 402 produces. Found by `npm run ordering`, written for
 T08, fifteen days late. Full evidence in `docs/T08_ORDERING.md` §4.
 
-**Not acted on** because it needs a decision about what watches what, and
-because the three affected people are fifteen days gone — a message to them now
-is a product decision, not a repair, and nobody is messaged without Vandy
-saying so.
+**Fixed 19 Sep 2026.** `check_silent` in `ted-watch.py`, running every fifteen
+minutes under `ai.ted.gatewatch`. It reads T08's own `unanswered` rather than a
+second copy of the word, and separates the two failures by asking whether a
+delivery obligation exists after the person's message: one exists means Ted
+composed something that did not arrive, which is `check_dropped`'s; none at all
+means nothing was written. Proved against the real event — widened to a 30-day
+window it reports the three, and correctly leaves out GT, whose reply was
+written and dropped. It is written against the outcome, not the 402, because
+the next cause will not be a 402.
+
+**Still not acted on:** the three affected people. Fifteen days on, a message to
+them is a product decision rather than a repair, and nobody is messaged without
+Vandy saying so.

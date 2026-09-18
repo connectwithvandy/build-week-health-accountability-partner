@@ -421,6 +421,197 @@ class TestCheckDropped:
         assert ok is True
 
 
+class TestCheckSilent:
+    """The turn that ended having written nothing, and nobody knew.
+
+    4 Sep 2026: Palak and Vishwas Mishra each said "Okay Ted, let's do this"
+    and were met with silence, because OpenRouter answered 402 on the primary
+    model and on the fallback. Neither ever wrote again. `check_dropped` could
+    not have seen it — there was no reply to drop — and it took fifteen days
+    and a check written for T08 to find them.
+    """
+
+    def _history(self, watch, tmp_path, monkeypatch, messages, obligations=()):
+        """A gateway database with the two tables this reads.
+
+        `messages`/`sessions` are what T08's check reads, and
+        `delivery_obligations` is the line between "wrote nothing" and "wrote
+        something that never arrived".
+        """
+        import sqlite3
+
+        db = tmp_path / "state.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, chat_id TEXT, "
+            "display_name TEXT, source TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, "
+            "role TEXT, timestamp REAL, platform_message_id TEXT, content TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE delivery_obligations ("
+            "obligation_id TEXT PRIMARY KEY, chat_id TEXT, state TEXT, "
+            "created_at REAL, last_error TEXT)"
+        )
+        for chat in {chat for chat, _, _ in messages}:
+            conn.execute(
+                "INSERT INTO sessions VALUES (?,?,?,?)",
+                (chat, chat, chat, "whatsapp"),
+            )
+        for index, (chat, role, when) in enumerate(messages, start=1):
+            conn.execute(
+                "INSERT INTO messages VALUES (?,?,?,?,?,?)",
+                (index, chat, role, when, f"msg{index}", "hello"),
+            )
+        for index, (chat, state, when) in enumerate(obligations):
+            conn.execute(
+                "INSERT INTO delivery_obligations VALUES (?,?,?,?,?)",
+                (f"ob{index}", chat, state, when, ""),
+            )
+        conn.commit()
+        conn.close()
+        monkeypatch.setattr(watch, "STATE_DB", db)
+        return db
+
+    def test_no_history_is_not_a_failure(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "STATE_DB", tmp_path / "nope.db")
+        ok, detail = watch.check_silent()
+        assert ok is True
+        assert "no message history" in detail
+
+    def test_an_answered_message_reads_clear(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 7200),
+            ("palak", "assistant", now - 7100),
+        ])
+        ok, detail = watch.check_silent()
+        assert ok is True
+        assert "wrote something" in detail
+
+    def test_a_turn_that_composed_nothing_is_reported(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 7200),
+        ])
+        ok, detail = watch.check_silent()
+        assert ok is False
+        assert "1 person wrote and Ted composed nothing back" in detail
+        assert "2h" in detail
+
+    def test_a_written_reply_that_never_sent_belongs_to_the_other_check(
+        self, watch, tmp_path, monkeypatch
+    ):
+        """GT, 11 Sep 2026. Ted wrote to him and the link died carrying it.
+
+        That is `check_dropped`'s, and counting it here too would wake Vandy
+        twice about one person and tell her the wrong thing once.
+        """
+        import time
+
+        now = time.time()
+        self._history(
+            watch, tmp_path, monkeypatch,
+            [("gt", "user", now - 7200)],
+            [("gt", "abandoned", now - 7100)],
+        )
+        ok, detail = watch.check_silent()
+        assert ok is True
+        assert "wrote something" in detail
+
+    def test_a_turn_still_in_flight_is_left_alone(self, watch, tmp_path, monkeypatch):
+        """Ankiita's slowest honest reply took thirty minutes. Not a fault."""
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("ankiita", "user", now - 120),
+        ])
+        ok, _ = watch.check_silent()
+        assert ok is True
+
+    def test_two_people_reads_as_people(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 7200),
+            ("vishwas", "user", now - 7000),
+        ])
+        ok, detail = watch.check_silent()
+        assert ok is False
+        assert "2 people wrote" in detail
+
+    def test_one_person_writing_twice_is_one_person(self, watch, tmp_path, monkeypatch):
+        """Palak sent two messages a minute apart. She is one person waiting."""
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 7200),
+            ("palak", "user", now - 7140),
+        ])
+        ok, detail = watch.check_silent()
+        assert ok is False
+        assert "1 person wrote" in detail
+
+    def test_a_later_reply_closes_it(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 7200),
+            ("palak", "user", now - 7140),
+            ("palak", "assistant", now - 3600),
+        ])
+        ok, _ = watch.check_silent()
+        assert ok is True
+
+    def test_an_ancient_silence_falls_out_of_the_window(self, watch, tmp_path, monkeypatch):
+        """The real 4 Sep rows are older than this window and stay quiet.
+
+        Deliberate: the alarm is for noticing today, and the four from
+        September are written down in docs/T08_ORDERING.md instead.
+        """
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("palak", "user", now - 30 * 24 * 3600),
+        ])
+        ok, _ = watch.check_silent()
+        assert ok is True
+
+    def test_days_are_reported_once_it_is_long_enough(self, watch, tmp_path, monkeypatch):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [
+            ("vinit", "user", now - 4 * 24 * 3600),
+        ])
+        ok, detail = watch.check_silent()
+        assert ok is False
+        assert "4 days" in detail
+
+    def test_a_missing_ordering_check_does_not_crash_the_watcher(
+        self, watch, tmp_path, monkeypatch
+    ):
+        import time
+
+        now = time.time()
+        self._history(watch, tmp_path, monkeypatch, [("palak", "user", now - 7200)])
+        monkeypatch.setattr(watch, "ordering_check", lambda: None)
+        ok, detail = watch.check_silent()
+        assert ok is True
+        assert "ted-ordering-check.py" in detail
+
+
 class TestCheckRunaway:
     """The conversation cap must never be the thing nobody hears about.
 
@@ -1090,6 +1281,7 @@ class TestOneSimulatedFailureOneAlert:
         monkeypatch.setattr(watch, "check_link", lambda: (True, "connected", False))
         monkeypatch.setattr(watch, "check_model", lambda: (True, "answering"))
         monkeypatch.setattr(watch, "check_dropped", lambda: (True, "nobody waiting"))
+        monkeypatch.setattr(watch, "check_silent", lambda: (True, "wrote something"))
         monkeypatch.setattr(watch, "check_runaway", lambda: (True, "none"))
         monkeypatch.setattr(watch, "check_power", lambda: (True, "plugged in"))
         monkeypatch.setattr(watch, "check_jobs", lambda: (True, "on time"))
@@ -1117,6 +1309,43 @@ class TestOneSimulatedFailureOneAlert:
         assert "WhatsApp" in title
         # Actionable: it has to say what to do, not only that something broke.
         assert "hermes whatsapp" in body
+
+    def test_a_turn_that_wrote_nothing_produces_one_alert(
+        self, watch, tmp_path, monkeypatch
+    ):
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_silent=(False, "2 people wrote and Ted composed nothing back, "
+                                 "longest waiting 3h"),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 1
+        title, body = sent[0]
+        assert "wrote nothing back" in title
+        assert "npm run ordering" in body
+
+    def test_a_logged_out_link_does_not_answer_for_the_model(
+        self, watch, tmp_path, monkeypatch
+    ):
+        """Two failures at once, each described as itself.
+
+        The logged-out branch sat ahead of every per-component branch, so a
+        dead model during a WhatsApp logout was announced as the logout, with
+        the QR instructions attached. Two things broken and one of them
+        invisible is how the 8 Sep outage ran for seventeen hours.
+        """
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_link=(False, "logged out", True),
+            check_model=(False, "the Anthropic credit balance is empty"),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 2
+        bodies = {title: body for title, body in sent}
+        model = next(body for title, body in sent if "model" in title)
+        assert "credit balance is empty" in model
+        assert "hermes whatsapp" not in model
+        assert any("logged out of WhatsApp" in title for title in bodies)
 
     def test_a_reminder_that_stopped_firing_produces_one_alert(
         self, watch, tmp_path, monkeypatch

@@ -117,10 +117,17 @@ not you, it's me 🙈 rough patch on my end. don't break up with me yet, give it
 another go in a minute?"* — which is exactly the text sitting in the one
 abandoned obligation from 11 Sep. Neither existed on 4 Sep.
 
-**What is not fixed is that nobody knew.** Two people were lost on a Thursday
+**What was not fixed is that nobody knew.** Two people were lost on a Thursday
 afternoon and it took a check written for a different task, fifteen days later,
-to find them. `ted-watch.py` watches the abandoned state in the ledger; nothing
+to find them. `ted-watch.py` watched the abandoned state in the ledger; nothing
 watched for a turn that ended without composing anything at all.
+
+*Closed 19 Sep 2026.* `check_silent` in `ted-watch.py` is that watcher, running
+every fifteen minutes and alerting off WhatsApp. It calls `unanswered` in this
+file rather than restating it, so there is one definition of an unanswered
+message, and it reports only the messages with no delivery obligation after
+them — a written reply that could not be sent stays `check_dropped`'s, so one
+person cannot raise two alarms saying different things.
 
 These four age out of the window on 4 October, at which point this check goes
 green on its own. That is the wrong reason for a check to go green, so it is
