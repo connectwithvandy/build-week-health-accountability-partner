@@ -1,6 +1,6 @@
 # Hermes patches
 
-Twelve fixes now live *below* Ted's plugin, in the Hermes gateway
+Seventeen fixes now live *below* Ted's plugin, in the Hermes gateway
 itself (`~/.hermes/hermes-agent`). A plugin cannot reach them: the strings are
 emitted by Hermes' own retry machinery, and `VALID_HOOKS` has no hook for
 outbound gateway status messages.
@@ -13,7 +13,7 @@ destroyed, but the gateway silently goes back to leaking model names into
 WhatsApp and charging laptop sleep to the provider — which is why this is
 checked rather than remembered.
 
-`npm run gates:guard` reports whether all twelve patches are still applied, alongside
+`npm run gates:guard` reports whether all seventeen patches are still applied, alongside
 its existing gate checks. It treats a missing patch as a warning, not a stop:
 an unpatched Ted is noisy, but he still refuses under-18s, still never returns a
 deficit, and still keeps users' memories apart.
@@ -243,6 +243,42 @@ builds it under a comment that reads "Construct a user-facing message with
 diagnostic context", which is exactly the assumption being corrected here.
 
 The raw text still reaches `agent.log`, as with patch 11.
+
+## 13 to 16
+
+Not written up here yet. `patches.json` and the patch files themselves are the
+record: 13 decides cron silence before the model call, 14 keeps user text out
+of the logs, 15 answers one inbound message once, 16 puts scheduled reminders
+into the delivery ledger.
+
+## 17 — no dead cache breakpoints on cron
+
+Hermes places four `cache_control` breakpoints on every request: the system
+prompt, then the last three messages (`agent/prompt_caching.py`, the
+`system_and_3` layout). Across the turns of a conversation that is worth its
+cost — turn two reads back what turn one wrote, and WhatsApp reads 88% of its
+prompt from cache at a tenth of list price.
+
+A cron firing has no turn two. It composes one reminder, delivers it, and the
+session is never resumed, so every message-level cache entry it creates is
+written, billed on the 1h TTL at twice list input, and expires having been
+read by nobody.
+
+Measured over the 30 days to 19 Sep 2026: cron wrote **20.0M cache tokens and
+read 7.9M back** — 0.40 reads per token written, against the ~1.1 a cached
+prefix needs to beat not caching at all. 95% of cron's $84 was cache writes.
+See `docs/T13_PROMPT_PAYLOAD.md`.
+
+The patch adds `system_only=` to `apply_anthropic_cache_control` and passes it
+when `agent.platform == "cron"` — the value `cron/scheduler.py` already sets
+where it builds the agent. The **system breakpoint stays**, which is the point
+of doing this rather than turning caching off for cron outright: cron system
+prompts are byte-identical between firings, so the bunched jobs still read one
+another's prefix. What goes is only the part that never had a reader.
+
+`cache_control` is metadata. The model reads the same text with it and without
+it, so this cannot change a word Ted says — which is why it needs no eval set,
+unlike every other lever T13 found.
 
 ## Where the checks live
 

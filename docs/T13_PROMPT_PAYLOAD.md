@@ -1,7 +1,9 @@
 # T13 — the prompt payload, measured 19 September 2026
 
-**Status: measured, and the measurement changed the answer. The shrink itself
-is not applied — the largest saving turns out not to be an edit.**
+**Status: measured, and the measurement changed the answer. The largest saving
+turned out not to be an edit at all — it is Hermes patch 17, applied to the
+checkout and waiting on a gateway restart. The editorial shrink is deliberately
+not applied; section 3 says why.**
 
 T13's definition of done:
 
@@ -176,26 +178,55 @@ editing at all.
 
 | # | lever | saving | risk if wrong |
 |---|---|---:|---|
-| 1 | stop caching one-shot cron prompts | $26–45/mo | none to the user; needs a Hermes patch, reversible |
+| 1 | **taken — Hermes patch 17** | $26–45/mo | none to the user; `cache_control` is metadata |
 | 2 | a short cron identity instead of full SOUL | ~10k tok/firing | cron messages drift out of Ted's voice |
 | 3 | trim example dialogues (3,323 tok) | ~15% of the floor | the voice they hold is the product |
 | 4 | shorten the three largest tool descriptions | ~1,500 tok | re-opens the failures they were written to stop |
-
-Lever 1 is the one to take first: it is the largest, it changes nothing the
-user sees, and it is the only one that does not need T16.
-
-It is **not a config flip**. `anthropic_prompt_cache_policy` in
-`agent/agent_runtime_helpers.py` decides caching from the provider and model
-alone — there is no per-source knob, and `cache_ttl` is global, serving chat
-and cron at once though their shapes are opposite. Making cron skip the
-breakpoints is a Hermes patch, and it goes through `scripts/hermes-patches`
-like the other sixteen.
 
 Levers 2–4 all change what the model reads and all need an eval set.
 
 ---
 
-## 5. How to re-run it
+## 5. Lever 1, taken: Hermes patch 17
+
+It was **not a config flip**. `anthropic_prompt_cache_policy` in
+`agent/agent_runtime_helpers.py` decides caching from the provider and model
+alone — there is no per-source knob, and `cache_ttl` is global, serving chat
+and cron at once though their shapes are opposite.
+
+`scripts/hermes-patches/17-no-dead-cache-breakpoints-on-cron.patch` adds
+`system_only=` to `apply_anthropic_cache_control` and passes it when
+`agent.platform == "cron"` — the value `cron/scheduler.py` already sets where
+it builds the agent.
+
+**The system breakpoint stays.** That is the difference between this and
+turning caching off for cron outright: cron system prompts are byte-identical
+between firings, so the bunched jobs still read one another's prefix and the
+27% that does hit is kept. What goes is the three message-level breakpoints,
+which a session that ends can never read.
+
+Verified against the patched code on the machine:
+
+```
+chat  (all breakpoints): 4
+cron  (system only):     1
+text the model reads, all three identical: yes
+```
+
+That last line is the whole safety argument. `cache_control` is metadata, so
+this is the one lever T13 found that cannot change what Ted says, and the only
+one that does not need T16.
+
+**Applied to the checkout, and registered in `patches.json` so a Hermes
+upgrade cannot drop it quietly. It does not take effect until the gateway
+restarts.** The measurement to take afterwards is cron's `r/w` in
+`npm run prompt:audit`: it should rise off 0.40, and if the 1.5x billing gap
+was overlapping breakpoints, billed tokens per call should fall toward the
+counted 24,449.
+
+---
+
+## 6. How to re-run it
 
 ```sh
 python3 scripts/ted-prompt-audit.py --days 30     # the whole audit

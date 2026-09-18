@@ -1,0 +1,75 @@
+--- a/agent/prompt_caching.py
++++ b/agent/prompt_caching.py
+@@ -85,12 +85,35 @@
+     api_messages: List[Dict[str, Any]],
+     cache_ttl: str = "5m",
+     native_anthropic: bool = False,
++    system_only: bool = False,
+ ) -> List[Dict[str, Any]]:
+     """Apply system_and_3 caching strategy to messages for Anthropic models.
+ 
+     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system
+     messages, all at the same TTL.
+ 
++    Ted patch 17. ``system_only=True`` places the system breakpoint alone and
++    skips the three message-level ones. It exists for one-shot sessions — a
++    cron firing — where the message breakpoints cannot repay their write.
++
++    The three message breakpoints earn their cost across the turns of a
++    conversation: turn two reads back what turn one wrote. A cron session has
++    no turn two. It composes one reminder, delivers it, and is never resumed,
++    so every message-level cache entry it creates is written, billed at the 1h
++    rate of twice list input, and then expires having been read zero times.
++    Measured over 30 days: cron wrote 20.0M cache tokens and read 7.9M back —
++    0.40 reads per token written, against the ~1.1 a cached prefix needs to
++    beat not caching at all. 95% of cron's bill was cache writes.
++
++    The system breakpoint stays, and that is the point of doing this rather
++    than turning caching off for cron outright. Cron system prompts are
++    byte-identical between firings, so the bunched jobs — a dozen daily
++    reviews firing in one second at 21:00 — still read one another's prefix.
++    What goes is only the part that never had a reader.
++
++    ``cache_control`` is metadata. The model reads exactly the same text with
++    it and without it, so this cannot change a single word Ted says.
++
+     Returns:
+         Deep copy of messages with cache_control breakpoints injected.
+     """
+@@ -106,6 +129,11 @@
+         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
+         breakpoints_used += 1
+ 
++    # Ted patch 17. One-shot session: the system breakpoint is the only one
++    # a later firing can read, so it is the only one worth writing.
++    if system_only:
++        return messages
++
+     remaining = 4 - breakpoints_used
+     non_sys = [
+         i
+--- a/agent/conversation_loop.py
++++ b/agent/conversation_loop.py
+@@ -1018,10 +1018,22 @@
+         # to reduce input token costs by ~75% on multi-turn
+         # conversations.
+         if agent._use_prompt_caching:
++            # Ted patch 17. A cron firing is one-shot: it composes a reminder,
++            # delivers it, and the session is never resumed. Its message-level
++            # breakpoints are therefore written, billed at twice list input on
++            # the 1h TTL, and read back by nobody. The system breakpoint is
++            # kept, because cron prompts are byte-identical between firings and
++            # the bunched jobs do read one another's.
++            #
++            # `agent.platform` is set to "cron" by cron/scheduler.py where it
++            # builds the agent. Anything else — whatsapp, cli, telegram — is a
++            # real conversation and keeps all four breakpoints.
++            _ted_one_shot = (getattr(agent, "platform", "") or "").lower() == "cron"
+             api_messages = apply_anthropic_cache_control(
+                 api_messages,
+                 cache_ttl=agent._cache_ttl,
+                 native_anthropic=agent._use_native_cache_layout,
++                system_only=_ted_one_shot,
+             )
+ 
+         # Safety net: strip orphaned tool results / add stubs for missing
