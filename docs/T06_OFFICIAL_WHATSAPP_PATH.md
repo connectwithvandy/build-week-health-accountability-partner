@@ -195,8 +195,25 @@ Each step is reversible until step 6.
    recording why the mistake was easy: the test number is a property of the
    developer app rather than of a phone, so it does not look like a phone
    number problem until you go and read how one is issued.*
-2. **A Hermes platform adapter** for the Cloud API, written beside the Baileys
-   one rather than replacing it, behind config.
+2. ~~**A Hermes platform adapter** for the Cloud API~~ — **it already exists,
+   found 19 Sep by looking rather than assuming.**
+   `gateway/platforms/whatsapp_cloud.py` is 2,217 lines, sits beside the
+   Baileys adapter exactly as this step describes, and is enabled by env vars.
+   It covers outbound text over the Graph API, the webhook server and its
+   verify-token handshake, X-Hub-Signature-256 HMAC checking, wamid replay
+   protection, media both ways, and interactive buttons and lists. Hermes also
+   ships `hermes_cli/setup_whatsapp_cloud.py` and its own tests for it.
+
+   Its docstring lists **"Phase 5 — 24-hour conversation window + template
+   fallback"** as scope, and phase 5 is the part that is *not* built: no
+   template payload appears anywhere in the file and nothing tracks the
+   window. That half is Ted-specific anyway — which template a reminder
+   becomes, and what goes in its variable, is a fact about our cron jobs — so
+   it is written in this repo as `hermes/ted_whatsapp_templates/`, pure and
+   tested, sending nothing. Wiring it needs a patch: `pre_cron_agent` from
+   patch 13 is the right hook and the right moment, but it understands `skip`
+   and `allow` only, so a third action has to be added to carry a template
+   back.
 3. **Templates drafted and submitted** for the reminders, in the *utility*
    category, and approved. This has a lead time and nothing else can start it.
 

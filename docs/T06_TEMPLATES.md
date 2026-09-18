@@ -205,17 +205,31 @@ use a template has to be made **before the model runs**, not after, or Ted pays
 for a reply nobody can receive.
 
 Hermes patch 13 already established the pattern and the reason: cron silence is
-decided before the model call. The window check belongs in the same place. That
-makes three things the cron path needs that do not exist yet:
+decided before the model call. The window check belongs in the same place.
+Three things were needed there, and two of them now exist:
 
-- the last inbound timestamp per user, to know if the window is open. The gate
-  has it; `ted-window-check.py` reads both sources for the same reason.
-- a mapping from cron job to template name and `{{2}}` text, so a reminder can
-  be sent without asking the model to write it.
-- the send itself, which is the Cloud API adapter from step 2.
+- **the routing decision — written, 19 Sep.**
+  `hermes/ted_whatsapp_templates/` decides between Ted's own words, a template,
+  and sending nothing, and builds the Graph payload. 34 tests, every case taken
+  from a real cron job. It sends nothing and registers no hook.
+- **the send — Hermes already has it.** `gateway/platforms/whatsapp_cloud.py`,
+  2,217 lines, everything except the template call itself.
+- **the wiring — still to do.** `pre_cron_agent` understands `skip` and `allow`
+  only, so carrying a template back needs a third action, which is a patch
+  against the scheduler.
 
-**None of it is startable before the developer app exists**, which is the
-honest summary of T06: every remaining step is behind one account creation.
+Two details the module settles, both because they reach a real person:
+
+- **the window is treated as ten minutes shorter than Meta's.** A send that
+  loses that race is refused by the API, and the person gets nothing at all.
+  Ten minutes of margin costs about ₹0.115 on the occasions it is wrong.
+- **an unmapped job is held, not guessed.** A slug in front of a person, or a
+  greeting with no name in it, is worse than a missed nudge — and the hold says
+  which job it was, so it can be fixed rather than discovered.
+
+**Everything else is behind the developer app existing**, which is the honest
+summary of T06: no template can be submitted and nothing can be sent until
+somebody creates it.
 
 ## 6. Unverified, on purpose
 
