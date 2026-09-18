@@ -141,6 +141,46 @@ obstacle; recheck near the date.
 
 ---
 
+## 4b. What the move gains, not only what it costs
+
+Everything above is about risk and constraint. There is a gain, and it is
+larger than it looks.
+
+**Interactive messages.** The official platform sends reply buttons (up to 3),
+list messages (up to 10 options), link buttons and Flows, which is a small form
+inside WhatsApp. Ted cannot send any of these today: the bridge sends text,
+images, audio and documents, and nothing else.
+
+**And we should not try on the current path.** The official Baileys library
+removed button and list support in January 2026. WhatsApp requires a `<biz>`
+node to authorise them, workarounds were reverse-engineered, and Meta patched
+them out. Community forks still offer it and carry a reported ban risk, on the
+one number 56 users talk to. Not worth it.
+
+**Why this matters more than the polish.** Every failure found in real
+onboarding threads on 18 Sep is a free-text answer that should have been a tap:
+
+- Venky was asked "male or female?" and typed `male`, then typed `desk` to the
+  next one. Both parsed, but nothing guaranteed they would.
+- Ram answered `27`, `160`, `80` to three counted questions and the broad age
+  read took his weight as his age: adult to adult, no refusal, and 265 kcal off
+  the figure he was about to be handed.
+- arpit asked a question instead of answering and stalled entirely.
+
+`SETUP_QUESTIONS` is six questions, and at least four of them are closed
+choices: sex, goal, activity level, and the tracking target. As buttons or a
+list they stop being parsing problems. A whole class of bug in
+`extract_calorie_profile` and `_resolve_measurements` simply has nothing to do.
+
+**So the case for migrating is not only defensive.** It is: remove the risk of
+being cut off, accept a template constraint on reminders, and gain the
+interface this product should have had from the start.
+
+*Not verified:* whether an interactive message can be sent inside the 24-hour
+window without being a template. It is a non-template message type, so it
+should be free and unrestricted inside the window, and onboarding always is.
+Worth confirming on the free test number before designing around it.
+
 ## 5. Migration sequence
 
 Each step is reversible until step 6.
