@@ -394,3 +394,82 @@ class TestFiringCount:
         assert firings == 1
         assert buckets["cron"]["sessions"] == 0
         assert max(0, firings - buckets["cron"]["sessions"]) == 1
+
+
+class TestModelNormalization:
+    """The provider swap that would have zeroed the bill.
+
+    `price_row` looks its rate up by exact string. The day the model moves to
+    Bedrock every id gains a region prefix and a vendor segment, every row
+    goes unpriced, and the report prints $0.00 under a one-line footnote while
+    real money leaves. These pin the shapes Hermes actually lists for Bedrock.
+    """
+
+    def test_plain_anthropic_name_is_untouched(self, monkeypatch, home):
+        spend = _load(monkeypatch, home)
+        assert spend.normalize_model("claude-sonnet-5") == "claude-sonnet-5"
+
+    def test_bedrock_inference_profile(self, monkeypatch, home):
+        spend = _load(monkeypatch, home)
+        assert spend.normalize_model("us.anthropic.claude-sonnet-5") == "claude-sonnet-5"
+
+    def test_bedrock_with_version_suffix(self, monkeypatch, home):
+        spend = _load(monkeypatch, home)
+        assert spend.normalize_model("us.anthropic.claude-opus-4-6-v1") == "claude-opus-4-6"
+
+    def test_bedrock_with_dated_build_and_version(self, monkeypatch, home):
+        spend = _load(monkeypatch, home)
+        assert (
+            spend.normalize_model("us.anthropic.claude-haiku-4-5-20251001-v1:0")
+            == "claude-haiku-4-5"
+        )
+
+    def test_every_bedrock_id_hermes_lists_for_claude(self, monkeypatch, home):
+        """Taken verbatim from hermes_cli/models.py so a Hermes-side rename
+        shows up here as a failure rather than as a silent $0.00."""
+        spend = _load(monkeypatch, home)
+        for listed, expected in (
+            ("us.anthropic.claude-sonnet-5", "claude-sonnet-5"),
+            ("us.anthropic.claude-sonnet-4-6", "claude-sonnet-4-6"),
+            ("us.anthropic.claude-opus-4-6-v1", "claude-opus-4-6"),
+            ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5"),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"),
+        ):
+            assert spend.normalize_model(listed) == expected
+
+    def test_the_model_ted_runs_prices_through_bedrock(self, monkeypatch, home):
+        """The one that matters: same model, same money, either spelling."""
+        spend = _load(monkeypatch, home)
+        row = {
+            "model": "us.anthropic.claude-sonnet-5",
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "api_call_count": 1,
+        }
+        direct = dict(row, model="claude-sonnet-5")
+        assert spend.price_row(row, "1h") == spend.price_row(direct, "1h")
+        assert spend.price_row(row, "1h") == 2.00
+
+    def test_an_unknown_model_stays_unpriced(self, monkeypatch, home):
+        """Normalisation must never round a stranger into a known rate.
+        Unpriced is the safe direction: it is counted and reported, not hidden."""
+        spend = _load(monkeypatch, home)
+        row = {
+            "model": "openai/gpt-5.3-codex",
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "api_call_count": 1,
+        }
+        assert spend.price_row(row, "1h") is None
+
+    def test_regional_profile_is_flagged_not_repriced(self, monkeypatch, home):
+        """A regional endpoint may cost more than these Anthropic rates. The
+        file's rule is to say so, never to quietly invent a number."""
+        spend = _load(monkeypatch, home)
+        assert spend.is_bedrock_regional("us.anthropic.claude-sonnet-5")
+        assert not spend.is_bedrock_regional("claude-sonnet-5")
+        assert not spend.is_bedrock_regional("openai/gpt-5.3-codex")

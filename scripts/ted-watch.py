@@ -48,6 +48,12 @@ flapping gate can never mask a dead link.
     python3 scripts/ted-watch.py --dry-run    # print, send nothing
     python3 scripts/ted-watch.py --force      # alert even with no change
     python3 scripts/ted-watch.py --install    # load the launchd job, then exit
+    python3 scripts/ted-watch.py --install-awake   # load the stay-awake job
+
+WHAT 17 SEP 2026 ADDED. `check_power`. The host was the weakest part of the
+system and nothing watched it: one unsupervised `caffeinate` in a Terminal
+window, on battery, with fifty-six chats depending on it. A watcher that reports
+five healthy components on a laptop that is about to sleep is not a watcher.
 """
 
 from __future__ import annotations
@@ -89,6 +95,14 @@ AGENT_LOG = HERMES / "logs" / "agent.log"
 # substring because the bridge decorates it with an emoji.
 LOGGED_OUT_MARKER = "Logged out. Delete session and restart to re-authenticate."
 CONNECTED_MARKER = "WhatsApp connected!"
+
+AWAKE_PLIST_SRC = REPO / "scripts" / "ai.ted.awake.plist"
+AWAKE_LABEL = "ai.ted.awake"
+
+# Below this, on battery, the laptop is a countdown rather than a host. Chosen
+# high on purpose: the alert is only useful while there is still time to walk
+# over and plug it in, and a warning at 5% is a postmortem.
+BATTERY_FLOOR_PERCENT = 30
 
 # While it stays broken, repeat once every four hours. Long enough not to be a
 # nuisance, short enough that a red gate cannot sit unnoticed through a night.
@@ -427,6 +441,93 @@ def check_runaway() -> tuple[bool, str]:
     )
 
 
+def _pmset(*args: str) -> str:
+    """pmset output, or "" when there is no pmset to ask.
+
+    Returning "" rather than raising is what lets `check_power` retire itself.
+    The day the runtime moves off this laptop there is no pmset, no lid and no
+    battery, and a check about all three should go quiet on its own rather than
+    alert forever about a machine it is no longer running on.
+    """
+    try:
+        done = subprocess.run(
+            ["pmset", *args], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout if done.returncode == 0 else ""
+
+
+def _sleep_held_forever(assertions: str) -> bool:
+    """Whether something is holding system sleep off with no timeout.
+
+    The distinction matters more than it looks. `caffeinate -dimsu` with no -t
+    prints "asserting forever"; a tool that took a five minute hold prints a
+    timeout instead, and counting that one would report a laptop as safely
+    awake four minutes before it slept. Only the forever hold is a hold.
+    """
+    lines = assertions.splitlines()
+    for index, line in enumerate(lines):
+        if not re.search(r"pid \d+\([^)]+\):", line):
+            continue
+        if not re.search(r"\b(PreventUserIdleSystemSleep|PreventSystemSleep)\b", line):
+            continue
+        for following in lines[index + 1:index + 3]:
+            if re.search(r"pid \d+\([^)]+\):", following):
+                break
+            if "asserting forever" in following:
+                return True
+    return False
+
+
+def check_power() -> tuple[bool, str]:
+    """Whether the machine Ted runs on is going to still be awake in an hour.
+
+    This is the only check here that watches the host rather than the service,
+    and it exists because on 17 Sep 2026 the host was the weakest part of the
+    whole system. Ted was being kept alive by one `caffeinate -dimsu` typed
+    into a Terminal window, parented to a login shell, unsupervised, and the
+    laptop was running on battery at 71% while fifty-six chats depended on it.
+    Nothing anywhere would have said a word when either ran out.
+
+    `ai.ted.awake.plist` fixes the first half by making the hold a real job.
+    It cannot fix the second: no launchd key charges a battery. So the two
+    things that can still end the service quietly are reported here, over the
+    channel that does not run on the machine in question.
+
+    Both halves go quiet by themselves once T04 lands and there is no pmset to
+    ask, which is the correct behaviour for a check about a laptop on a host
+    that is not one.
+    """
+    assertions = _pmset("-g", "assertions")
+    if not assertions:
+        return True, "no laptop power to watch"
+
+    problems = []
+    if not _sleep_held_forever(assertions):
+        problems.append(
+            "nothing is holding sleep off, so the laptop will idle-sleep and "
+            f"Ted goes quiet without a word (launchctl list | grep {AWAKE_LABEL})"
+        )
+
+    battery = _pmset("-g", "batt")
+    on_battery = "Battery Power" in battery
+    percent_match = re.search(r"(\d+)%", battery)
+    percent = int(percent_match.group(1)) if percent_match else None
+    if on_battery and percent is not None and percent <= BATTERY_FLOOR_PERCENT:
+        remaining = re.search(r"(\d+:\d\d) remaining", battery)
+        left = f", {remaining.group(1)} left" if remaining else ""
+        problems.append(f"running on battery at {percent}%{left}")
+    elif on_battery and percent is not None:
+        # Unplugged and comfortable is worth saying in the detail line and not
+        # worth waking anybody for. She unplugs this laptop every day.
+        return True, f"awake, on battery at {percent}%"
+
+    if problems:
+        return False, " and ".join(problems)
+    return True, "awake and plugged in"
+
+
 def _reached_by_cron_since(chat_id: str, since: float) -> bool:
     """Whether a scheduled job delivered to this chat after `since`.
 
@@ -704,6 +805,46 @@ def install() -> int:
     return 0
 
 
+def install_awake() -> int:
+    """Make the hand-typed caffeinate a real job. Idempotent, like install().
+
+    Separate from --install on purpose. That one installs the watcher; this one
+    installs the thing being watched, and conflating them would mean a person
+    reaching for a health check quietly changes the power behaviour of their
+    laptop. Two commands, each doing the thing its name says.
+
+    Also refuses to hand back success it has not verified: an unloaded plist
+    that nobody noticed is exactly how this project lost seventeen hours on
+    8 Sep 2026.
+    """
+    destination = Path.home() / "Library" / "LaunchAgents" / AWAKE_PLIST_SRC.name
+    try:
+        plistlib.loads(AWAKE_PLIST_SRC.read_bytes())
+    except (OSError, ValueError) as exc:
+        print(f"refusing to install a plist that does not parse: {exc}", file=sys.stderr)
+        return 1
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(AWAKE_PLIST_SRC, destination)
+    subprocess.run(["launchctl", "unload", str(destination)], capture_output=True)
+    done = subprocess.run(
+        ["launchctl", "load", str(destination)], capture_output=True, text=True
+    )
+    if done.returncode != 0:
+        print(f"launchctl load failed: {(done.stdout + done.stderr).strip()}", file=sys.stderr)
+        return 1
+    listed = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    if AWAKE_LABEL not in listed.stdout:
+        print(f"{AWAKE_LABEL} did not appear in launchctl list", file=sys.stderr)
+        return 1
+    print(f"installed and loaded {AWAKE_LABEL} -> {destination}")
+    print("The laptop now stays awake across a closed window, a kill and a "
+          "reboot.\nIt still sleeps on a closed lid and it still dies on a flat "
+          "battery.\nThose two are T04, and this file gets deleted the day it "
+          "lands.")
+    print(f"Undo: launchctl unload {destination} && rm {destination}")
+    return 0
+
+
 def test_alert() -> int:
     """Prove the phone alert works, without waiting for something to break.
 
@@ -770,6 +911,11 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--install", action="store_true")
     parser.add_argument(
+        "--install-awake",
+        action="store_true",
+        help="load the launchd job that holds this laptop awake",
+    )
+    parser.add_argument(
         "--test-alert",
         action="store_true",
         help="send one harmless alert to prove the phone channel works",
@@ -779,6 +925,9 @@ def main() -> int:
     if args.install:
         return install()
 
+    if args.install_awake:
+        return install_awake()
+
     if args.test_alert:
         return test_alert()
 
@@ -787,6 +936,7 @@ def main() -> int:
     model_ok, model_detail = check_model()
     dropped_ok, dropped_detail = check_dropped()
     runaway_ok, runaway_detail = check_runaway()
+    power_ok, power_detail = check_power()
 
     state = read_state()
     now = time.time()
@@ -800,6 +950,7 @@ def main() -> int:
         ("model", model_ok, "Ted's model"),
         ("dropped", dropped_ok, "Someone Ted never answered"),
         ("runaway", runaway_ok, "A conversation Ted stopped answering"),
+        ("power", power_ok, "The laptop Ted runs on"),
     ]
 
     for key, ok, label in components:
@@ -841,6 +992,14 @@ def main() -> int:
                 "is a real person they are being ignored right now. On the "
                 "laptop: grep ted_runaway_conversation ~/.hermes/logs/agent.log"
             )
+        elif key == "power":
+            title = f"⚠️ {label} is about to stop"
+            body = (
+                f"{power_detail}.\n\n"
+                "Nothing is broken yet and everything will be, quietly, when "
+                "it sleeps. Plug it in, and if the hold is missing: "
+                "python3 scripts/ted-watch.py --install-awake"
+            )
         elif key == "dropped":
             title = f"⚠️ {label}"
             body = (
@@ -857,6 +1016,7 @@ def main() -> int:
             "link": link_detail,
             "model": model_detail,
             "dropped": dropped_detail,
+            "power": power_detail,
         }.get(key, stamp)
         print(f"{key}: {'ok' if ok else 'FAILING'} ({detail})")
         if not ok and key == "gates":

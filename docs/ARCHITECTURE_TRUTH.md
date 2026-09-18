@@ -15,6 +15,15 @@ Re-verify with: `python3 scripts/ted-gate-guard.py --check-only`
 | `ai.hermes.gateway` | resident | the gateway itself, `hermes_cli.main gateway run` |
 | `ai.ted.gatewatch` | 900s | `ted-watch.py`, health checks + out-of-band alerts |
 | `ai.ted.idle-nudges` | 3600s | `ted-idle-nudges.py` |
+| `ai.ted.awake` | resident | `caffeinate -dimsu`, holds the laptop awake |
+
+`ai.ted.awake` was added 17 Sep 2026 and is a stopgap with an expiry date.
+Before it, the only thing keeping TED alive was a `caffeinate` typed by hand
+into a Terminal window two and a half days earlier, parented to a login shell,
+restarted by nothing. It now survives a closed window, a kill and a reboot. It
+does **not** survive a closed lid, a flat battery or a desktop logout, and
+`ai.hermes.gateway` still carries `LimitLoadToSessionType: Aqua`. Those are
+T04, and this job gets deleted the day T04 lands.
 
 Model is Anthropic direct (`claude-sonnet-5`), moved off OpenRouter on 4 Sep
 because its prompt-size cap moved with the credit balance. Fallback is
@@ -160,3 +169,14 @@ was wrong twice on the day it was written.
   resembles a test harness for the WhatsApp path and tests nothing. T41.
 - **`known_plugin_toolsets.whatsapp`** is read by neither the lock nor the
   guard. `spotify` is listed and not installed, so it is inert today.
+- **T04, the host itself.** The laptop was on battery at 71% while 56 chats
+  depended on it, and nothing watched either the power or the sleep hold.
+  `check_power` in `ted-watch.py` now does, and it retires itself on a host
+  with no `pmset`. The WhatsApp link is **Baileys**
+  (`@whiskeysockets/baileys` 7.0.0-rc13, `useMultiFileAuthState`), so the
+  session is a directory of JSON files with nothing host-specific in it: a
+  host move is a copy and a cutover, **not** a QR re-link. The constraint is
+  that only one instance may hold those credentials at a time; two fighting is
+  what produced `~/.hermes/whatsapp/session.loggedout-20260909-100854`.
+  Hermes ships its own `Dockerfile` and `docker-compose.yml`, mounting
+  `~/.hermes` at `/opt/data` with `restart: unless-stopped`.

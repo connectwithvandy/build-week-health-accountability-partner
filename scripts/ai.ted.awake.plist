@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.awake</string>
+
+  <!-- Holds the laptop awake so the gateway keeps answering.
+
+       On 17 Sep 2026 the only thing keeping Ted alive was this, typed by hand
+       into a Terminal window two and a half days earlier:
+
+           2185  2157  02-11:07:45  caffeinate -dimsu
+           2157  2156  -zsh
+
+       The parent is a login shell. Closing that window, or rebooting, ends
+       the service for everyone in it, and nothing anywhere restarts it. That
+       is not a configuration anybody chose; it is a command somebody ran once
+       and then had to remember forever.
+
+       This is the stopgap, not the fix. The fix is T04, moving the runtime off
+       a laptop entirely, and this file should be deleted the day that lands.
+       What it buys until then is narrow and worth being exact about:
+
+         it survives  the Terminal window closing, the process being killed,
+                      and a reboot (RunAtLoad + KeepAlive)
+         it does not  survive the lid being closed, the battery running out,
+                      or logging out of the desktop
+
+       The two it does not cover are why T04 exists. `check_power` in
+       ted-watch.py is the half that tells her when one of them is about to
+       happen, because this file cannot. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-dimsu</string>
+  </array>
+
+  <!-- caffeinate holds its assertions for exactly as long as it runs, so the
+       job is the assertion. Both keys are load-bearing: RunAtLoad puts it back
+       after a reboot, KeepAlive puts it back after a kill. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- caffeinate exits immediately if it cannot take the assertion, and
+       KeepAlive would then respawn it as fast as launchd allows. 30s is the
+       same throttle the gateway plist uses, for the same reason. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-awake.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-awake.log</string>
+</dict>
+</plist>

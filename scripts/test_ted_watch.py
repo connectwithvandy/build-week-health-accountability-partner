@@ -713,3 +713,127 @@ class TestCheckModelUsesTheRecovery:
         ok, detail = watch.check_model()
         assert ok is True
         assert detail == "primary model answering"
+
+
+class TestCheckPower:
+    """The host check. Every case here is a way the laptop ends the service
+    without the service noticing, which is the whole reason it was added: on
+    17 Sep 2026 five components reported healthy on a machine held awake by one
+    unsupervised command, running on battery, with fifty-six chats on it.
+    """
+
+    ASSERTION_HELD = (
+        "Assertion status system-wide:\n"
+        "   PreventUserIdleSystemSleep     1\n"
+        "Listed by owning process:\n"
+        "   pid 2185(caffeinate): [0x000000ba00018282] 59:07:10 "
+        'PreventUserIdleSystemSleep named: "caffeinate command-line tool"  \n'
+        "\tDetails: caffeinate asserting forever\n"
+        "\tLocalized=THE CAFFEINATE TOOL IS PREVENTING SLEEP.\n"
+    )
+
+    ASSERTION_TIMED = (
+        "Assertion status system-wide:\n"
+        "   PreventUserIdleSystemSleep     1\n"
+        "Listed by owning process:\n"
+        "   pid 81253(caffeinate): [0x00033fea000193bc] 00:00:45 "
+        'PreventUserIdleSystemSleep named: "caffeinate command-line tool"  \n'
+        "\tTimeout will fire in 255 secs Action=TimeoutActionRelease\n"
+    )
+
+    ASSERTION_NONE = (
+        "Assertion status system-wide:\n"
+        "   PreventUserIdleSystemSleep     0\n"
+        "Listed by owning process:\n"
+    )
+
+    ON_AC = "Now drawing from 'AC Power'\n -InternalBattery-0\t100%; charged; 0:00 remaining present: true\n"
+
+    def _pin(self, watch, monkeypatch, assertions, batt):
+        def fake(*args):
+            return assertions if "assertions" in args else batt
+        monkeypatch.setattr(watch, "_pmset", fake)
+
+    def test_held_and_plugged_in_is_fine(self, watch, monkeypatch):
+        self._pin(watch, monkeypatch, self.ASSERTION_HELD, self.ON_AC)
+        ok, detail = watch.check_power()
+        assert ok
+        assert "awake" in detail
+
+    def test_no_hold_at_all_is_an_alert(self, watch, monkeypatch):
+        self._pin(watch, monkeypatch, self.ASSERTION_NONE, self.ON_AC)
+        ok, detail = watch.check_power()
+        assert not ok
+        assert "idle-sleep" in detail
+
+    def test_a_five_minute_hold_does_not_count_as_a_hold(self, watch, monkeypatch):
+        """The case that would have read as healthy four minutes before sleep.
+
+        A timed caffeinate shows the same assertion name as the permanent one.
+        Only the 'asserting forever' line tells them apart, and counting the
+        timed one would report a laptop as safe right up until it slept.
+        """
+        self._pin(watch, monkeypatch, self.ASSERTION_TIMED, self.ON_AC)
+        ok, detail = watch.check_power()
+        assert not ok
+        assert "idle-sleep" in detail
+
+    def test_low_battery_is_an_alert(self, watch, monkeypatch):
+        batt = (
+            "Now drawing from 'Battery Power'\n"
+            " -InternalBattery-0 (id=34865251)\t18%; discharging; 1:12 remaining present: true\n"
+        )
+        self._pin(watch, monkeypatch, self.ASSERTION_HELD, batt)
+        ok, detail = watch.check_power()
+        assert not ok
+        assert "18%" in detail
+        assert "1:12" in detail
+
+    def test_comfortable_battery_is_said_but_not_alerted(self, watch, monkeypatch):
+        """She unplugs this laptop every day. An alert every time is noise, and
+        a watcher people learn to ignore is worse than one that says less."""
+        batt = (
+            "Now drawing from 'Battery Power'\n"
+            " -InternalBattery-0 (id=34865251)\t71%; discharging; 12:44 remaining present: true\n"
+        )
+        self._pin(watch, monkeypatch, self.ASSERTION_HELD, batt)
+        ok, detail = watch.check_power()
+        assert ok
+        assert "71%" in detail
+
+    def test_both_wrong_at_once_reports_both(self, watch, monkeypatch):
+        batt = (
+            "Now drawing from 'Battery Power'\n"
+            " -InternalBattery-0 (id=34865251)\t9%; discharging; 0:21 remaining present: true\n"
+        )
+        self._pin(watch, monkeypatch, self.ASSERTION_NONE, batt)
+        ok, detail = watch.check_power()
+        assert not ok
+        assert "idle-sleep" in detail
+        assert "9%" in detail
+
+    def test_no_pmset_retires_the_check(self, watch, monkeypatch):
+        """T04 moves Ted to a host with no lid and no battery. A check about
+        both should go quiet there by itself rather than alert forever."""
+        monkeypatch.setattr(watch, "_pmset", lambda *args: "")
+        ok, detail = watch.check_power()
+        assert ok
+        assert "no laptop power" in detail
+
+    def test_pmset_missing_binary_is_not_an_exception(self, watch, monkeypatch):
+        def explode(*args, **kwargs):
+            raise FileNotFoundError("pmset")
+        monkeypatch.setattr(watch.subprocess, "run", explode)
+        ok, _ = watch.check_power()
+        assert ok
+
+    def test_the_awake_plist_parses_and_supervises(self, watch):
+        """A plist that does not parse installs as silently as one that does,
+        and KeepAlive is the whole point: caffeinate is the assertion, so a
+        caffeinate that exits and stays exited is a laptop that sleeps."""
+        import plistlib
+        loaded = plistlib.loads(watch.AWAKE_PLIST_SRC.read_bytes())
+        assert loaded["Label"] == watch.AWAKE_LABEL
+        assert loaded["KeepAlive"] is True
+        assert loaded["RunAtLoad"] is True
+        assert loaded["ProgramArguments"][0].endswith("caffeinate")

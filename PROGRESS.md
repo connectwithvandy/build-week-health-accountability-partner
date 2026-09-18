@@ -1415,6 +1415,86 @@ tests could not give.
    something is.
 
 
+## Order 28 — 17 Sep 2026, night, the service was one Terminal window wide
+
+T04 is "move the runtime to an always-on environment", and the survey found the
+problem was worse and narrower than "a sleeping laptop".
+
+### What was actually holding TED up
+
+```
+2185  2157  02-11:07:45  caffeinate -dimsu
+2157  2156  -zsh
+```
+
+A `caffeinate` typed by hand into a Terminal window two and a half days
+earlier, parented to a login shell. Closing that window, or rebooting, ended
+the service for the 56 chats in it, and nothing anywhere restarted it. The
+laptop was also on battery at 71% at the time. Neither fact was watched by
+anything: `ted-watch.py` reported five healthy components on a host that was a
+countdown.
+
+`ai.ted.awake.plist` makes the hold a supervised job, and it is a stopgap with
+its expiry written into it. It survives a closed window, a kill and a reboot.
+It does not survive a closed lid, a flat battery or a desktop logout, and
+`ai.hermes.gateway` still carries `LimitLoadToSessionType: Aqua`. Installed and
+verified live: pid 84759, parent 1, holding `PreventUserIdleSystemSleep` with
+"asserting forever"; the hand-typed 2185 retired after, not before.
+
+`check_power` is the half the plist cannot do, because no launchd key charges a
+battery. It alerts when nothing holds sleep off, and when the battery is at or
+below 30%. Two details are load-bearing. It counts only a **permanent** hold: a
+`caffeinate -i -t 300` shows the identical assertion name, and counting it
+would report a laptop as safe four minutes before it slept. And it goes quiet
+on a host with no `pmset`, so it retires itself the day T04 lands rather than
+alerting forever about a laptop TED no longer runs on. Being unplugged and
+comfortable is said in the detail line and never alerted: she unplugs this
+laptop daily, and a watcher people learn to ignore is worse than one that says
+less.
+
+### The re-link we were dreading is not real
+
+Order 27 deferred T01's OS boundary into T04 partly because a host move was
+believed to cost a WhatsApp re-link. It does not.
+
+The link is `@whiskeysockets/baileys` 7.0.0-rc13 in
+`scripts/whatsapp-bridge/bridge.js`, on `useMultiFileAuthState`. The session is
+a directory of JSON files, and `creds.json` holds keys, ids and counters with
+**nothing host-specific**. `browser: ['Hermes Agent', 'Chrome', '120.0']` is a
+label sent at connect, not a real browser, so no Chromium is involved and the
+whole thing runs headless on Linux.
+
+Copy the directory, the new host reconnects as the same linked device, no QR.
+The real constraint is different and sharper: **only one instance may hold
+those credentials at a time.** Two fighting is what produced
+`~/.hermes/whatsapp/session.loggedout-20260909-100854`. So the move is stop
+here, copy, start there, never an overlap.
+
+### What T04 still needs
+
+Our own code is portable. The only macOS-specific calls are `launchctl` inside
+two install helpers and `osascript` in one alert road, and that road already
+does not count as delivered by its own design — the desk notification popped up
+to an empty room for seventeen hours on 8 Sep. The remote channels are the half
+that counts and they are network-based.
+
+Hermes ships its own `Dockerfile` and `docker-compose.yml`, mounting
+`~/.hermes` at `/opt/data` with `restart: unless-stopped` and s6 supervision
+inside, so the container is mostly configuration rather than construction.
+
+Decided: a small Linux VM, not hardware at home, because there is no spare
+always-on machine to use and buying one for this is not worth it. The known
+cost of that choice is a datacenter IP on an unofficial WhatsApp client, which
+is a real but secondary signal next to behaviour: TED is low volume, replies
+only to people who wrote first, and the number is established. The mitigation
+is a verified copy of the session directory taken before the cutover. The
+permanent fix is T06, the official WhatsApp path, and this is a reason to move
+it up rather than leave it at its current place.
+
+Blocked on Vandy: the VM has to exist before the cutover can be written.
+
+Suite: 1127 Python tests, 2145 subtests, up from 1118.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.

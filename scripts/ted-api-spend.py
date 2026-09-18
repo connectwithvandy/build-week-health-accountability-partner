@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -110,6 +111,54 @@ def configured_cache_ttl() -> str:
     return "5m"
 
 
+# Bedrock dresses the same model up differently: a region prefix, an
+# `anthropic.` vendor segment, sometimes a dated build and a version suffix.
+# `us.anthropic.claude-haiku-4-5-20251001-v1:0` and `claude-haiku-4-5` are the
+# same model at the same price, and an exact-match rate lookup prices the first
+# at nothing. Stripped in this order, outermost first.
+_BEDROCK_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global)\.")
+_VENDOR_PREFIX = re.compile(r"^anthropic\.")
+_VERSION_SUFFIX = re.compile(r"(?:-v\d+)?(?::\d+)?$")
+_DATED_BUILD_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def normalize_model(model: str) -> str:
+    """The plain model name, whichever provider's spelling arrived.
+
+    Why this is not cosmetic. `price_row` looks the rate up by exact string,
+    so the day the provider changes every row becomes unpriced and the report
+    prints $0.00 with a one-line footnote. A bill that reads as zero while
+    money is leaving is the exact failure this file was written to prevent,
+    and it would land at the moment the spend most needs watching.
+
+    Deliberately conservative. Each pattern is anchored and removes decoration
+    only, so an unknown model stays unknown rather than being rounded into a
+    known one. Anything that does not match is returned untouched, which keeps
+    `openai/gpt-5.3-codex` unpriced exactly as it is today.
+    """
+    name = _BEDROCK_REGION_PREFIX.sub("", model.strip())
+    name = _VENDOR_PREFIX.sub("", name)
+    name = _VERSION_SUFFIX.sub("", name)
+    name = _DATED_BUILD_SUFFIX.sub("", name)
+    return name
+
+
+def is_bedrock_regional(model: str) -> bool:
+    """Whether this row came through a regional Bedrock inference profile.
+
+    It matters to the total, not just to the label. Bedrock charges the same
+    per-token rate as Anthropic direct on the global default, but a regional
+    or multi-region endpoint is reported to carry a premium on current Claude
+    models. The rates in this file are Anthropic's, so a regional profile would
+    make every figure here an underestimate.
+
+    Not verified against AWS's own pricing page, which is why this raises a
+    caution and never adjusts a number. Same rule as `ttl_caution`: say what
+    cannot be proven, do not quietly price it.
+    """
+    return bool(_BEDROCK_REGION_PREFIX.match(model.strip())) and "anthropic." in model
+
+
 def price_row(row: dict, ttl: str) -> float | None:
     """Dollars for one usage row, or None when the model has no known rate.
 
@@ -117,7 +166,7 @@ def price_row(row: dict, ttl: str) -> float | None:
     instead of silently making the bill look smaller than it is. The caller
     counts those rows and says so.
     """
-    model = str(row.get("model") or "")
+    model = normalize_model(str(row.get("model") or ""))
     inp = _INPUT_RATE.get(model)
     out = _OUTPUT_RATE.get(model)
     if inp is None or out is None:
@@ -228,6 +277,7 @@ def summarise(rows: list[dict], ttl: str) -> dict:
             "cache_write_tokens": 0,
             "usd": 0.0,
             "unpriced_rows": 0,
+            "regional_bedrock_rows": 0,
         }
 
     for row in rows:
@@ -248,6 +298,8 @@ def summarise(rows: list[dict], ttl: str) -> dict:
                 bucket["unpriced_rows"] += 1
             else:
                 bucket["usd"] += cost
+            if is_bedrock_regional(str(row.get("model") or "")):
+                bucket["regional_bedrock_rows"] += 1
 
     for bucket in buckets.values():
         bucket["sessions"] = len(bucket["sessions"])
@@ -310,6 +362,13 @@ def print_window(title: str, buckets: dict, ttl: str, firings: int | None = None
     unpriced = buckets["all"]["unpriced_rows"]
     if unpriced:
         print(f"\n  {unpriced} row(s) on a model with no rate here, left out of USD.")
+    regional = buckets["all"]["regional_bedrock_rows"]
+    if regional:
+        print(
+            f"\n  {regional} row(s) came through a regional Bedrock profile. The rates\n"
+            "  here are Anthropic's own, and a regional endpoint is reported to cost\n"
+            "  more than the global default, so USD above may be an underestimate."
+        )
     print(f"\n  Cache writes priced at {_CACHE_WRITE_MULTIPLIER[ttl]:.2f}x input (cache_ttl: {ttl}).")
 
 
