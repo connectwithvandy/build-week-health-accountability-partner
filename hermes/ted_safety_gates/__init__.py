@@ -426,9 +426,30 @@ _ASKS_FOR_HINGLISH = re.compile(
 )
 
 # How many of their own messages it takes before silence on the subject counts
-# as an answer. Four is enough to tell a preference from a one-word reply, and
-# small enough that a new user is not addressed in Hindi for a week first.
-_ENGLISH_EVIDENCE_NEEDED = 4
+# as an answer.
+#
+# Four was too many, and arpit is the proof. On 18 Sep 2026 he wrote "Okay Ted,
+# let's do this", then his name, then "do you read my other messages ?", then
+# "send me your owners contact" — English throughout, not one Hindi word. He
+# reached the fourth message and qualified on the *last* thing he ever sent.
+# Every reply before it was Hinglish, including "nah yaar, bas this chat only,
+# jo tum yahan bhejte ho wahi dekh sakta hoon" in answer to a privacy question.
+# Onboarding is six questions long, so a threshold of four spends the whole of
+# it in the wrong language and then gets it right for a conversation that has
+# already ended.
+#
+# Two is safe because the inference is not the only guard: a single Hinglish
+# message from them sets writes_hinglish and stops it immediately, whenever it
+# arrives. The risk of moving early is one turn of English at somebody who
+# code-switches later; the risk of moving late is the whole of onboarding in a
+# language they did not choose.
+_ENGLISH_EVIDENCE_NEEDED = 2
+
+# One-word replies are not evidence of anything. "arpit" was his second message
+# and counted as much as a sentence did, which is how a bare name becomes half
+# the case for switching a person's language. A message has to carry a few
+# words of their own before it votes.
+_EVIDENCE_MIN_WORDS = 3
 
 
 def _looks_hinglish(text: str) -> bool:
@@ -475,6 +496,8 @@ def _note_language(user_key: str, text: str) -> None:
             _update_onboarding(user_key, writes_hinglish=True)
         return
     if state.get("writes_hinglish"):
+        return
+    if len(text.split()) < _EVIDENCE_MIN_WORDS:
         return
     seen = state.get("english_messages")
     seen = seen + 1 if isinstance(seen, int) else 1
@@ -4162,10 +4185,64 @@ def _resolve_measurements(
     return _with_stored_measurements(profile, user_key), None
 
 
+_PLAY_ALONG_LIMIT = 240
+
+
+def _reply_then_question(response_text: str, question: str) -> str:
+    """Ted's own answer first, then the counted question. What a person does.
+
+    Until 18 Sep 2026 the counted question *replaced* whatever Ted had written,
+    and the cost was visible in arpit's thread. He asked "do you read my other
+    messages?", a genuine privacy question, and Ted wrote back "nah yaar, bas
+    this chat only. jo tum yahan bhejte ho wahi dekh sakta hoon, baaki chats
+    nahi." He never saw it. What was delivered was "*1/6* how old are you?".
+    He asked a second question, got the same eleven words again, and stopped.
+
+    So the model was already doing the right thing and the gate was throwing it
+    away. This keeps both: the answer he asked for, and the question Ted still
+    needs, with the count intact because the count is a promise.
+
+    Three things are taken out of Ted's half first:
+
+    `words_without_figures` because the counted questions run before anything
+    is known about this person, and a stray number in that gap is the failure
+    the whole flow exists to prevent.
+
+    A trailing question, because the gate owns the asking. Ted's own "arre, how
+    old are you?" followed by "*1/6* how old are you?" is the same question
+    twice in one message, which reads like a machine with a stutter.
+
+    And length, because a paragraph in front of the count buries it.
+    """
+    spoken = words_without_figures(response_text or "").strip()
+    if not spoken:
+        return question
+
+    # Drop trailing sentences that are questions: the gate is about to ask one.
+    sentences = [part for part in re.split(r"(?<=[.!?])\s+", spoken) if part.strip()]
+    while sentences and sentences[-1].rstrip().endswith("?"):
+        sentences.pop()
+    spoken = " ".join(sentences).strip()
+    if not spoken:
+        return question
+
+    if len(spoken) > _PLAY_ALONG_LIMIT:
+        # Cut at a sentence end rather than mid-word, else keep the question
+        # alone: a truncated sentence in front of the count is worse than none.
+        clipped = spoken[:_PLAY_ALONG_LIMIT]
+        cut = max(clipped.rfind("."), clipped.rfind("!"), clipped.rfind("\n"))
+        if cut < 40:
+            return question
+        spoken = clipped[: cut + 1].strip()
+
+    return f"{spoken}\n\n{question}"
+
+
 def setup_gate(
     history: Iterable[dict[str, Any]],
     user_message: str,
     user_key: str = "",
+    response_text: str = "",
 ) -> str | None:
     """Drive the counted five questions, from the name to the number.
 
@@ -4239,7 +4316,11 @@ def setup_gate(
         _record_setup_ask(user_key, field)
         # So the next turn knows what its answer is an answer to.
         _mark_setup_asking(user_key, field)
-        return _setup_question(index)
+        # Ted's own words first when he wrote any, then the counted question.
+        # Deliberately not conditional on whether they answered: somebody who
+        # answers "27" and adds "why do you need it?" deserves the same reply
+        # as somebody who only asks.
+        return _reply_then_question(response_text, _setup_question(index))
 
     # All five are in. The read-back comes before the number, because the one
     # error nobody else can catch is a value that parsed cleanly and wrong —
@@ -5567,7 +5648,7 @@ def transform_response(
     # The counted five, while they are running. Above the calorie gate because
     # it owns the same fields and would otherwise ask for them in its own
     # uncounted words, breaking the "1/5" promise mid-flow.
-    counted = setup_gate(history, user_message, user_key)
+    counted = setup_gate(history, user_message, user_key, response_text)
     if counted:
         return counted
     # The three steps that close onboarding, in the order they are asked:

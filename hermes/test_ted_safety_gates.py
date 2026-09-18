@@ -418,8 +418,10 @@ class TedSafetyGatesTest(unittest.TestCase):
         # The point of this test: the disclosure does not go out twice.
         self.assertNotIn(DISCLOSURE_MESSAGE, reply or "")
         # It is not left alone either. The five are running, so the
-        # outstanding one comes back rather than the model's own question.
-        self.assertEqual(reply, gates._setup_question(0))
+        # outstanding one comes back. Since 18 Sep it comes back *after*
+        # anything Ted said, rather than instead of it, so this asserts the
+        # question is the last word and not the only one.
+        self.assertTrue((reply or "").endswith(gates._setup_question(0)), reply)
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_disclosure_flag_follows_the_user_across_sessions(self) -> None:
@@ -470,7 +472,7 @@ class TedSafetyGatesTest(unittest.TestCase):
             # A new session, and the disclosure still does not repeat: the
             # durable record follows the user, not the transcript.
             self.assertNotIn(DISCLOSURE_MESSAGE, reply or "")
-            self.assertEqual(reply, gates._setup_question(0))
+            self.assertTrue((reply or "").endswith(gates._setup_question(0)), reply)
         gates._DISCLOSURE_SENT_KEYS.discard(user_key)
 
     def test_replays_the_four_message_onboarding_loop_once(self) -> None:
@@ -3567,9 +3569,11 @@ class GoldenPathTest(unittest.TestCase):
         self.assertNotIn(GOAL_QUESTION, disclosure)
 
         # 3. The counted five. Question one came inside the disclosure, so
-        #    four answers walk the rest of the count. The model is writing
-        #    something else every turn and none of it goes out: while the five
-        #    are running, the count is Ted's, not the model's.
+        #    four answers walk the rest of the count. The count is still Ted's
+        #    rather than the model's: the counted question is always the last
+        #    word. Since 18 Sep the model's own line is kept in front of it,
+        #    because throwing it away is what left arpit's privacy question
+        #    unanswered while his age was demanded twice.
         for answer, expected in (
             ("33", gates._setup_question(1)),
             ("170cm", gates._setup_question(2)),
@@ -3577,7 +3581,9 @@ class GoldenPathTest(unittest.TestCase):
             ("female", gates._setup_question(4)),
         ):
             with self.subTest(answer=answer):
-                self.assertEqual(self.turn(answer, "noted!"), expected)
+                reply = self.turn(answer, "noted!")
+                self.assertTrue(reply.endswith(expected), reply)
+                self.assertTrue(reply.startswith("noted!"), reply)
 
         # 4. All five in, and the read-back comes before the number. This is
         #    the step that would have caught Pallavi's height.
@@ -8468,8 +8474,9 @@ class TheCountedFiveTest(unittest.TestCase):
             ("female", 4),
         ):
             with self.subTest(answer=answer):
-                self.assertEqual(
-                    self.turn(answer), gates._setup_question(expected_index)
+                reply = self.turn(answer)
+                self.assertTrue(
+                    reply.endswith(gates._setup_question(expected_index)), reply
                 )
 
     def test_every_offered_answer_to_question_five_parses(self) -> None:
@@ -8583,8 +8590,12 @@ class TheCountedFiveTest(unittest.TestCase):
         the asking. A counted question repeats just as badly.
         """
         self.start()  # asks 1/5 once
-        self.assertEqual(self.turn("what do you do?"), gates._setup_question(0))
-        self.assertEqual(self.turn("i dont get it"), gates._setup_question(0))
+        self.assertTrue(
+            self.turn("what do you do?").endswith(gates._setup_question(0))
+        )
+        self.assertTrue(
+            self.turn("i dont get it").endswith(gates._setup_question(0))
+        )
         # Given up on. The model's own reply goes out untouched.
         self.assertEqual(self.turn("hmm", "ask me anything!"), "ask me anything!")
         self.assertEqual(gates._setup_state(self.USER_KEY), "stalled")
@@ -10738,14 +10749,33 @@ class LanguagePreferenceTest(unittest.TestCase):
         self.assertEqual(gates._language_preference(self.KEY), "")
 
     def test_writing_only_english_is_an_answer_on_its_own(self) -> None:
-        for message in ("2 eggs and toast", "done", "walked 5k", "feeling good"):
+        """Two messages of their own words, not four. Four spent the whole of
+        arpit's onboarding in Hinglish and got it right on the last thing he
+        ever sent."""
+        for message in ("2 eggs and toast", "walked 5k this morning"):
             gates._note_language(self.KEY, message)
         self.assertEqual(gates._language_preference(self.KEY), "writes_english")
 
     def test_one_message_short_of_the_evidence_stays_quiet(self) -> None:
-        for message in ("2 eggs", "done", "walked 5k"):
+        gates._note_language(self.KEY, "2 eggs and toast")
+        self.assertEqual(gates._language_preference(self.KEY), "")
+
+    def test_one_word_replies_do_not_vote(self) -> None:
+        """"arpit" was his second message and counted as much as a sentence,
+        which is how a bare name becomes half the case for switching somebody's
+        language. A reply that short says nothing about how they write."""
+        for message in ("done", "ok", "yes", "arpit", "5k"):
             gates._note_language(self.KEY, message)
         self.assertEqual(gates._language_preference(self.KEY), "")
+
+    def test_arpits_thread_switches_before_the_questions_run_out(self) -> None:
+        """His real messages, in order. By the time he asked his privacy
+        question Ted should already have been answering in English."""
+        gates._note_language(self.KEY, "Okay Ted, let's do this")
+        gates._note_language(self.KEY, "arpit")
+        self.assertEqual(gates._language_preference(self.KEY), "")
+        gates._note_language(self.KEY, "do you read my other messages ?")
+        self.assertEqual(gates._language_preference(self.KEY), "writes_english")
 
     def test_somebody_who_code_switches_is_mirrored_not_corrected(self) -> None:
         for message in ("2 eggs and toast", "done", "walked 5k", "haan kar diya"):
@@ -10773,7 +10803,7 @@ class LanguagePreferenceTest(unittest.TestCase):
         asked = gates._language_card(self.KEY)
 
         gates._ONBOARDING_STATE.clear()
-        for message in ("2 eggs", "done", "walked 5k", "feeling good"):
+        for message in ("2 eggs and toast", "walked 5k this morning"):
             gates._note_language(self.KEY, message)
         inferred = gates._language_card(self.KEY)
 
@@ -11202,3 +11232,97 @@ class TheProfileReachesTheGateTooTest(unittest.TestCase):
                 {"current_field": "age", "profile": {"height_cm": 170}}, session_id="s"
             )
         self.assertIsNone(gates._onboarding(key).get("height_cm"))
+
+
+class PlayAlongDuringTheCountTest(unittest.TestCase):
+    """Answer what they asked, then go back to the question.
+
+    From arpit's real thread on 18 Sep 2026. He said "do you read my other
+    messages ?" and Ted wrote "nah yaar, bas this chat only. jo tum yahan
+    bhejte ho wahi dekh sakta hoon, baaki chats nahi." He never saw it: the
+    gate replaced it with "*1/6* how old are you? beta's 18+". He asked a
+    second question, got the identical eleven words back, and stopped
+    answering. Vandy: "if someone is responding with something else, we should
+    play along. We should respond to it, but then go back to the onboarding
+    question. That is what a human would do."
+    """
+
+    USER_KEY = "whatsapp:play-along"
+
+    def setUp(self) -> None:
+        state = patch.object(gates, "_ONBOARDING_STATE", {})
+        persist = patch.object(gates, "_persist_onboarding_state")
+        state.start()
+        persist.start()
+        self.addCleanup(state.stop)
+        self.addCleanup(persist.stop)
+
+    def test_his_question_is_answered_and_the_count_still_comes(self) -> None:
+        reply = gates._reply_then_question(
+            "nah yaar, bas this chat only. jo tum yahan bhejte ho wahi dekh "
+            "sakta hoon, baaki chats nahi.",
+            gates._setup_question(0),
+        )
+        self.assertIn("bas this chat only", reply)
+        self.assertTrue(reply.endswith(gates._setup_question(0)), reply)
+
+    def test_ted_does_not_ask_the_same_question_twice_in_one_message(self) -> None:
+        """His second turn. Ted wrote "i can't share owner contact here. arre,
+        how old are you?" and the gate is about to ask for the age itself."""
+        reply = gates._reply_then_question(
+            "i can't share owner contact here. arre, how old are you?",
+            gates._setup_question(0),
+        )
+        self.assertIn("can't share owner contact", reply)
+        self.assertEqual(reply.count("how old are you"), 1, reply)
+
+    def test_a_number_in_teds_half_never_survives(self) -> None:
+        """The count runs before anything is known about this person, so a
+        stray figure in that gap is the failure the flow exists to prevent."""
+        reply = gates._reply_then_question(
+            "most guys your size need about 2200 kcal a day.",
+            gates._setup_question(0),
+        )
+        self.assertNotIn("2200", reply)
+
+    def test_nothing_to_say_means_the_question_alone(self) -> None:
+        self.assertEqual(
+            gates._reply_then_question("", gates._setup_question(0)),
+            gates._setup_question(0),
+        )
+        self.assertEqual(
+            gates._reply_then_question("   ", gates._setup_question(0)),
+            gates._setup_question(0),
+        )
+
+    def test_a_reply_that_is_only_a_question_is_dropped(self) -> None:
+        """The gate owns the asking, so Ted's own question is redundant."""
+        self.assertEqual(
+            gates._reply_then_question("how old are you?", gates._setup_question(0)),
+            gates._setup_question(0),
+        )
+
+    def test_a_ramble_does_not_bury_the_count(self) -> None:
+        rambling = " ".join(["ted has a lot to say about this topic."] * 30)
+        reply = gates._reply_then_question(rambling, gates._setup_question(0))
+        self.assertTrue(reply.endswith(gates._setup_question(0)))
+        self.assertLessEqual(len(reply) - len(gates._setup_question(0)), 260)
+
+    def test_it_never_truncates_mid_sentence(self) -> None:
+        """A sentence chopped in half in front of the count reads worse than
+        no sentence at all, so the whole half is dropped instead."""
+        unbroken = "x" * 400
+        self.assertEqual(
+            gates._reply_then_question(unbroken, gates._setup_question(0)),
+            gates._setup_question(0),
+        )
+
+    def test_the_under_18_refusal_is_never_dressed_up(self) -> None:
+        """Play-along applies to the question, never to the refusal. A minor
+        gets the refusal by itself, with nothing of the model's in front."""
+        gates._mark_setup_running(self.USER_KEY)
+        history = [message("user", "i am 15")]
+        out = gates.setup_gate(
+            history, "i am 15", self.USER_KEY, response_text="sure, happy to help!"
+        )
+        self.assertEqual(out, gates.UNDER_18_REFUSAL)
