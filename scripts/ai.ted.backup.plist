@@ -17,10 +17,18 @@
        push the older, differently-shaped ones out of the retention window.
 
        It never restores. Restoring is a decision a person makes, never a thing
-       a timer does at four in the morning. -->
+       a timer does at four in the morning.
+
+       The interpreter is the Hermes venv's, not /usr/bin/python3, and that is
+       not a preference. macOS refuses a launchd agent access to ~/Documents
+       unless that binary has been granted it, and the Command Line Tools
+       python has not: the first scheduled run failed with "Operation not
+       permitted" before it could read its own script. ai.ted.gatewatch has run
+       321 times from the same directory using this interpreter. Nothing here
+       needs the venv's packages; it needs its permission. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
+    <string>/Users/vandana.agarwal/.hermes/hermes-agent/venv/bin/python3</string>
     <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-backup.py</string>
   </array>
 

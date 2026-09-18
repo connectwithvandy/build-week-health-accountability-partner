@@ -102,6 +102,13 @@ PLIST_DEST = Path.home() / "Library" / "LaunchAgents" / f"{PLIST_LABEL}.plist"
 
 LAST_DRILL = DESTINATION / "last-drill.json"
 
+# A restore proof goes stale. The daily job re-drills when the last one is
+# older than this, so the answer to "does it restore" is never older than a
+# week without anybody having to remember to ask. It is not drilled every day
+# on purpose: the drill is the only routine that reads every byte back, and a
+# daily one turns a quiet 04:00 into a noisy one for no extra confidence.
+DRILL_EVERY_DAYS = 7
+
 
 def snapshot_database(source: Path, target: Path) -> tuple[bool, str]:
     """A consistent copy of a database that is being written to.
@@ -260,7 +267,30 @@ def take_backup() -> int:
         print(f"\n  Pruned {len(dropped)} old backup(s), keeping {KEEP}.")
 
     print(f"\n  Verified. {target}")
+
+    # The restore proof, kept fresh by the same job. A backup that verifies and
+    # has not been restored in a month is the state this file exists to get out
+    # of, and nobody remembers to drill it by hand.
+    if drill_is_stale():
+        print("\n  The last restore drill is stale. Drilling.\n")
+        return drill()
     return 0
+
+
+def drill_is_stale(now: float | None = None) -> bool:
+    """Whether the restore proof is older than DRILL_EVERY_DAYS, or absent.
+
+    Absent counts as stale. "Never drilled" is the worst case, not a neutral
+    one, and it is the state every backup system starts in.
+    """
+    try:
+        record = json.loads(LAST_DRILL.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not record.get("passed"):
+        return True
+    age = (now if now is not None else time.time()) - float(record.get("drilled_at") or 0)
+    return age > DRILL_EVERY_DAYS * 86400
 
 
 def gateway_is_running(home: Path) -> bool:
@@ -511,7 +541,32 @@ def prune(keep: int = KEEP) -> list[str]:
 
 
 def install() -> int:
-    """Copy the plist in and load it. Idempotent, so re-running is safe."""
+    """Copy the plist in, load it, and then make it prove it can actually run.
+
+    The proving is the point. The first version of this printed "A verified
+    backup will be taken daily" and returned 0 while the job was incapable of
+    starting: macOS refuses a launchd agent access to ~/Documents unless that
+    binary has been granted it, and `/usr/bin/python3` has not, so every 04:00
+    run would have died on `Operation not permitted` before reading its own
+    script. Nothing would have noticed until a restore was needed.
+
+    An installer that reports success for a job it has never seen run is the
+    same class of mistake as a backup nobody has restored. So this one fires
+    it once and reads the exit code.
+    """
+    # `plutil -lint`, not plistlib. They disagree, and the one that matters is
+    # the one launchd uses. A stray `-->` left this file with bare text outside
+    # any tag; plistlib read it happily and reported the right interpreter,
+    # while launchd rejected the whole file and silently went on running the
+    # previous definition. Validating with a more forgiving parser than the
+    # consumer is not validation.
+    linted = subprocess.run(
+        ["plutil", "-lint", str(PLIST_SRC)], capture_output=True
+    )
+    if linted.returncode != 0:
+        detail = (linted.stdout + linted.stderr).decode().strip()
+        print(f"{PLIST_SRC} is not valid: {detail}", file=sys.stderr)
+        return 1
     try:
         plistlib.loads(PLIST_SRC.read_bytes())
     except (OSError, ValueError) as exc:
@@ -524,9 +579,62 @@ def install() -> int:
     if loaded.returncode != 0:
         print(loaded.stderr.decode().strip() or "launchctl load failed", file=sys.stderr)
         return 1
-    print(f"Installed {PLIST_LABEL}. A verified backup will be taken daily.")
-    print("Check it with: python3 scripts/ted-backup.py --list")
+
+    print(f"Loaded {PLIST_LABEL}. Running it once to prove it works...")
+    ok, detail = prove_the_job_runs()
+    if not ok:
+        print(f"\n  THE SCHEDULED JOB CANNOT RUN: {detail}", file=sys.stderr)
+        print(
+            "  It is loaded and it would fail silently at 04:00.\n"
+            "  Fix the plist and run --install again.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\n  Proven: {detail}")
+    print("  A verified backup will be taken daily at 04:00.")
+    print("  Check it with: python3 scripts/ted-backup.py --list")
     return 0
+
+
+def prove_the_job_runs(timeout: float = 180.0) -> tuple[bool, str]:
+    """Fire the installed job once and wait for a real exit code.
+
+    launchd reports `last exit code` per job, which is the only answer that
+    accounts for the whole path: the interpreter, its permissions, the script
+    location and the script itself. Anything this process could check directly
+    would be checking its own permissions, not launchd's, and those are exactly
+    what differ.
+    """
+    target = f"gui/{os.getuid()}/{PLIST_LABEL}"
+    log = Path.home() / ".hermes" / "logs" / "ted-backup.log"
+    before = log.stat().st_size if log.exists() else 0
+
+    started = subprocess.run(
+        ["launchctl", "kickstart", "-p", target], capture_output=True
+    )
+    if started.returncode != 0:
+        return False, started.stderr.decode().strip() or "launchctl kickstart failed"
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        printed = subprocess.run(
+            ["launchctl", "print", target], capture_output=True
+        ).stdout.decode()
+        for line in printed.splitlines():
+            if "last exit code" not in line:
+                continue
+            value = line.split("=", 1)[1].strip()
+            if value.startswith("("):  # "(never exited)", still running
+                break
+            if value == "0":
+                return True, "the scheduled job ran and exited cleanly"
+            tail = ""
+            if log.exists():
+                with log.open(errors="replace") as handle:
+                    handle.seek(before)
+                    tail = " ".join(handle.read().split())[:200]
+            return False, f"exit code {value}. {tail}"
+    return False, f"it did not finish within {timeout:.0f}s"
 
 
 def list_backups() -> int:

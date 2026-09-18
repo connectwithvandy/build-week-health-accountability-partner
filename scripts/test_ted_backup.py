@@ -320,3 +320,81 @@ class TestRetention:
             bad.joinpath("receipt.json").write_text(json.dumps({"verified": False}))
         backup.prune(keep=2)
         assert good.exists(), "the only verified backup was deleted by retention"
+
+
+class TestTheScheduledJob:
+    """The plist is a file launchd parses, not a file Python parses, and on
+    18 Sep 2026 those two disagreed: a stray `-->` left bare text outside any
+    tag, plistlib read it happily and reported the correct interpreter, and
+    launchd rejected the file and carried on running the previous definition.
+    Nothing would have said so until a 04:00 backup was needed."""
+
+    def test_the_plist_passes_apples_own_validator(self, backup):
+        import subprocess
+        result = subprocess.run(
+            ["plutil", "-lint", str(backup.PLIST_SRC)], capture_output=True
+        )
+        assert result.returncode == 0, (result.stdout + result.stderr).decode()
+
+    def test_it_runs_under_an_interpreter_allowed_to_read_the_script(self, backup):
+        """macOS refuses a launchd agent access to ~/Documents unless that
+        binary has been granted it. /usr/bin/python3 has not, and the first
+        scheduled run died on 'Operation not permitted' before reading its own
+        script. ai.ted.gatewatch has run hundreds of times using the venv's."""
+        import plistlib
+        spec = plistlib.loads(backup.PLIST_SRC.read_bytes())
+        interpreter = spec["ProgramArguments"][0]
+        assert "/usr/bin/python3" != interpreter
+        assert interpreter.endswith("/venv/bin/python3"), interpreter
+
+    def test_it_never_restores_on_a_timer(self, backup):
+        """Restoring is a decision a person makes. A scheduled job that could
+        restore is a scheduled job that can overwrite a live home at 4am."""
+        import plistlib
+        spec = plistlib.loads(backup.PLIST_SRC.read_bytes())
+        assert "--restore" not in spec["ProgramArguments"]
+        assert "--drill" not in spec["ProgramArguments"]
+
+    def test_it_does_not_run_at_load(self, backup):
+        import plistlib
+        spec = plistlib.loads(backup.PLIST_SRC.read_bytes())
+        assert spec.get("RunAtLoad") is False
+        assert spec["StartCalendarInterval"] == {"Hour": 4, "Minute": 0}
+
+
+class TestDrillFreshness:
+    """A restore proof goes stale, and nobody remembers to drill by hand. The
+    daily job re-drills rather than relying on anyone noticing."""
+
+    def test_never_drilled_counts_as_stale(self, backup):
+        backup.DESTINATION.mkdir(parents=True, exist_ok=True)
+        backup.LAST_DRILL = backup.DESTINATION / "last-drill.json"
+        assert backup.drill_is_stale() is True
+
+    def test_a_recent_pass_is_not_stale(self, backup):
+        import time
+        backup.DESTINATION.mkdir(parents=True, exist_ok=True)
+        backup.LAST_DRILL = backup.DESTINATION / "last-drill.json"
+        backup.LAST_DRILL.write_text(
+            json.dumps({"passed": True, "drilled_at": time.time()})
+        )
+        assert backup.drill_is_stale() is False
+
+    def test_an_old_pass_is_stale(self, backup):
+        import time
+        backup.DESTINATION.mkdir(parents=True, exist_ok=True)
+        backup.LAST_DRILL = backup.DESTINATION / "last-drill.json"
+        backup.LAST_DRILL.write_text(
+            json.dumps({"passed": True, "drilled_at": time.time() - 8 * 86400})
+        )
+        assert backup.drill_is_stale() is True
+
+    def test_a_failed_drill_is_always_stale(self, backup):
+        """A failure is not a proof with a date on it. Re-drill until it passes."""
+        import time
+        backup.DESTINATION.mkdir(parents=True, exist_ok=True)
+        backup.LAST_DRILL = backup.DESTINATION / "last-drill.json"
+        backup.LAST_DRILL.write_text(
+            json.dumps({"passed": False, "drilled_at": time.time()})
+        )
+        assert backup.drill_is_stale() is True
