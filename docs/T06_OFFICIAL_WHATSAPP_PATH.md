@@ -138,24 +138,40 @@ obstacle; recheck near the date.
 
 Each step is reversible until step 6.
 
-1. **A second number.** Buy a spare SIM and register it on the Cloud API.
-   Nothing about the live service is touched. Everything up to step 5 runs
-   against this number.
+1. **Meta's free test number.** No SIM, no purchase, no cost. Creating a
+   developer app issues one immediately, along with a pre-approved
+   `hello_world` template. It will message up to **5 recipients** you verify
+   first, which Meta treats as a hard allowlist.
+
+   *An earlier draft of this said "buy a spare SIM". That was wrong and was
+   corrected the same evening when Vandy asked why it was needed. It is worth
+   recording why the mistake was easy: the test number is a property of the
+   developer app rather than of a phone, so it does not look like a phone
+   number problem until you go and read how one is issued.*
 2. **A Hermes platform adapter** for the Cloud API, written beside the Baileys
    one rather than replacing it, behind config.
 3. **Templates drafted and submitted** for the reminders, in the *utility*
    category, and approved. This has a lead time and nothing else can start it.
 4. **Full flow on the test number**: onboarding, a meal photo, a correction,
    a reminder outside the window through a template, and a deletion.
-5. **Run both in parallel.** The test number serves one or two consenting
-   users for a week while Baileys serves everybody else.
+5. **Run both in parallel.** The test number serves up to five consenting
+   users for a week while Baileys serves everybody else. Five is the platform
+   limit and it is also enough: four to ten people talk to Ted on a normal day,
+   so five real threads is not a sample, it is most of the traffic.
 6. **Cutover.** Verified backup first (`ted-backup.py`, drilled), then migrate
    the live number, then start the Cloud adapter. Only one client may hold a
    WhatsApp identity at a time.
 
+   **Ted has his own number.** `creds.json` registers him as "Ted" on a line
+   that is neither Vandy's personal WhatsApp nor any user's, so the cutover
+   moves Ted's own identity and takes nothing else down with it. That is a
+   materially smaller risk than migrating a number a person also uses, and it
+   was worth checking rather than assuming.
+
 ## 6. Rollback
 
-- **Before step 6:** stop the test number. There is nothing to undo.
+- **Before step 6:** stop using the test number. There is nothing to undo and
+  nothing was bought.
 - **After step 6:** the honest answer is that rollback is slow. The number has
   left the Baileys session and returning it means re-registering on the normal
   app and re-pairing. **Users are not lost** — identity is the phone number and
@@ -166,7 +182,9 @@ Each step is reversible until step 6.
 
 ## 7. What is still open
 
-- Whether the live number migrates cleanly. Needs step 1.
+- Whether Ted's own number migrates cleanly. Needs step 6, and is the only
+  step with no rehearsal available: the test number cannot rehearse a
+  migration of a different number.
 - Whether Meta approves a reminder template in Ted's voice at all.
 - Whether service messages start being charged on 1 Oct 2026.
 - Business verification, whenever growth passes 250 unique users a day.
