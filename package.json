@@ -18,6 +18,7 @@
     "setup:reconcile": "python3 scripts/ted-reconcile-setup.py",
     "timezones": "python3 scripts/ted-backfill-timezone.py",
     "forget": "python3 scripts/ted-forget-user.py",
+    "deletion:audit": "python3 scripts/ted-deletion-audit.py --forgotten",
     "spend": "python3 scripts/ted-api-spend.py",
     "concurrency": "python3 scripts/ted-concurrency-check.py",
     "ordering": "python3 scripts/ted-ordering-check.py",

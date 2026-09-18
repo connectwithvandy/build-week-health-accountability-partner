@@ -37,10 +37,23 @@ branch children so a foreign key still holds, and removes the on-disk transcript
 files. Hand-written SQL over seven tables would drift from that the first time
 the gateway changed.
 
-WHAT THIS CANNOT REACH, and says so every run rather than implying it is clean:
-~/.hermes/logs/agent.log holds message text and rotates on its own schedule.
-Editing a live log the gateway is writing to is a worse idea than leaving it,
-and it ages out by itself.
+WHAT THIS CANNOT REACH, and says so every run rather than implying it is clean.
+
+The logs were on this list until 18 Sep 2026, when Hermes patch 14 stopped the
+writing and `ted-log-retention.py` redacted the 4,998 lines already there. They
+are no longer a store of user words. Two things took their place, both found by
+`ted-deletion-audit.py` and neither fixed here:
+
+  * `channel_directory.json` names every chat the gateway routes to, and
+    nothing removes a deleted person from it.
+  * Snapshots. Nine repair scripts write a `.bak` before touching a profile,
+    `ted-backup.py` copies the state daily, and both are deliberate. A backup
+    that forgets on demand is not a backup. They are retention rather than
+    leakage, and the audit reports them separately so the distinction is
+    somebody's decision instead of an accident.
+
+Run `npm run deletion:audit` after this, which is the half T09 asks for and
+this script never did: proof rather than an assumption.
 
 Dry run by default. Nothing is deleted without --apply, and --apply prints the
 name and the message count and asks, because the one thing worse than a
@@ -457,8 +470,15 @@ def main() -> int:
         print("  which clears them and leaves a tombstone. Editing them from here")
         print("  would race the running gateway.")
 
-    print(f"\n  not reachable: {AGENT_LOG} holds message text and rotates on its")
-    print( "  own. Editing a log the gateway is writing to is worse than leaving it.")
+    # The log was on this line until 18 Sep 2026. Patch 14 stopped Hermes
+    # writing user text and ted-log-retention.py redacted what was there, so
+    # naming it here now would send somebody to check a store that no longer
+    # holds words. What replaced it is not reachable from here either, and
+    # saying nothing would be the same mistake in the other direction.
+    print("\n  not reachable from here: channel_directory.json still names this")
+    print("  chat, and nothing removes it. Snapshots and ~/ted-backups keep a copy")
+    print("  on purpose — a backup that forgets on demand is not a backup.")
+    print("  Prove what is left rather than assuming: npm run deletion:audit")
 
     if not args.apply:
         print("\nDry run. Nothing was deleted. Re-run with --apply.\n")
