@@ -3,6 +3,7 @@
 
     python3 scripts/ted-purge-voice-rules.py               # dry run
     python3 scripts/ted-purge-voice-rules.py --keys-only   # no values printed
+    python3 scripts/ted-purge-voice-rules.py --skip Arpit  # leave one person's alone
     python3 scripts/ted-purge-voice-rules.py --apply       # writes
 
 WHY. T14's audit found seven rows in `userFacts` that are not facts about
@@ -125,6 +126,31 @@ def voice_rules(facts: list[dict], users: list[dict], is_voice_rule) -> list[dic
     return sorted(found, key=lambda row: (row["name"].lower(), row["key"]))
 
 
+def apply_skips(rows: list[dict], skips: list[str]) -> tuple[list[dict], list[dict]]:
+    """Split off the rows a --skip names, as (kept, skipped).
+
+    Exists for Arpit, whose `chat_style_preference` is the one of the seven
+    that says something SOUL.md does not: "friend-first bangalore vibe". That
+    is not a rule about how Ted talks, it is where the person lives, filed
+    under a style key. Deleting it would throw away the only record of it,
+    which is the mistake T14 section 2 already made once and caught by reading
+    values.
+
+    Matched on the person's name, or `name:key` for one row of theirs, case
+    insensitively. Names rather than `whatsappUserId` because this flag is
+    typed by a human reading the list above it, and the list prints names.
+    """
+    wanted = {skip.strip().lower() for skip in skips}
+    kept, skipped = [], []
+    for row in rows:
+        name = row["name"].lower()
+        if name in wanted or f"{name}:{row['key'].lower()}" in wanted:
+            skipped.append(row)
+        else:
+            kept.append(row)
+    return kept, skipped
+
+
 def by_person(rows: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
     for row in rows:
@@ -171,6 +197,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="actually delete them")
     parser.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="NAME[:KEY]",
+        help="leave this person's rules alone; repeatable",
+    )
+    parser.add_argument(
         "--keys-only",
         action="store_true",
         help="print key names without the rules themselves",
@@ -186,6 +219,17 @@ def main() -> int:
     rows = voice_rules(convex_rows("userFacts"), convex_rows("users"), voice_rule_test())
     if not rows:
         print("No voice rules are stored in anybody's memory.")
+        return 0
+
+    rows, skipped = apply_skips(rows, args.skip)
+    if skipped:
+        print(
+            f"Leaving {len(skipped)} rule(s) alone at your word: "
+            + ", ".join(f"{row['name']}'s {row['key']}" for row in skipped)
+            + "\n"
+        )
+    if not rows:
+        print("Everything found was skipped. Nothing to do.")
         return 0
 
     grouped = by_person(rows)
