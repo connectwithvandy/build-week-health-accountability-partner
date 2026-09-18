@@ -365,3 +365,41 @@ def test_the_real_shim_refuses_when_its_source_is_gone(tmp_path, monkeypatch):
 def test_gate_source_is_none_when_the_shim_is_missing(tmp_path, monkeypatch):
     module = shim_at(tmp_path, monkeypatch, None)
     assert module.gate_source() is None
+
+
+class TestItWaitsOutARestart:
+    """`hermes gateway restart` hands off to launchd and returns immediately,
+    so for a second or two there is no pid file. The guard used to announce
+    "gateway is not running" and exit non-zero, which on 18 Sep 2026 broke a
+    `restart && guard && migrate` chain and silently skipped the migration on
+    the end of it."""
+
+    def test_it_waits_while_launchd_is_putting_it_back(self, guard, monkeypatch):
+        answers = iter([None, None, 4242])
+        monkeypatch.setattr(guard, "running_pid", lambda: next(answers))
+        monkeypatch.setattr(guard, "launchd_job_loaded", lambda: True)
+        monkeypatch.setattr(guard.time, "sleep", lambda _s: None)
+        assert guard.settled_pid(grace=10) == 4242
+
+    def test_a_gateway_stopped_on_purpose_answers_at_once(self, guard, monkeypatch):
+        """No launchd definition means nobody is coming back, so waiting would
+        just make every check on a stopped host take half a minute."""
+        monkeypatch.setattr(guard, "running_pid", lambda: None)
+        monkeypatch.setattr(guard, "launchd_job_loaded", lambda: False)
+        waited = []
+        monkeypatch.setattr(guard.time, "sleep", lambda s: waited.append(s))
+        assert guard.settled_pid(grace=10) is None
+        assert waited == []
+
+    def test_it_gives_up_rather_than_hanging(self, guard, monkeypatch):
+        monkeypatch.setattr(guard, "running_pid", lambda: None)
+        monkeypatch.setattr(guard, "launchd_job_loaded", lambda: True)
+        monkeypatch.setattr(guard.time, "sleep", lambda _s: None)
+        assert guard.settled_pid(grace=0.01) is None
+
+    def test_a_running_gateway_never_waits(self, guard, monkeypatch):
+        monkeypatch.setattr(guard, "running_pid", lambda: 99)
+        waited = []
+        monkeypatch.setattr(guard.time, "sleep", lambda s: waited.append(s))
+        assert guard.settled_pid() == 99
+        assert waited == []

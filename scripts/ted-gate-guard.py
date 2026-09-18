@@ -25,6 +25,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -303,6 +304,51 @@ def unpinned_enabled_jobs() -> list[str]:
     ]
 
 
+GATEWAY_JOB = "ai.hermes.gateway"
+RESTART_GRACE_SECONDS = 25.0
+
+
+def launchd_job_loaded() -> bool:
+    """Whether launchd holds a definition for the gateway at all.
+
+    The difference between "stopped on purpose" and "between two halves of a
+    restart". Only the second is worth waiting for.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{GATEWAY_JOB}"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def settled_pid(grace: float = RESTART_GRACE_SECONDS) -> int | None:
+    """The gateway pid, giving launchd a moment to finish putting it back.
+
+    `hermes gateway restart` hands off to launchd and returns immediately, so
+    for a second or two afterwards there is no pid file and this guard used to
+    announce "gateway is not running". That is wrong twice over: it is untrue,
+    and it exits non-zero, which on 18 Sep 2026 broke a `restart && guard &&
+    migrate` chain and silently skipped the migration at the end of it.
+
+    Only waits when launchd has a definition loaded. A gateway stopped on
+    purpose answers immediately, as it should.
+    """
+    pid = running_pid()
+    if pid is not None or not launchd_job_loaded():
+        return pid
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        time.sleep(1.0)
+        pid = running_pid()
+        if pid is not None:
+            return pid
+    return None
+
+
 def running_pid() -> int | None:
     """The live gateway pid, or None.
 
@@ -361,7 +407,7 @@ def main() -> int:
 
     started = last_gateway_start()
     registered = last_registration()
-    pid = running_pid()
+    pid = settled_pid()
 
     if pid is None:
         report.append(
