@@ -13,6 +13,9 @@ this laptop and fail everywhere else.
 from __future__ import annotations
 
 import importlib.util
+import sys
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -941,3 +944,250 @@ class TestStaleFailureProbe:
         assert ok is False
         assert "rejected" in detail
         assert "no key" not in detail
+
+
+class TestCheckJobs:
+    """The one condition on T11's alert list that nothing watched.
+
+    T11 names "failed scheduled jobs". The other five — disconnect, model
+    failures, queue backlog, missing safety assets, health-check — have had a
+    component since 17 Sep. A reminder that stops firing is invisible in a
+    chat: it looks exactly like a quiet day.
+    """
+
+    @staticmethod
+    def _jobs(watch, tmp_path, monkeypatch, *jobs):
+        path = tmp_path / "jobs.json"
+        path.write_text(json.dumps({"jobs": list(jobs)}))
+        monkeypatch.setattr(watch, "JOBS_FILE", path)
+
+    @staticmethod
+    def _job(**overrides):
+        job = {
+            "name": "ted:aaaa:daily_review",
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "last_status": "ok",
+            "next_run_at": (
+                datetime.now(timezone.utc) + timedelta(hours=3)
+            ).isoformat(),
+        }
+        job.update(overrides)
+        return job
+
+    def test_healthy_jobs_raise_nothing(self, watch, tmp_path, monkeypatch):
+        self._jobs(watch, tmp_path, monkeypatch, self._job(), self._job())
+        ok, detail = watch.check_jobs()
+        assert ok is True
+        assert "2 scheduled reminders" in detail
+
+    def test_a_failed_run_is_caught(self, watch, tmp_path, monkeypatch):
+        # The 4 Sep shape: the provider returned 402 and the turn composed
+        # nothing. Nothing outside the log said so for fifteen days.
+        self._jobs(watch, tmp_path, monkeypatch,
+                   self._job(last_status="error", name="ted:bbbb:omega3"))
+        ok, detail = watch.check_jobs()
+        assert ok is False
+        assert "ted:bbbb:omega3" in detail
+
+    def test_a_delivery_error_is_caught_even_when_the_run_says_ok(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # The job ran and wrote a line; the send failed. last_status is still
+        # "ok", because it describes the run and not the delivery.
+        self._jobs(watch, tmp_path, monkeypatch,
+                   self._job(last_delivery_error="Not connected to WhatsApp"))
+        ok, _ = watch.check_jobs()
+        assert ok is False
+
+    def test_a_scheduler_that_stopped_ticking_is_caught(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # The invisible half. Every job still says last_status ok, because ok
+        # describes its LAST run, so a dead scheduler leaves the whole list
+        # looking healthy forever.
+        overdue = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        self._jobs(watch, tmp_path, monkeypatch, self._job(next_run_at=overdue))
+        ok, detail = watch.check_jobs()
+        assert ok is False
+        assert "overdue" in detail
+
+    def test_a_few_minutes_late_is_not_an_alarm(self, watch, tmp_path, monkeypatch):
+        # The scheduler ticks every 60s and a run takes time. Waking somebody
+        # for five minutes of lateness is how an alarm gets ignored.
+        late = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        self._jobs(watch, tmp_path, monkeypatch, self._job(next_run_at=late))
+        assert watch.check_jobs()[0] is True
+
+    def test_disabled_jobs_are_not_faults(self, watch, tmp_path, monkeypatch):
+        # 40 of 60 are disabled and correctly so: twelve people sit in
+        # awaitingBreakReply and the gate refuses their sends anyway.
+        stale = (datetime.now(timezone.utc) - timedelta(days=9)).isoformat()
+        self._jobs(watch, tmp_path, monkeypatch,
+                   self._job(enabled=False, next_run_at=stale, last_status="error"))
+        ok, detail = watch.check_jobs()
+        assert ok is True
+        assert detail == "no reminder is scheduled"
+
+    def test_a_paused_job_is_somebodys_decision(self, watch, tmp_path, monkeypatch):
+        stale = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        self._jobs(watch, tmp_path, monkeypatch,
+                   self._job(paused_at="2026-09-13T14:45:37", next_run_at=stale))
+        assert watch.check_jobs()[0] is True
+
+    def test_an_unreadable_schedule_is_an_outage_not_a_gap(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # Every reminder Ted sends is defined in this file. Failing to read it
+        # is the alarm, not a reason to stay quiet.
+        path = tmp_path / "jobs.json"
+        path.write_text("{ truncated")
+        monkeypatch.setattr(watch, "JOBS_FILE", path)
+        ok, detail = watch.check_jobs()
+        assert ok is False
+        assert "cannot read" in detail
+
+    def test_a_missing_schedule_is_an_outage_too(self, watch, tmp_path, monkeypatch):
+        monkeypatch.setattr(watch, "JOBS_FILE", tmp_path / "gone.json")
+        assert watch.check_jobs()[0] is False
+
+    def test_an_unparseable_date_does_not_crash_the_watcher(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # A watcher that raises is a watcher that is not watching.
+        self._jobs(watch, tmp_path, monkeypatch, self._job(next_run_at="whenever"))
+        assert watch.check_jobs()[0] is True
+
+    def test_the_prompt_is_never_read(self, watch, tmp_path, monkeypatch):
+        # T11: enough to debug, without message content. The prompt holds what
+        # to take and how much.
+        secret = "remind Vandy to take Chelated Iron 29mg on an empty stomach"
+        self._jobs(watch, tmp_path, monkeypatch,
+                   self._job(last_status="error", prompt=secret))
+        _, detail = watch.check_jobs()
+        assert "Iron" not in detail and "29mg" not in detail
+
+
+class TestOneSimulatedFailureOneAlert:
+    """T11's definition of done, exercised rather than asserted.
+
+        A simulated WhatsApp/model/service failure produces one actionable
+        alert outside WhatsApp within the agreed threshold.
+
+    `--test-alert` proves the channel carries a message. It does not prove that
+    a failure *becomes* one, which is the sentence above. This drives `main()`
+    with a broken service and no network anywhere, and looks at what would have
+    been sent.
+    """
+
+    @staticmethod
+    def _rig(watch, tmp_path, monkeypatch, **health):
+        """A watcher with every check healthy except the ones named."""
+        sent = []
+        monkeypatch.setattr(watch, "STATE", tmp_path / "watch-state.json")
+        monkeypatch.setattr(watch, "run_guard", lambda: (True, "gates on"))
+        monkeypatch.setattr(watch, "check_link", lambda: (True, "connected", False))
+        monkeypatch.setattr(watch, "check_model", lambda: (True, "answering"))
+        monkeypatch.setattr(watch, "check_dropped", lambda: (True, "nobody waiting"))
+        monkeypatch.setattr(watch, "check_runaway", lambda: (True, "none"))
+        monkeypatch.setattr(watch, "check_power", lambda: (True, "plugged in"))
+        monkeypatch.setattr(watch, "check_jobs", lambda: (True, "on time"))
+        for name, value in health.items():
+            monkeypatch.setattr(watch, name, lambda value=value: value)
+
+        def record(title, body, dry_run, urgent=True):
+            sent.append((title, body))
+            return True
+
+        monkeypatch.setattr(watch, "notify", record)
+        monkeypatch.setattr(sys, "argv", ["ted-watch.py"])
+        return sent
+
+    def test_a_dead_whatsapp_link_produces_exactly_one_alert(
+        self, watch, tmp_path, monkeypatch
+    ):
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_link=(False, "logged out", True),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 1
+        title, body = sent[0]
+        assert "WhatsApp" in title
+        # Actionable: it has to say what to do, not only that something broke.
+        assert "hermes whatsapp" in body
+
+    def test_a_reminder_that_stopped_firing_produces_one_alert(
+        self, watch, tmp_path, monkeypatch
+    ):
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_jobs=(False, "3 reminder(s) overdue, the oldest by 5 hours"),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 1
+        title, body = sent[0]
+        assert "reminders" in title
+        assert "overdue" in body
+        assert "npm run ordering" in body
+
+    def test_the_same_failure_twice_does_not_alert_twice(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # The dedupe T11 asks for. A check that alarms every fifteen minutes
+        # is a check somebody mutes.
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_jobs=(False, "3 reminder(s) overdue, the oldest by 5 hours"),
+        )
+        assert watch.main() == 0
+        assert watch.main() == 0
+        assert len(sent) == 1
+
+    def test_two_unrelated_failures_are_two_alerts(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # Per-component clocks: a flapping gate must not swallow the alert for
+        # a link that died.
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_jobs=(False, "3 reminder(s) overdue, the oldest by 5 hours"),
+            check_power=(False, "battery at 4%"),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 2
+
+    def test_recovery_is_announced_once(self, watch, tmp_path, monkeypatch):
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_jobs=(False, "3 reminder(s) overdue, the oldest by 5 hours"),
+        )
+        assert watch.main() == 0
+        monkeypatch.setattr(watch, "check_jobs", lambda: (True, "on time"))
+        assert watch.main() == 0
+        assert len(sent) == 2
+        assert "back" in sent[1][0]
+        assert watch.main() == 0
+        assert len(sent) == 2
+
+    def test_a_healthy_first_run_says_nothing_at_all(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # A watcher that says hello when installed trains you to ignore it.
+        sent = self._rig(watch, tmp_path, monkeypatch)
+        assert watch.main() == 0
+        assert sent == []
+
+    def test_no_alert_body_carries_what_somebody_said(
+        self, watch, tmp_path, monkeypatch
+    ):
+        # T11: enough context to debug without exposing message content.
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_jobs=(False, "1 reminder(s) failed on their last run: ted:bbbb:omega3"),
+            check_link=(False, "logged out", True),
+        )
+        assert watch.main() == 0
+        for _, body in sent:
+            assert "katori" not in body and "kcal" not in body

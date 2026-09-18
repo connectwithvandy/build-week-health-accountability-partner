@@ -152,6 +152,31 @@ was wrong twice on the day it was written.
   Now matched by arrival time, claimed only when exactly one person was
   messaging within 60s. All 29 attributed, none ambiguous, none claimed twice.
 
+### T10 and T11, 19 Sep 2026
+
+- **Scheduled reminders now leave a durable record.** Hermes patch 16 puts cron
+  sends through the same delivery ledger as replies, applied and live at 22:55.
+  Before it, 230 reminders between 1 and 18 Sep existed only as log lines in a
+  file that rotates, against 184 ledger rows for replies. `session_key` is
+  `cron:<platform>:<chat>`, so the two kinds stay distinguishable. What this
+  still does not prove is WhatsApp *delivering* anything: `delivered` means the
+  adapter accepted it, and a real receipt needs the Cloud API status webhook,
+  which is T06. See `docs/T10_DELIVERY_LEDGER.md`.
+- **"Failed scheduled jobs" is watched at last.** It was the only one of T11's
+  six alert conditions with no component in `ted-watch.py`. `check_jobs` now
+  catches both shapes: a run that errored, and a run that never happened —
+  `next_run_at` more than thirty minutes past. The second is the invisible
+  half, because every job reports `last_status: ok` about its *last* run, so a
+  scheduler that stopped ticking leaves the whole list looking healthy forever.
+- **T11's definition of done is exercised, not asserted.** Seven tests drive
+  `main()` with a simulated failure and no network, and check that one failure
+  becomes exactly one actionable alert, that the same failure twice does not
+  alert twice, that two unrelated failures are two alerts, and that no alert
+  body carries what anybody said. `--test-alert` proves the channel; these
+  prove a failure becomes a message.
+- **Pushover is still unconfigured.** Email is configured and is the only
+  remote channel, so a Gmail outage is currently a silent one.
+
 ### Still open
 
 - **T01, OS isolation.** TED runs as `vandana.agarwal`, not a dedicated

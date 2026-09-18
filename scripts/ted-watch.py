@@ -75,7 +75,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -578,6 +578,100 @@ def _sleep_held_forever(assertions: str) -> bool:
     return False
 
 
+JOBS_FILE = HERMES / "cron" / "jobs.json"
+
+# The scheduler ticks every 60 seconds. A job still unrun half an hour after
+# its time means the tick itself has stopped, not that it is running late.
+OVERDUE_SECONDS = 30 * 60
+
+
+def _job_is_live(job: dict) -> bool:
+    """Whether this job is one somebody is actually waiting on.
+
+    Disabled jobs are the normal state for most of the list — 40 of 60 on
+    18 Sep 2026, and correctly so, because twelve people sit in
+    `awaitingBreakReply` and the gate would refuse their sends anyway. A paused
+    job is a decision somebody made. Neither is a fault and neither wakes
+    anybody at night.
+    """
+    if not job.get("enabled"):
+        return False
+    if job.get("paused_at"):
+        return False
+    return str(job.get("state") or "scheduled") == "scheduled"
+
+
+def check_jobs() -> tuple[bool, str]:
+    """Whether every reminder somebody set up is still going out.
+
+    T11 names "failed scheduled jobs" among the things that must alert outside
+    WhatsApp, and this was the one condition on that list nothing watched. The
+    other five have had a component here since 17 Sep.
+
+    Two failures, because they look nothing alike from the outside:
+
+    **A run that errored.** `last_status` is not `ok`, or a delivery error was
+    recorded against the job. This is the 4 Sep shape: the provider returned
+    402, the turn composed nothing, and the only place it showed was a log
+    line nobody reads. `docs/T08_ORDERING.md` has what that cost — two people
+    whose first message to Ted was met with silence, and who never came back.
+
+    **A run that never happened.** `next_run_at` is in the past by more than
+    half an hour. Every individual job still says `ok`, because `ok` is the
+    status of its *last* run, and a scheduler that has stopped ticking leaves
+    every job looking healthy forever. This is the half that would otherwise
+    be invisible.
+
+    The job's `prompt` is never read. It holds the health context of the
+    reminder — what to take, how much, when — and T11 asks for enough to debug
+    without message content. A name and a status are enough to go and look.
+    """
+    try:
+        jobs = json.loads(JOBS_FILE.read_text()).get("jobs", [])
+    except (OSError, ValueError) as exc:
+        # Unreadable is not healthy. Every reminder Ted sends is defined in
+        # this file, so failing to read it is a real outage, not a gap.
+        return False, f"cannot read the reminder schedule: {type(exc).__name__}"
+
+    live = [job for job in jobs if _job_is_live(job)]
+    if not live:
+        return True, "no reminder is scheduled"
+
+    failing = [
+        job for job in live
+        if str(job.get("last_status") or "ok") != "ok" or job.get("last_delivery_error")
+    ]
+
+    overdue = []
+    now = datetime.now(timezone.utc)
+    for job in live:
+        when = job.get("next_run_at")
+        if not when:
+            continue
+        try:
+            due = datetime.fromisoformat(str(when))
+        except ValueError:
+            continue
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        if (now - due).total_seconds() > OVERDUE_SECONDS:
+            overdue.append((job, due))
+
+    if not failing and not overdue:
+        return True, f"all {len(live)} scheduled reminders are on time"
+
+    parts = []
+    if failing:
+        names = ", ".join(str(job.get("name", "?")) for job in failing[:3])
+        parts.append(f"{len(failing)} reminder(s) failed on their last run: {names}")
+    if overdue:
+        oldest = min(due for _, due in overdue)
+        late = (now - oldest).total_seconds() / 60
+        span = f"{late:.0f} min" if late < 120 else f"{late / 60:.0f} hours"
+        parts.append(f"{len(overdue)} reminder(s) overdue, the oldest by {span}")
+    return False, "; ".join(parts)
+
+
 def check_power() -> tuple[bool, str]:
     """Whether the machine Ted runs on is going to still be awake in an hour.
 
@@ -1035,6 +1129,7 @@ def main() -> int:
     dropped_ok, dropped_detail = check_dropped()
     runaway_ok, runaway_detail = check_runaway()
     power_ok, power_detail = check_power()
+    jobs_ok, jobs_detail = check_jobs()
 
     state = read_state()
     now = time.time()
@@ -1049,6 +1144,7 @@ def main() -> int:
         ("dropped", dropped_ok, "Someone Ted never answered"),
         ("runaway", runaway_ok, "A conversation Ted stopped answering"),
         ("power", power_ok, "The laptop Ted runs on"),
+        ("jobs", jobs_ok, "Ted's reminders"),
     ]
 
     for key, ok, label in components:
@@ -1098,6 +1194,14 @@ def main() -> int:
                 "it sleeps. Plug it in, and if the hold is missing: "
                 "python3 scripts/ted-watch.py --install-awake"
             )
+        elif key == "jobs":
+            title = f"⚠️ {label} are not going out"
+            body = (
+                f"{jobs_detail}.\n\n"
+                "Nothing about this is visible in a chat: a reminder that "
+                "never fires looks exactly like a quiet day. On the laptop: "
+                "npm run ordering, then hermes cron list."
+            )
         elif key == "dropped":
             title = f"⚠️ {label}"
             body = (
@@ -1115,6 +1219,7 @@ def main() -> int:
             "model": model_detail,
             "dropped": dropped_detail,
             "power": power_detail,
+            "jobs": jobs_detail,
         }.get(key, stamp)
         print(f"{key}: {'ok' if ok else 'FAILING'} ({detail})")
         if not ok and key == "gates":
