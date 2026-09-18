@@ -1574,6 +1574,103 @@ the site falling out of search weeks later.
 Suite: 164 web tests, 826 gate tests and 2124 subtests, all passing, plus lint
 and a production build.
 
+## Order 30 — 18 Sep 2026, afternoon, the server was the small number
+
+T04 needed a host. Most of this session went on choosing one, and the useful
+finding was that the question was the wrong size.
+
+### The number nobody had looked at
+
+Hosting is about 1,050 rupees a month. `ted-api-spend.py` over seven days:
+
+```
+         billed   calls          USD
+cron        311     398        33.26
+chat         53     587         7.91
+all         364     985        41.17
+```
+
+About $176 a month, roughly 15,400 rupees. **The model is fifteen times the
+server**, and an entire evening had gone into optimising the server.
+
+AWS Activate credits can pay that, which is the only reason AWS is in this at
+all. Verified against AWS's own pages, not blogs: Claude Sonnet 5 is on
+Bedrock, and Bedrock is absent from the promotional-credit exclusion list.
+**AWS Marketplace is on that list**, and Claude can also be bought as "Claude
+Platform on AWS", which invoices as Marketplace. Same model, same price, and
+credits would not apply. It has to be Bedrock.
+
+Hermes already supports it: `auth_type: aws_sdk`, and `hermes_cli/models.py`
+lists `us.anthropic.claude-sonnet-5`, the exact model in `config.yaml`. The
+switch is configuration, not code.
+
+### The switch would have zeroed the bill report
+
+`price_row` looked its rate up by exact string match. Under Bedrock every id
+becomes `us.anthropic.claude-sonnet-5`, no key matches, and the report prints
+**$0.00** under a one-line footnote while credits burn. `normalize_model` now
+strips the region prefix, vendor segment, dated build and version suffix, with
+a test pinning every Bedrock id Hermes lists, so a rename upstream fails a test
+instead of printing a zero. Conservative on purpose: an unknown model stays
+unpriced, because unpriced is counted and reported while a wrong rate is not.
+
+A regional inference profile is reported to cost more than the global default.
+That could not be confirmed on AWS's pricing page, so the report raises a
+caution and never adjusts a figure. Same rule as `ttl_caution`.
+
+### Host and model are separate, so nothing moves twice
+
+The worry was that starting somewhere now means migrating again when the
+credits land. It does not. Bedrock is an API call, the same as Anthropic direct
+is today. TED can move host now and change model later, or never. A rejected
+application costs nothing already spent.
+
+### AWS account state, 18 Sep
+
+On `vandana@heyted.in`, business, paid plan, AutoPay on a card. `$100` of
+onboarding credits **survived the upgrade off the free plan**. Spend limit set
+to `$40`.
+
+The spend limit is better than expected and also a new way to lose the service.
+It is a hard stop: *"If you reach your limit, your project is paused."* That is
+a real ceiling, not the email alert this file assumed. It also means a billing
+rule can switch TED off, which is the same outage T04 exists to prevent wearing
+different clothes. `$40` against `$12` of Lightsail is headroom chosen for that
+reason, not for the hosting.
+
+Early cost controls: **stop new resource launches** only. "Pause idle
+resources" was refused because a low-traffic WhatsApp bot is what idle looks
+like from outside, which is the Oracle reclamation trap again, and "pause top
+cost drivers" says plainly that it can take a live app offline.
+
+### The fallback, if TED goes to AWS
+
+1. **The laptop stays able to run it.** `ai.ted.awake` and the gateway stay
+   installed, stopped rather than removed. One instance at a time, always.
+2. **A verified copy of `~/.hermes/whatsapp/session` before anything moves.**
+3. **The watcher does not move.** `ted-watch.py` stays on the laptop watching
+   AWS from outside. Moving both means a paused project kills the gateway and
+   its alarm together, silently, which is 8 Sep again with a billing rule in
+   place of a logout.
+
+### Corrected today
+
+- Activate review is **7 to 10 business days**, not the 24 hours a blog said.
+- Founders credits are reported at **12 months**, not 24. AWS's own FAQ would
+  not render the answer, so read the date off the credit in the Billing console
+  rather than trusting either number.
+- The **company website requirement is real**. It was retracted here on the
+  strength of AWS's overview page not listing it; AWS's own step-by-step guide
+  does.
+
+### Open
+
+- Credit expiry date, unread.
+- Whether the Activate application was submitted.
+- Whether the spend limit counts gross usage or net of credits. It decides the
+  limit before TED ever runs on Bedrock: at `$176` a month gross, a `$40`
+  ceiling pauses the project in a week.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
