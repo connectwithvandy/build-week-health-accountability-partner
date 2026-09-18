@@ -1795,6 +1795,110 @@ month or more**, which is the same trouble in a different shape.
   going unanswered.
 - `:free` models are still unpriced and still counted in the footnote.
 
+## Order 32 — 18 Sep 2026, night, four things that were true and one that was not
+
+A long session. The pattern worth keeping is that almost every real fault was
+found by running something against the live system, and the one wrong
+conclusion came from reading a table and trusting a rule.
+
+### The correction first
+
+**"Ted has sent no proactive message in seven days" was wrong**, said four
+times before it was caught. He sends 7 to 21 reminders a day and always has.
+The claim came from `delivery_obligations`, following this file's own rule that
+the ledger is what a user received. **That rule is true for replies and
+silently incomplete for reminders:** a scheduled send never creates an
+obligation. The scheduler hands it to the adapter and writes one line to
+`agent.log`, which is the only record it happened.
+
+    Job '6e77ad1b48ab': delivered to whatsapp:115650651500637@lid via live adapter
+
+`ted-window-check.py`, written an hour earlier to price T06, was therefore
+reading a sixth of the traffic. It reads both sources now and prints replies
+and reminders separately, so a zero in the reminder column reads as a bug
+rather than as good news.
+
+### T05, closed
+
+Backup had one hand-taken copy and none of what T05 asks for. Now: restore, a
+drill that rebuilds a real user's history out of a restored copy, retention
+that never prunes the last verified backup, `ai.ted.backup` daily at 04:00
+verified by launchd's own exit code, and a re-drill whenever the proof is older
+than seven days.
+
+**The backup was missing `~/.hermes/state`** — 56 users' onboarding and 113
+disclosure records, the store that enforces the under-18 refusal. Found while
+starting the migrations, not while writing the backup. A restore would have
+brought back a Ted who had forgotten who consented and who is a minor.
+
+**Three faults in one installer message:** macOS blocks a launchd agent from
+reading `~/Documents` under the Command Line Tools python; a stray `-->` made
+the plist invalid, which `plistlib` accepted and launchd rejected while
+silently keeping the old definition; and `--install` asserted success for a job
+it had never seen run. All three fixed, and the installer now kickstarts the
+job and reads launchd's exit code.
+
+**Migrations:** eight repair scripts had each been run once with nothing
+recording it, which stopped being survivable the moment restore worked.
+`ted-migrate.py` keeps the ledger in `~/.hermes/state`, so a restored home
+arrives knowing its own history, and marks a repair **AT RISK** when it was
+applied after the gateway started, because the gate holds that store in memory.
+
+### T02, closed on real traffic
+
+It had already happened and nobody had looked: Vishal S sent "Cool" nine
+seconds into Venky's onboarding on 16 Sep. `npm run concurrency` now checks
+every episode — 32 in 30 days, 5 with messages to inspect, all clean.
+
+### T35, closed
+
+**4,998 lines of users' own words** sat in `~/.hermes/logs`, next to their
+names, with no retention and outside what "delete my data" can reach. Hermes
+patch 14 stops the writing; `ted-log-retention.py` redacted what was there,
+keeping every line and only removing the words. All logs read clean.
+
+### arpit, and what the gate was throwing away
+
+He asked "do you read my other messages ?" and Ted wrote a proper answer. He
+never saw it: `setup_gate` returned the counted question *instead of* the
+reply. He asked again, got the same eleven words, and stopped. **The model was
+already doing the human thing and the gate was discarding it.** It composes
+both now, count last, figures stripped, Ted's own duplicate question dropped.
+
+Same thread, second bug: he wrote English throughout and got Hinglish, because
+the switch needed four of his own messages and he reached four on the last
+thing he ever sent. Now two, and a one-word reply no longer votes.
+
+### T06, decided; T07, half done
+
+Both of T06's supposed blockers dissolved. Meta's AI ban binds **AI Providers**
+where the AI is "the primary rather than incidental functionality"; Ted sells
+meal logging and reminders. Verification is not needed at 56 users against a
+250/day cap. **No SIM is needed either** — a developer app is issued a free
+test number, which an earlier draft of the document got wrong.
+
+The real constraint is the 24-hour window: **85 of 406 messages in 30 days
+(21%) would need a pre-approved template, and every one of them is a
+reminder.** About ₹10 a month. The cost is nothing; the question is what a
+template can say, because it cannot improvise.
+
+T07's state half was already true and tested. Its user-visible half was not:
+Convex refused to log the same meal twice and nothing refused to *answer*
+twice. Hermes patch 15 fixes it before the model call, and it is a prerequisite
+for T06 because Meta retries webhooks.
+
+### Left open by decision
+
+`docs/FOUND_NOT_FIXED.md`. The user analysis is deferred at Vandy's word: 36 of
+56 users have no reminder job, and a user who ignores the break offer is silent
+forever with no path back except writing first. Neither is to be acted on
+without her.
+
+### Numbers
+
+1,266 Python tests, 2,147 subtests, 123 in the Convex model suite. 15 Hermes
+patches. Gateway restarted and gates verified at 22:01.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.

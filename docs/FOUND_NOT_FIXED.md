@@ -31,9 +31,17 @@ the "want me to pause?" offer, so the gate refuses their sends anyway. Of the 8
 users with enabled jobs, 5 carry a `paused_until`, leaving three receiving
 reminders: Vandy, Ankiita and Protein Smoothie.
 
-*Still worth asking, and not asked yet:* whether 36 users having no reminder is
-the onboarding leak or a choice, and whether a user who ignores the break offer
-should be silent **forever** or be re-offered later.
+**DEFERRED BY DECISION, 18 Sep 2026.** Vandy: "the user analysis, we will do
+later." Two questions are parked, on purpose, and neither is a bug to be fixed
+without her:
+
+1. Whether 36 of 56 users having no reminder job is the onboarding leak or a
+   choice.
+2. Whether a user who ignores the break offer should stay silent **forever**.
+   Today there is no path back except them writing first. That is defensible
+   and it is also how a product goes quiet one person at a time.
+
+Do not act on either without asking. Both change what real people receive.
 
 **Seven users are paused, one until 18 October.** `Hari` is paused until
 2026-10-18, `Shreya` until 2026-09-23, four until 2026-09-20. Worth knowing
