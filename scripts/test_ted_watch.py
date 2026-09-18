@@ -837,3 +837,107 @@ class TestCheckPower:
         assert loaded["KeepAlive"] is True
         assert loaded["RunAtLoad"] is True
         assert loaded["ProgramArguments"][0].endswith("caffeinate")
+
+
+class TestStaleFailureProbe:
+    """The alarm that went on stating something untrue.
+
+    On 18 Sep 2026 the balance was topped up at 21:00 and the model check kept
+    emailing "the Anthropic credit balance is empty" every fifteen minutes,
+    because recovery is proven by a successful primary call and no user had
+    messaged yet. An alarm that asserts a falsehood is how an alarm stops being
+    read, which is the failure this whole file exists to prevent.
+    """
+
+    def _log(self, watch, tmp_path, monkeypatch, when: datetime):
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{when:%Y-%m-%d %H:%M:%S} ERROR credit balance is too low to access\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+
+    def test_a_fresh_failure_is_not_stale(self, watch):
+        assert watch.failure_is_stale(datetime.now() - timedelta(minutes=2)) is False
+
+    def test_an_old_failure_is_stale(self, watch):
+        assert watch.failure_is_stale(datetime.now() - timedelta(hours=2)) is True
+
+    def test_no_failure_is_not_stale(self, watch):
+        assert watch.failure_is_stale(None) is False
+
+    def test_a_live_outage_is_read_from_the_log_not_probed(self, watch, tmp_path, monkeypatch):
+        """While failures keep arriving the log is authoritative, and probing
+        would spend money to learn what it already says."""
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(minutes=2))
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: None)
+        probed = []
+        monkeypatch.setattr(watch, "probe_primary", lambda *a, **k: probed.append(1) or (True, "probed"))
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert probed == [], "probed during a live outage"
+
+    def test_a_stale_failure_is_settled_by_probing(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(hours=2))
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: None)
+        monkeypatch.setattr(watch, "probe_primary", lambda *a, **k: (True, "probed"))
+        ok, detail = watch.check_model()
+        assert ok is True
+        assert "proved by probe" in detail
+        assert "40 failed" not in detail  # the real count comes from the log
+        assert "failed calls earlier in the window" in detail
+
+    def test_a_probe_that_fails_keeps_the_alarm(self, watch, tmp_path, monkeypatch):
+        self._log(watch, tmp_path, monkeypatch, datetime.now() - timedelta(hours=2))
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: None)
+        monkeypatch.setattr(
+            watch, "probe_primary",
+            lambda *a, **k: (False, "the Anthropic credit balance is empty"),
+        )
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert "confirmed by probe just now" in detail
+
+    def test_a_network_failure_is_not_read_as_a_billing_failure(self, watch, monkeypatch):
+        """A probe that cannot reach the provider proves nothing about money."""
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        monkeypatch.setattr(watch, "setting", lambda name: "key")
+
+        def unreachable(*a, **k):
+            raise watch.urllib.error.URLError("down")
+
+        monkeypatch.setattr(watch.urllib.request, "urlopen", unreachable)
+        ok, detail = watch.probe_primary()
+        assert ok is None, "a probe that could not run is not a model failure"
+        assert "could not reach the provider" in detail
+
+    def test_it_will_not_probe_a_provider_it_cannot_speak_to(self, watch, monkeypatch):
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("openrouter", "x"))
+        ok, detail = watch.probe_primary()
+        assert ok is None
+        assert "cannot probe openrouter" in detail
+
+    def test_it_will_not_probe_without_a_key(self, watch, monkeypatch):
+        monkeypatch.setattr(watch, "configured_primary", lambda: ("anthropic", "claude-sonnet-5"))
+        monkeypatch.setattr(watch, "setting", lambda name: "")
+        ok, detail = watch.probe_primary()
+        assert ok is None
+        assert "no ANTHROPIC_API_KEY" in detail
+
+    def test_a_probe_that_could_not_run_leaves_the_logs_reason_standing(
+        self, watch, tmp_path, monkeypatch
+    ):
+        """The regression two older tests caught. 'no ANTHROPIC_API_KEY to
+        probe with' must never replace 'the API key was rejected': one is a
+        fact about the model, the other is a fact about the watcher."""
+        log = tmp_path / "agent.log"
+        log.write_text(
+            f"{datetime.now() - timedelta(hours=2):%Y-%m-%d %H:%M:%S} "
+            "ERROR authentication_error\n"
+        )
+        monkeypatch.setattr(watch, "AGENT_LOG", log)
+        monkeypatch.setattr(watch, "primary_model_recovered_since", lambda when: None)
+        monkeypatch.setattr(watch, "probe_primary", lambda *a, **k: (None, "no key"))
+        ok, detail = watch.check_model()
+        assert ok is False
+        assert "rejected" in detail
+        assert "no key" not in detail

@@ -65,6 +65,8 @@ import plistlib
 import re
 import shutil
 import smtplib
+import urllib.error
+import urllib.request
 import sqlite3
 import socket
 import ssl
@@ -258,6 +260,83 @@ def primary_model_recovered_since(last_failure: "datetime | None") -> "datetime 
     return when if when > last_failure else None
 
 
+# How stale a failure has to be before the log stops being evidence. While an
+# outage is live and traffic is flowing, failures keep arriving and the log is
+# authoritative. Once the newest one is this old with no primary success after
+# it, the log genuinely cannot say whether it is fixed.
+#
+# The first version of this asked "has anything been billed since the last
+# failure", which is always true: the fallback call lands about one second
+# after the dead end that caused it. It never once fired.
+PROBE_AFTER_QUIET_MINUTES = 10
+
+
+def failure_is_stale(last_failure: "datetime | None", now: "datetime | None" = None) -> bool:
+    """Whether the newest dead end is old enough that the log is out of date."""
+    if last_failure is None:
+        return False
+    moment = now or datetime.now()
+    return (moment - last_failure) > timedelta(minutes=PROBE_AFTER_QUIET_MINUTES)
+
+
+def probe_primary(timeout: float = 30.0) -> tuple[bool | None, str]:
+    """Settle an ambiguous model state by actually calling the provider.
+
+    Only ever runs when the log shows a dead end and nothing has called since,
+    so it cannot turn into a background poll: in the normal case there is
+    either no failure or real traffic proving the answer. One call, four output
+    tokens, a fraction of a cent, and it converts "we cannot tell until someone
+    messages" into a fact. Waiting for a real user to discover the outage is
+    what cost ten days in September.
+
+    Three answers, not two. True and False are evidence; **None means the probe
+    could not run at all** — no key, a provider this cannot speak to, a network
+    it could not reach. None must never be reported as a model failure: two
+    tests caught exactly that, where "no ANTHROPIC_API_KEY to probe with"
+    replaced the log's own "the API key was rejected". A probe that did not
+    happen says nothing about the model, and the log's reason stands.
+    """
+    primary = configured_primary()
+    if not primary:
+        return None, "no primary model configured to probe"
+    provider, model = primary
+    if provider != "anthropic":
+        return None, f"cannot probe {provider} from here"
+    key = setting("ANTHROPIC_API_KEY")
+    if not key:
+        return None, "no ANTHROPIC_API_KEY to probe with"
+
+    body = json.dumps(
+        {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "."}]}
+    ).encode()
+    request = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return True, "probed"
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = json.loads(exc.read().decode()).get("error", {}).get("message", "")
+        except Exception:  # noqa: BLE001 - the status is the point, not the body
+            pass
+        why = next(
+            (label for mark, label in MODEL_DEAD_ENDS if mark in detail),
+            f"HTTP {exc.code}",
+        )
+        return False, why
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        # A network problem is not evidence of a billing problem.
+        return None, f"probe could not reach the provider: {exc}"
+
+
 def check_model() -> tuple[bool, str]:
     """Whether Ted is still talking to the model it is supposed to be.
 
@@ -318,6 +397,25 @@ def check_model() -> tuple[bool, str]:
             f"primary model answering (recovered {recovered_at:%H:%M}; "
             f"{hits} failed calls earlier in the window)"
         )
+
+    # Nothing has been billed since the newest failure, so the log cannot say
+    # whether it is fixed. Ask the provider instead of guessing, and instead of
+    # repeating a claim that may already be false.
+    if failure_is_stale(last_hit):
+        probed, detail = probe_primary()
+        if probed is True:
+            return True, (
+                f"primary model answering (proved by probe; last failure "
+                f"{last_hit:%H:%M}, {hits} failed calls earlier in the window)"
+            )
+        if probed is False:
+            return False, (
+                f"{detail}, confirmed by probe just now "
+                f"({hits} failed calls in the last {MODEL_WINDOW_HOURS}h)"
+            )
+        # The probe could not run. Fall through and report what the log says,
+        # which is the behaviour that existed before probing, rather than
+        # dressing up the probe's own excuse as a model fault.
 
     # first_seen is a floor, not the truth: the log rotates, so the real start
     # may be older than anything still on disk.
