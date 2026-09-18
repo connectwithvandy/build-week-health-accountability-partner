@@ -94,18 +94,25 @@ So the cost of migrating is a property of how Ted talks. Measured with
 record of what people actually received:
 
 ```
-178 message(s) delivered in the last 7 days
-  inside the 24h window, free      178   100.0%
-  outside it, needs a template       0     0.0%
+406 message(s) delivered in the last 30 days
+
+  replies to a person      178   0 outside the window
+  scheduled reminders      228   85 outside the window
+
+  inside the 24h window, free        321   79.1%
+  outside it, needs a template        85   20.9%
 ```
 
-**Nothing Ted currently sends would need a template.** Migration costs nothing
-in message fees today.
+**About a fifth of what Ted sends would have to become a template**, and all of
+it is reminders. Replies are never a problem: by definition somebody has just
+written.
 
-**This is not good news.** It is 100% because Ted has sent no proactive message
-in seven days: every reminder is skipped with `paused_until`, `dailyCap`, or
-the agent returning `[SILENT]`. The reminders are the half that would need
-templates, and they are not running. See `docs/FOUND_NOT_FIXED.md`.
+*An earlier version of this section said 0% and "nothing Ted sends would need a
+template". That was wrong. It read `delivery_obligations` alone, and a
+scheduled reminder never touches that ledger — the cron scheduler hands it to
+the adapter and writes a line to `agent.log`. The check reads both now, and
+prints the reminder count separately so a zero there is visibly a reading
+error rather than good news.*
 
 **So the question T06 has to answer is a product question:** when the nudges
 come back, can they be templates? A utility template can carry variables
@@ -121,15 +128,15 @@ changes.
 - utility template: **~₹0.115**
 - marketing template: **~₹0.8631**, about 7.5x
 
-At 20 enabled reminder jobs firing daily, utility templates would cost roughly
-**₹70 a month**. Cost is not the obstacle. Filing a reminder as *marketing*
+At 85 out-of-window reminders a month, utility templates cost about **₹10 a
+month**. Cost is not the obstacle. Filing a reminder as *marketing*
 rather than *utility* would make it ₹520 a month and is the mistake to avoid.
 
 **Unconfirmed and worth re-checking:** several vendor blogs say Meta will
 charge for service messages from **1 October 2026** at the utility rate. Meta's
 own pricing page still says non-template messages inside the window are free
-and names no such date. If the blogs are right, Ted's current traffic of ~760
-delivered messages a month becomes roughly **₹87 a month**. Still not the
+and names no such date. If the blogs are right, the 321 free messages a month
+become roughly **₹37 a month**. Still not the
 obstacle; recheck near the date.
 
 ---

@@ -12,19 +12,28 @@ observations from a moment, and the system moves.
 
 ## 18 Sep 2026
 
-**Ted has sent no proactive message in seven days.** All 178 delivered messages
-between 11 and 18 Sep arrived within five minutes of the user writing. Zero
-reminders reached anybody. Measured from `delivery_obligations` against the
-last inbound message per chat.
+**~~Ted has sent no proactive message in seven days.~~ WRONG, and withdrawn the
+same evening.** Ted delivers 7 to 21 reminders a day, every day. The claim came
+from reading `delivery_obligations`, and **a scheduled reminder never touches
+that ledger**: the cron scheduler hands it straight to the adapter and writes
+one line to `agent.log`:
 
-The causes stack: 60 cron jobs exist and **only 20 are enabled**, so 36 of 56
-users have no reminder at all; 7 users carry a `paused_until`; the rest are
-skipped with `reason=dailyCap` or the agent returning `[SILENT]`.
+    Job '6e77ad1b48ab': delivered to whatsapp:115650651500637@lid via live adapter
 
-*Why it is here and not fixed:* some of those pauses are people asking Ted to
-back off, which is working as intended. Telling that apart from 36 users who
-were never given a reminder is a product decision, not a bug fix. It also
-interacts with T12/T32.
+Left here rather than deleted, because the mistake is the useful part. The
+memory rule "read `delivery_obligations`, not `messages`" is true for replies
+and silently incomplete for reminders, and it was followed confidently into a
+wrong conclusion that was then repeated in three documents.
+
+**What is actually true:** 60 cron jobs, 20 enabled. The 40 disabled ones are
+correct — 12 users sit in `awaitingBreakReply` after ignoring four nudges and
+the "want me to pause?" offer, so the gate refuses their sends anyway. Of the 8
+users with enabled jobs, 5 carry a `paused_until`, leaving three receiving
+reminders: Vandy, Ankiita and Protein Smoothie.
+
+*Still worth asking, and not asked yet:* whether 36 users having no reminder is
+the onboarding leak or a choice, and whether a user who ignores the break offer
+should be silent **forever** or be re-offered later.
 
 **Seven users are paused, one until 18 October.** `Hari` is paused until
 2026-10-18, `Shreya` until 2026-09-23, four until 2026-09-20. Worth knowing
