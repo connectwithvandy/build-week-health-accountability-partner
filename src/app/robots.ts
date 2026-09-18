@@ -20,6 +20,10 @@ import type { MetadataRoute } from "next";
 export default function robots(): MetadataRoute.Robots {
   return {
     rules: [{ userAgent: "*", allow: "/", disallow: ["/api/", "/metrics"] }],
+    // Points at sitemap.ts. A crawler that arrives without being told where to
+    // look reads this file first, so naming the sitemap here is what saves it
+    // guessing at the two pages the site actually has.
+    sitemap: "https://heyted.in/sitemap.xml",
     host: "https://heyted.in",
   };
 }
