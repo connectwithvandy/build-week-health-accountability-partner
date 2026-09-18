@@ -137,7 +137,7 @@ export function recapCard({ days = [], daysLogged = 0, stats = [], line = "" }) 
 
       // footer
       div({ alignItems: "center", justifyContent: "space-between" }, [
-        text({ fontFamily: "Outfit", fontWeight: 600, fontSize: 29, color: MUTED }, "heyted.vercel.app"),
+        text({ fontFamily: "Outfit", fontWeight: 600, fontSize: 29, color: MUTED }, "heyted.in"),
         text(
           {
             background: INK,

@@ -112,8 +112,9 @@ Ted is offline for a moment. Send your update anyway; it will be logged when Ted
 
 ## Website
 
-`https://heyted.vercel.app` — the share URL. The other hostname,
-`whatsapp-accountability-partner-ted.vercel.app`, serves the same deployment.
+`https://heyted.in` is the share URL, the custom domain registered on
+18 Sep 2026. Two Vercel hostnames serve the same deployment and still
+work: `heyted.vercel.app` and `whatsapp-accountability-partner-ted.vercel.app`.
 
 ## Address and email
 
@@ -138,7 +139,7 @@ change is an edit and a re-render, not a redraw.
 | `public/brand/ted-whatsapp-cover-orange.png` | 1600x900 | Alternative link preview. |
 
 They live under `public/` rather than here so the same file serves the link
-preview and can be opened on a phone at `https://heyted.vercel.app/brand/<name>`
+preview and can be opened on a phone at `https://heyted.in/brand/<name>`
 — which is how you get them onto the device that sets the profile.
 
 ### Re-rendering

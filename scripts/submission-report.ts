@@ -41,7 +41,7 @@ const ROW_LIMIT = 16000;
  * project's auto-generated Vercel domain and serves the identical deployment,
  * but this is the one to put in front of judges.
  */
-const PRODUCT_URL = "https://heyted.vercel.app/";
+const PRODUCT_URL = "https://heyted.in/";
 const REPO_URL =
   "https://github.com/connectwithvandy/build-week-health-accountability-partner";
 

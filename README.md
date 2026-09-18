@@ -4,7 +4,7 @@ Ted remembers your meals, movement, water and commitments in WhatsApp, then
 gives you one useful thing you can still do today. It is in a private, invited
 beta.
 
-Live: <https://heyted.vercel.app>
+Live: <https://heyted.in>
 
 ## How the pieces fit
 

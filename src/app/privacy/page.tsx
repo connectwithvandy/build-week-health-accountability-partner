@@ -77,7 +77,7 @@ export default function PrivacyPage() {
       <footer className="privacy-footer page-shell">
         <span>© 2026 Ted</span>
         <span>A habit coach, not medical advice — not for emergencies, diagnosis or treatment</span>
-        <Link href="/">heyted.vercel.app</Link>
+        <Link href="/">heyted.in</Link>
       </footer>
     </main>
   );
