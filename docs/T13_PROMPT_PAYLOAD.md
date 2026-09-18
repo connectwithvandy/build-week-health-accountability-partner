@@ -217,12 +217,39 @@ That last line is the whole safety argument. `cache_control` is metadata, so
 this is the one lever T13 found that cannot change what Ted says, and the only
 one that does not need T16.
 
-**Applied to the checkout, and registered in `patches.json` so a Hermes
-upgrade cannot drop it quietly. It does not take effect until the gateway
-restarts.** The measurement to take afterwards is cron's `r/w` in
-`npm run prompt:audit`: it should rise off 0.40, and if the 1.5x billing gap
-was overlapping breakpoints, billed tokens per call should fall toward the
-counted 24,449.
+**Applied, registered in `patches.json` so a Hermes upgrade cannot drop it
+quietly, and live since the gateway restarted at 23:38 on 18 Sep.**
+
+### The first firing under it, and what it settled
+
+`cron_6e77ad1b48ab`, 00:00:38 on 19 Sep, two calls:
+
+```
+                 write per call    against a counted prompt of 21,084
+  before              36,637       1.74x
+  after               21,037       1.00x
+```
+
+**The cache write is now the prompt, once.** 21,037 against an independently
+counted 21,084 is a 0.2% difference, which is not a coincidence — it is the
+same number arrived at two different ways.
+
+That settles the 1.5x this document could not explain. The two candidates were
+overlapping cache breakpoints and a retry that never incremented
+`api_call_count`. Removing three breakpoints removed the excess, so it was the
+breakpoints. A retry would have been untouched by this patch.
+
+At that rate the saving is **$50 a month, not the $26 planned against** — the
+conservative end was conservative because it assumed the billed tokens were
+real prompt. They were not; a third of them were the same prefix billed again.
+
+**Three caveats, because this is one session.** It fired at midnight with
+nothing near it, so its `cache_read` of 0 is what an isolated firing looks like
+with or without the patch — this does not yet show whether the patch cost any
+of the reads the bunched 21:00 jobs were getting. The $50 applies one session's
+write rate to a 30-day call count, which is a projection. And the number to
+trust is `npm run prompt:audit --days 7` after a few days of mixed traffic,
+where `r/w` has had bunched firings to work with.
 
 ---
 
