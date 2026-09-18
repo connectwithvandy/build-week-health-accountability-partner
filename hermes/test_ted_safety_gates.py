@@ -9,7 +9,7 @@ import unittest
 from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import call, patch
 from zoneinfo import ZoneInfo
 
 from hermes import ted_safety_gates as gates
@@ -633,11 +633,24 @@ class TedSafetyGatesTest(unittest.TestCase):
             )
 
         self.assertEqual(result, '{"success": true, "saved": 1}')
-        request.assert_called_once_with(
-            "save",
-            expected_user_key,
-            facts=[{"key": "name", "value": "Vandy"}],
-            body=None,
+        # One save, bound to the active sender. Not `assert_called_once`: the
+        # key vocabulary reads the user's existing keys first, so a cold cache
+        # costs a `get` before the `save`. On a live turn the cache is already
+        # warm — `_capture_turn` fills it to build the memory card — but this
+        # test patches `_convex_request` only around the save, so the earlier
+        # fetch never landed. What matters here is which key the save carried.
+        saves = [
+            call_ for call_ in request.call_args_list if call_.args[0] == "save"
+        ]
+        self.assertEqual(len(saves), 1)
+        self.assertEqual(
+            saves[0],
+            call(
+                "save",
+                expected_user_key,
+                facts=[{"key": "name", "value": "Vandy"}],
+                body=None,
+            ),
         )
 
     def test_successful_convex_memory_save_unlocks_a_save_claim(self) -> None:
@@ -11326,3 +11339,240 @@ class PlayAlongDuringTheCountTest(unittest.TestCase):
             history, "i am 15", self.USER_KEY, response_text="sure, happy to help!"
         )
         self.assertEqual(out, gates.UNDER_18_REFUSAL)
+
+
+class OneConceptOneFactKeyTest(unittest.TestCase):
+    """The key vocabulary, and the two failures it is built from.
+
+    `userFacts` is indexed `by_user_and_key`, so a save replaces an existing
+    fact only when the key matches character for character — and the key is
+    free text the model invents that turn. On 19 Sep 2026 one user in
+    production held both `supplement_vitamin_b12` and
+    `suppplement_vitamin_b12`, three p's: two rows, one supplement, both going
+    into every prompt, and a correction under the misspelling replacing
+    nothing.
+
+    The second failure is the one this nearly repeated. Four keys were first
+    read as instructions to Ted on the strength of their names —
+    `nudge_preferences`, `daily_preference`, `logging_preference`,
+    `coaching_preference` — and they are the person's own choices. Refusing
+    them would have thrown away the only record of what they asked for.
+    """
+
+    def test_a_repeated_letter_supersedes_instead_of_duplicating(self) -> None:
+        """The live case. Theirs wins, so the correction replaces the value."""
+        kept, refused, renamed = gates.apply_key_vocabulary(
+            [{"key": "suppplement_vitamin_b12", "value": "1500mcg"}],
+            existing_keys=["supplement_vitamin_b12"],
+        )
+        self.assertEqual(kept, [{"key": "supplement_vitamin_b12", "value": "1500mcg"}])
+        self.assertEqual(renamed, [("suppplement_vitamin_b12", "supplement_vitamin_b12")])
+        self.assertEqual(refused, [])
+
+    def test_the_typo_class_not_the_one_typo(self) -> None:
+        for typo, held in (
+            ("activityy_level", "activity_level"),
+            ("supplementt_coq10", "supplement_coq10"),
+            ("wake__time", "wake_time"),
+        ):
+            with self.subTest(typo=typo):
+                kept, _, _ = gates.apply_key_vocabulary(
+                    [{"key": typo, "value": "x"}], existing_keys=[held]
+                )
+                self.assertEqual(kept[0]["key"], held)
+
+    def test_an_alias_lands_on_the_name_already_in_use(self) -> None:
+        kept, _, _ = gates.apply_key_vocabulary([{"key": "goal_raw", "value": "cut"}])
+        self.assertEqual(kept[0]["key"], "goal")
+
+    def test_an_unknown_key_is_saved_not_dropped(self) -> None:
+        """A gate that drops what it does not recognise is the onboarding bug.
+
+        Ted's real answers were discarded for arriving in a shape the gate did
+        not expect. An unfamiliar fact key is saved, and logged, so the
+        vocabulary grows from evidence instead of from a guess.
+        """
+        kept, refused, _ = gates.apply_key_vocabulary(
+            [{"key": "favourite_biryani", "value": "hyderabadi"}]
+        )
+        self.assertEqual(kept, [{"key": "favourite_biryani", "value": "hyderabadi"}])
+        self.assertEqual(refused, [])
+
+    def test_teds_own_voice_is_refused(self) -> None:
+        for key in (
+            "tone_preference",
+            "chat_style_preference",
+            "voice_style_preference",
+            "meal_reply_rule",
+            "message_formatting",
+            "reply_phrasing",
+        ):
+            with self.subTest(key=key):
+                kept, refused, _ = gates.apply_key_vocabulary(
+                    [{"key": key, "value": "short lowercase hinglish, no dashes"}]
+                )
+                self.assertEqual(kept, [])
+                self.assertEqual(refused, [key])
+
+    def test_the_persons_own_preferences_are_kept(self) -> None:
+        """The four this nearly deleted. They sound like instructions to Ted
+        and are the person's choices — which nudges they want, when they want
+        checking on, how much patience they need in week one."""
+        for key, value in (
+            ("nudge_preferences", "meals, water, supplements, moving"),
+            ("daily_preference", "wants end of day check for missed items"),
+            ("logging_preference", "user prefers end-of-day consolidated updates"),
+            ("coaching_preference", "needs patience for first 2-3 days"),
+            ("diet_preference", "vegetarian"),
+            ("drink_preference", "saunf dhania jeera water"),
+        ):
+            with self.subTest(key=key):
+                kept, refused, _ = gates.apply_key_vocabulary(
+                    [{"key": key, "value": value}]
+                )
+                self.assertEqual(refused, [])
+                self.assertEqual(kept[0]["key"], key)
+
+    def test_a_refusal_never_costs_the_rest_of_the_save(self) -> None:
+        kept, refused, _ = gates.apply_key_vocabulary(
+            [
+                {"key": "tone_preference", "value": "lowercase"},
+                {"key": "activity_level", "value": "desk job"},
+            ]
+        )
+        self.assertEqual([f["key"] for f in kept], ["activity_level"])
+        self.assertEqual(refused, ["tone_preference"])
+
+    def test_two_facts_in_one_save_do_not_collide_with_each_other(self) -> None:
+        """The second fact collapses onto the first, not onto nothing."""
+        kept, _, renamed = gates.apply_key_vocabulary(
+            [
+                {"key": "supplement_coq10", "value": "100mg"},
+                {"key": "supplementt_coq10", "value": "150mg"},
+            ]
+        )
+        self.assertEqual([f["key"] for f in kept], ["supplement_coq10"] * 2)
+        self.assertEqual(renamed, [("supplementt_coq10", "supplement_coq10")])
+
+    def test_no_existing_keys_degrades_to_todays_behaviour(self) -> None:
+        """A cache miss must not invent a collapse. Without the user's keys
+        there is nothing to supersede, and the fact is saved as sent."""
+        kept, _, renamed = gates.apply_key_vocabulary(
+            [{"key": "suppplement_vitamin_b12", "value": "1500mcg"}]
+        )
+        self.assertEqual(kept[0]["key"], "suppplement_vitamin_b12")
+        self.assertEqual(renamed, [])
+
+    def test_case_and_spacing_do_not_make_a_second_row(self) -> None:
+        kept, _, _ = gates.apply_key_vocabulary(
+            [{"key": "  Activity_Level ", "value": "runs"}],
+            existing_keys=["activity_level"],
+        )
+        self.assertEqual(kept[0]["key"], "activity_level")
+
+    def test_the_tool_description_names_the_keys_and_the_refusal(self) -> None:
+        """The gate corrects; the description steers. Without it the model
+        keeps inventing and every save arrives needing a rename."""
+        described = gates.TED_MEMORY_SAVE_SCHEMA["description"]
+        for key in ("activity_level", "nudge_preferences", "supplement_<name>"):
+            self.assertIn(key, described)
+        self.assertIn("Never store how you should write or speak", described)
+
+
+class TheVocabularyReachesTheSavePathTest(unittest.TestCase):
+    """The wiring, not the rule. The pure function is covered above; this is
+    whether `_save_user_facts` actually consults the user's existing keys,
+    refuses a voice rule, and still saves what was real in the same call."""
+
+    SESSION = "vocab-save-session"
+    SENDER = "vocab-save@s.whatsapp.net"
+
+    def setUp(self) -> None:
+        gates._MEMORY_CACHE.clear()
+        _capture_turn(
+            platform="whatsapp",
+            session_id=self.SESSION,
+            sender_id=self.SENDER,
+            conversation_history=[],
+            user_message="b12 is 1500 now",
+        )
+
+    def tearDown(self) -> None:
+        gates._MEMORY_CACHE.clear()
+
+    def _run(self, facts: list[dict[str, str]], held: list[str]) -> tuple[dict, list]:
+        def fake(action, user_key, facts=None, body=None):
+            if action == "get":
+                return {
+                    "success": True,
+                    "facts": [{"key": key, "value": "held"} for key in held],
+                }
+            return {"success": True, "saved": len(facts or [])}
+
+        with patch.object(gates, "_convex_request", side_effect=fake) as request:
+            out = json.loads(
+                gates._save_user_facts({"facts": facts}, session_id=self.SESSION)
+            )
+        saves = [c for c in request.call_args_list if c.args[0] == "save"]
+        return out, saves
+
+    def test_a_correction_under_a_typo_supersedes_the_real_key(self) -> None:
+        out, saves = self._run(
+            [{"key": "suppplement_vitamin_b12", "value": "1500mcg"}],
+            held=["supplement_vitamin_b12"],
+        )
+        self.assertTrue(out["success"])
+        self.assertEqual(
+            saves[0].kwargs["facts"],
+            [{"key": "supplement_vitamin_b12", "value": "1500mcg"}],
+        )
+
+    def test_a_voice_rule_is_refused_and_the_real_fact_still_saves(self) -> None:
+        out, saves = self._run(
+            [
+                {"key": "tone_preference", "value": "short lowercase hinglish"},
+                {"key": "activity_level", "value": "desk job"},
+            ],
+            held=[],
+        )
+        self.assertTrue(out["success"])
+        self.assertEqual(
+            saves[0].kwargs["facts"], [{"key": "activity_level", "value": "desk job"}]
+        )
+
+    def test_a_save_that_was_only_voice_rules_writes_nothing_and_does_not_fail(
+        self,
+    ) -> None:
+        """Ted trying to store its own style is Ted's problem, not the user's.
+
+        Returning an error here would put an internal refusal in front of
+        somebody's reply, which is what patches 6, 7, 8 and 11 exist to stop.
+        """
+        out, saves = self._run(
+            [{"key": "voice_style_preference", "value": "no dashes"}], held=[]
+        )
+        self.assertEqual(out, {"success": True, "saved": 0, "refused": 1})
+        self.assertEqual(saves, [])
+
+    def test_a_failed_read_does_not_stop_the_save(self) -> None:
+        """A Convex read that fails leaves no existing keys to collapse
+        against. The fact is saved as sent, which is today's behaviour, rather
+        than lost."""
+
+        def fake(action, user_key, facts=None, body=None):
+            if action == "get":
+                return {"success": False, "storage_error": True}
+            return {"success": True, "saved": len(facts or [])}
+
+        with patch.object(gates, "_convex_request", side_effect=fake) as request:
+            out = json.loads(
+                gates._save_user_facts(
+                    {"facts": [{"key": "activity_level", "value": "runs"}]},
+                    session_id=self.SESSION,
+                )
+            )
+        saves = [c for c in request.call_args_list if c.args[0] == "save"]
+        self.assertTrue(out["success"])
+        self.assertEqual(
+            saves[0].kwargs["facts"], [{"key": "activity_level", "value": "runs"}]
+        )

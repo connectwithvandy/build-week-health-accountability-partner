@@ -178,8 +178,8 @@ Ranked by what they fix, not by effort:
 
 | # | change | fixes |
 |---|---|---|
-| 1 | stop the model writing `instruction` facts; delete the 7 | SOUL.md being rewritable by a conversation |
-| 2 | an enumerated key vocabulary, model picks from a list | typo supersession, gender/sex, goal/goal_raw |
+| 1 | **built** — stop the model writing `instruction` facts | SOUL.md being rewritable by a conversation |
+| 2 | **built** — a key vocabulary, aliases and typo collapsing | typo supersession, gender/sex, goal/goal_raw |
 | 3 | one home per profile fact — `users` owns it, the block reads it | 47% duplication, the Order 24 condition |
 | 4 | a `layer` column, and retrieval by task | T14's actual DoD |
 | 5 | `expires_at` for temporary facts | "temporary instructions behave predictably" |
@@ -188,8 +188,45 @@ Ranked by what they fix, not by effort:
 scripts. 4 and 5 are the real T14 and should follow 2, because a retrieval rule
 keyed on a vocabulary the model invents per turn cannot be relied on.
 
-**Nothing above is applied.** The audit changes nothing; it reads two tables
-and sorts what it finds.
+### 1 and 2, built 19 Sep — what they do
+
+Both live in the gate, `hermes/ted_safety_gates/__init__.py`, so no Hermes
+patch is involved. **They need a gateway restart to take effect.**
+
+`apply_key_vocabulary` runs on every `ted_memory_save`, before anything is
+written:
+
+- **Aliases** land one concept on one key — `goal_raw` becomes `goal`.
+- **Typo collapsing** compares an unfamiliar key against the keys this user
+  already holds, and if they are identical once repeated characters are
+  collapsed, theirs wins. `suppplement_vitamin_b12` supersedes
+  `supplement_vitamin_b12` instead of sitting beside it. This catches the
+  class — `activityy_level`, `supplementt_coq10`, `wake__time` — not the one
+  typo that was found.
+- **Voice rules are refused**: any key containing tone, voice, style,
+  phrasing, wording or formatting, plus `meal_reply_rule` by name. Logged as
+  `ted_fact_refused_voice_rule`, never returned as an error — an internal
+  refusal in front of somebody's reply is what patches 6, 7, 8 and 11 exist to
+  stop.
+
+**An unrecognised key is still saved.** A gate that drops what it does not
+recognise is the onboarding bug again, where Ted's real answers were discarded
+for arriving in a shape the gate did not expect. Unknown keys are saved and
+logged, so the vocabulary grows from evidence.
+
+The six words are the list rather than "anything ending in `_preference`" for
+the reason section 2 gives: `nudge_preferences`, `daily_preference`,
+`logging_preference` and `coaching_preference` all sound like instructions and
+are the person's own choices. None of them contains any of the six.
+
+**Costs 210 tokens a turn.** The tool description now names the preferred keys
+and the refusal, so the model is steered rather than only corrected. That is
++1% on a 21,554-token floor, and it invalidates the WhatsApp prompt cache once
+on deploy.
+
+**Still not done, and deliberately:** the 7 existing voice-rule rows are
+untouched. Deleting live user data is irreversible and is Vandy's call, not a
+side effect of shipping a gate change.
 
 ---
 

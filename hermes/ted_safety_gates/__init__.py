@@ -1388,8 +1388,18 @@ TED_MEMORY_DELETE_SCHEMA = {
 TED_MEMORY_SAVE_SCHEMA = {
     "name": "ted_memory_save",
     "description": (
-        "Save confirmed facts for only the current WhatsApp user. Use this for "
-        "their name, goal, targets, schedule, preferences, and corrections."
+        "Save confirmed facts about only the current WhatsApp user. Use this "
+        "for what they have told you about themselves and for corrections. "
+        "Reuse an existing key when the fact replaces one you already hold, "
+        "otherwise the correction is stored beside the old value instead of "
+        "replacing it. Prefer these key names when one fits: name, age, sex, "
+        "height_cm, weight_kg, goal, goal_target_weight_kg, activity_level, "
+        "work_schedule, wake_time, diet_preference, drink_preference, "
+        "nudge_preferences, logging_preference, coaching_preference, "
+        "health_note, symptom_note, habit_note, mindset, supplements, "
+        "supplement_<name>. Invent a key only when none of those fit. "
+        "Never store how you should write or speak — your tone, voice, style, "
+        "phrasing and formatting are not facts about this person."
     ),
     "parameters": {
         "type": "object",
@@ -1746,6 +1756,33 @@ def _save_user_facts(
             return json.dumps({"success": False, "error": "Invalid fact length"})
         facts.append({"key": key, "value": value})
 
+    # One concept, one key, and none of Ted's own voice among them. Reads the
+    # cached facts rather than Convex: `_capture_turn` has already filled it
+    # this turn to build the memory card, so an ordinary save costs no extra
+    # read. A cache miss simply means no existing keys to collapse against,
+    # which degrades to today's behaviour rather than to a wrong one.
+    existing = _cached_user_memory(user_key)
+    existing_keys = [
+        str(fact.get("key") or "")
+        for fact in (existing.get("facts") or [])
+        if isinstance(fact, dict)
+    ] if existing.get("success") else []
+    facts, refused, renamed = apply_key_vocabulary(facts, existing_keys)
+    for original, canonical in renamed:
+        LOGGER.info(
+            "ted_fact_key_normalised user_key=%s from=%s to=%s",
+            user_key,
+            original,
+            canonical,
+        )
+    for key in refused:
+        # Logged, never returned as an error. SOUL.md already says this to
+        # every user on every turn; the model trying to store it again is not
+        # something to fail somebody's reply over.
+        LOGGER.info("ted_fact_refused_voice_rule user_key=%s key=%s", user_key, key)
+    if not facts and refused:
+        return json.dumps({"success": True, "saved": 0, "refused": len(refused)})
+
     # A measurement has a column. Saving it here instead puts it somewhere
     # nothing reads: `setupStateFor` does not look at userFacts, so the field
     # stays empty and the user gets asked again. On 7 Sep Pallavi answered her
@@ -1814,6 +1851,125 @@ _PROFILE_RANGES: dict[str, tuple[float, float]] = {
     "heightCm": (90.0, 250.0),
     "weightKg": (20.0, 400.0),
 }
+
+
+# ── The fact key vocabulary ────────────────────────────────────────────
+#
+# `ted_memory_save` takes a free-text key, 80 characters, whatever the model
+# invents that turn, and `userFacts` is indexed `by_user_and_key`. So
+# supersession is an exact string match on a name nobody controls, and on
+# 19 Sep one user in production held both of these:
+#
+#     supplement_vitamin_b12       1000mcg
+#     suppplement_vitamin_b12      three p's
+#
+# Two rows, one supplement, both going into every prompt, and a correction
+# that landed under the misspelling did not replace anything. Nothing detected
+# it and nothing would have.
+#
+# What is deliberately NOT done here is reject an unrecognised key. A gate that
+# drops input it does not recognise is the onboarding bug again — Ted's real
+# answers discarded because they arrived in a shape the gate did not expect.
+# An unknown key is saved, and logged, so the vocabulary grows from evidence
+# rather than from a guess about what people will say.
+
+# Keys the model reaches for that mean something already named. Applied before
+# anything else, so one concept has one row.
+_FACT_KEY_ALIASES = {
+    "goal_raw": "goal",
+    "target_weight": "goal_target_weight_kg",
+    "activity": "activity_level",
+    "job": "work_schedule",
+    "work": "work_schedule",
+    "wakeup_time": "wake_time",
+    "waketime": "wake_time",
+    "diet": "diet_preference",
+    "supplement": "supplements",
+}
+
+# Ted's own voice, stored per user. Every one of these restates SOUL.md's
+# "How I talk" and "How I actually sound" — short, lowercase, one thought,
+# light hinglish, no dashes, no receipt-style replies — which is already said
+# to every user on every turn at 14,670 tokens.
+#
+# They are refused rather than saved, and the refusal is the point: SOUL.md is
+# version-controlled and reviewed, and a `tone_preference` is whatever the
+# model decided mid-conversation. These were the only rules in the system that
+# a conversation could rewrite.
+_VOICE_RULE_WORDS = ("tone", "voice", "style", "phrasing", "wording", "formatting")
+
+# Matched by name, which is exactly how the first cut of this got it wrong:
+# `nudge_preferences` is "meals, water, supplements, moving" — which nudges
+# this person wants — and `daily_preference` is "wants end of day check for
+# missed items". Both sound like instructions to Ted and are the person's own
+# choices. Neither contains any word above, which is why the list is those six
+# words and not "anything ending in _preference".
+_VOICE_RULE_KEYS = {"meal_reply_rule"}
+
+
+def is_voice_rule_key(key: str) -> bool:
+    """True when this key names how Ted should talk, not a fact about a person."""
+    lowered = key.strip().lower()
+    if lowered in _VOICE_RULE_KEYS:
+        return True
+    return any(word in lowered for word in _VOICE_RULE_WORDS)
+
+
+def _squash_repeats(text: str) -> str:
+    """"suppplement" and "supplement" collapse to the same thing."""
+    return "".join(c for i, c in enumerate(text) if i == 0 or c != text[i - 1])
+
+
+def canonical_fact_key(key: str, existing_keys: Iterable[str] = ()) -> str:
+    """The key this fact should be stored under, given what the user already has.
+
+    Three steps, cheapest first:
+
+    1. An alias for something already named — `goal_raw` is `goal`.
+    2. An exact match on a key this user already has: nothing to do.
+    3. A near miss of one they already have, in which case theirs wins, so the
+       save supersedes instead of sitting beside it. Near miss means identical
+       once repeated characters are collapsed, which catches the typo class
+       rather than the one typo — `suppplement`, `supplementt`, `activityy`.
+
+    Anything else is returned unchanged and saved as a new key.
+    """
+    cleaned = key.strip().lower()
+    cleaned = _FACT_KEY_ALIASES.get(cleaned, cleaned)
+    existing = [str(k).strip() for k in existing_keys if str(k).strip()]
+    if cleaned in {k.lower() for k in existing}:
+        return next(k for k in existing if k.lower() == cleaned)
+    squashed = _squash_repeats(cleaned)
+    for candidate in existing:
+        if _squash_repeats(candidate.lower()) == squashed:
+            return candidate
+    return cleaned
+
+
+def apply_key_vocabulary(
+    facts: list[dict[str, str]], existing_keys: Iterable[str] = ()
+) -> tuple[list[dict[str, str]], list[str], list[tuple[str, str]]]:
+    """Normalise fact keys and drop Ted's own voice rules.
+
+    Returns (kept, refused, renamed). Refusing is never an error the user sees:
+    a fact Ted should not have tried to store is Ted's problem, and failing the
+    turn over it would cost the person their reply.
+    """
+    kept: list[dict[str, str]] = []
+    refused: list[str] = []
+    renamed: list[tuple[str, str]] = []
+    seen: list[str] = [str(k) for k in existing_keys]
+    for fact in facts:
+        original = fact["key"]
+        if is_voice_rule_key(original):
+            refused.append(original)
+            continue
+        canonical = canonical_fact_key(original, seen)
+        if canonical != original:
+            renamed.append((original, canonical))
+        kept.append({"key": canonical, "value": fact["value"]})
+        seen.append(canonical)
+    return kept, refused, renamed
 
 
 def _profile_fields_from_facts(
