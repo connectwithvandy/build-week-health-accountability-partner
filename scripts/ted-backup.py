@@ -20,6 +20,15 @@ WHAT IS IRREPLACEABLE, and why each one is here:
   config.yaml           the model, the fallback, the cache TTL. Not version
                         controlled and it keeps no history, which `ttl_caution`
                         in ted-api-spend.py already complains about.
+  state/                the gate's own store: who consented, who is a minor.
+  plugins/              the gate shim, without which a restored host is ungated.
+  lid-phone-map         the only link from a WhatsApp @lid to a real number.
+
+DELIBERATELY NOT HERE: `~/.hermes/.env`. It holds the API key and the SMTP
+password, and copying it would spread live secrets into a folder with weaker
+permissions than the original. Both are regenerable in minutes; a user's
+consent record is not. If a restore onto a new host is ever done for real, the
+secrets are re-entered by hand, on purpose.
 
 WHY NOT `cp` FOR THE DATABASE. The gateway is writing to state.db right now. A
 plain copy of a live SQLite file can catch a half-written page and produce a
@@ -87,6 +96,23 @@ STATE_DB = HERMES / "state.db"
 SESSION = HERMES / "whatsapp" / "session"
 CRON = HERMES / "cron"
 CONFIG = HERMES / "config.yaml"
+
+# Added 18 Sep 2026, after the first version of this file shipped without them.
+# Everything above was chosen by asking "what cannot be rebuilt". These were
+# missed by asking it only of the things already on the mind.
+#
+#   state/        the gate's own store: 56 users' onboarding answers and 113
+#                 disclosure records. This is what enforces the under-18
+#                 refusal. Restoring without it brings back a system that has
+#                 forgotten who consented and who is a minor, which is worse
+#                 than one that knows it has nothing.
+#   plugins/      the gate shim Hermes loads. Small, and without it a restored
+#                 host serves ungated.
+#   lid-phone-map the only link between a WhatsApp @lid and a real number.
+#                 Nothing else on the box can rebuild it.
+GATE_STATE = HERMES / "state"
+PLUGINS = HERMES / "plugins"
+WHATSAPP = HERMES / "whatsapp"
 
 DESTINATION = Path(os.environ.get("TED_BACKUP_DIR", Path.home() / "ted-backups"))
 
@@ -185,6 +211,38 @@ def verify_session(path: Path) -> tuple[bool, str]:
     return True, f"{files} files, device identity present"
 
 
+def verify_gate_state(path: Path) -> tuple[bool, str]:
+    """That the safety store came across, and is not merely present and empty.
+
+    Counted rather than existence-checked for the same reason the database is:
+    an empty `users` map parses perfectly and restores a Ted who has never
+    heard of anybody, including the minor he is supposed to be refusing.
+    """
+    onboarding = path / "ted-safety-gates-onboarding.json"
+    disclosures = path / "ted-safety-gates-disclosures.json"
+    if not onboarding.exists():
+        return False, "the onboarding store is missing; this restore would serve unguarded"
+    counts = {}
+    for label, file, key in (
+        ("users", onboarding, "users"),
+        ("disclosures", disclosures, "user_keys"),
+    ):
+        if not file.exists():
+            counts[label] = "missing"
+            continue
+        try:
+            payload = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return False, f"{file.name} does not parse: {exc}"
+        held = payload.get(key)
+        if held is None:
+            return False, f"{file.name} has no {key!r}"
+        counts[label] = len(held)
+    if counts.get("users") == 0:
+        return False, "the onboarding store parses and holds nobody"
+    return True, ", ".join(f"{name} {value}" for name, value in counts.items())
+
+
 def verify_cron(path: Path) -> tuple[bool, str]:
     """That jobs.json parses and still holds jobs."""
     jobs = path / "jobs.json"
@@ -236,6 +294,34 @@ def take_backup() -> int:
     else:
         print("  cron          FAILED: not found")
         failures.append("cron")
+
+    if GATE_STATE.exists():
+        shutil.copytree(GATE_STATE, target / "state", dirs_exist_ok=True)
+        ok, detail = verify_gate_state(target / "state")
+        print(f"  gate state    {'verified, ' + detail if ok else 'VERIFY FAILED: ' + detail}")
+        if not ok:
+            failures.append("gate state")
+    else:
+        print("  gate state    FAILED: not found")
+        failures.append("gate state")
+
+    if PLUGINS.exists():
+        shutil.copytree(PLUGINS, target / "plugins", dirs_exist_ok=True)
+        print("  plugins       copied")
+    else:
+        print("  plugins       FAILED: not found")
+        failures.append("plugins")
+
+    # The @lid to phone mapping is dated in its filename, so take whatever is
+    # there rather than naming one and silently missing the next.
+    maps = sorted(WHATSAPP.glob("lid-phone-map-*.json")) if WHATSAPP.exists() else []
+    if maps:
+        (target / "whatsapp").mkdir(parents=True, exist_ok=True)
+        for source in maps:
+            shutil.copyfile(source, target / "whatsapp" / source.name)
+        print(f"  lid-phone map copied {len(maps)} file(s)")
+    else:
+        print("  lid-phone map none found (not fatal, but nothing can rebuild it)")
 
     if CONFIG.exists():
         shutil.copyfile(CONFIG, target / "config.yaml")
@@ -373,6 +459,17 @@ def restore(backup: Path, into: Path, force: bool) -> tuple[bool, list[str]]:
     if (backup / "cron").exists():
         shutil.copytree(backup / "cron", into / "cron", dirs_exist_ok=True)
         notes.append("cron")
+    if (backup / "state").exists():
+        shutil.copytree(backup / "state", into / "state", dirs_exist_ok=True)
+        notes.append("state")
+    if (backup / "plugins").exists():
+        shutil.copytree(backup / "plugins", into / "plugins", dirs_exist_ok=True)
+        notes.append("plugins")
+    for lid_map in (backup / "whatsapp").glob("lid-phone-map-*.json") if (backup / "whatsapp").exists() else []:
+        target = into / "whatsapp"
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(lid_map, target / lid_map.name)
+        notes.append(lid_map.name)
     if (backup / "config.yaml").exists():
         shutil.copyfile(backup / "config.yaml", into / "config.yaml")
         notes.append("config.yaml")
@@ -487,6 +584,11 @@ def drill(force: bool = False) -> int:
         print(f"  cron          {'verified, ' + detail if ok else 'FAILED: ' + detail}")
         if not ok:
             problems.append("cron")
+
+        ok, detail = verify_gate_state(into / "state")
+        print(f"  gate state    {'verified, ' + detail if ok else 'FAILED: ' + detail}")
+        if not ok:
+            problems.append("gate state")
 
         ok, detail = representative_user_flow(into / "state.db")
         print(f"  user flow     {'rebuilt, ' + detail if ok else 'FAILED: ' + detail}")

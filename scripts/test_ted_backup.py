@@ -398,3 +398,75 @@ class TestDrillFreshness:
             json.dumps({"passed": False, "drilled_at": time.time()})
         )
         assert backup.drill_is_stale() is True
+
+
+def _gate_state(path: Path, users: int = 3, disclosures: int = 5) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    path.joinpath("ted-safety-gates-onboarding.json").write_text(
+        json.dumps({"users": {f"whatsapp:sha256:{n}": {"name": f"u{n}"} for n in range(users)}})
+    )
+    path.joinpath("ted-safety-gates-disclosures.json").write_text(
+        json.dumps({"user_keys": [f"whatsapp:sha256:{n}" for n in range(disclosures)]})
+    )
+    return path
+
+
+class TestGateStateIsBackedUp:
+    """The gap this file shipped with. The first version backed up state.db,
+    the WhatsApp session, cron and config, and left out ~/.hermes/state, which
+    is the store that holds who consented and who is a minor. A restore would
+    have brought back a Ted who had forgotten both."""
+
+    def test_the_safety_store_is_in_the_list_of_things_backed_up(self, backup):
+        """The test that would have caught it: the gate's own store is not
+        optional, and 'we remembered the obvious ones' is how it was missed."""
+        assert backup.GATE_STATE.name == "state"
+        assert backup.GATE_STATE.parent == backup.HERMES
+
+    def test_a_populated_store_verifies(self, backup, tmp_path):
+        ok, detail = backup.verify_gate_state(_gate_state(tmp_path / "state"))
+        assert ok
+        assert "users 3" in detail
+        assert "disclosures 5" in detail
+
+    def test_a_store_that_parses_and_holds_nobody_is_a_failure(self, backup, tmp_path):
+        """Intact, restorable and guarding no one. This is the shape that would
+        restore cleanly and silently stop refusing the minor."""
+        ok, detail = backup.verify_gate_state(_gate_state(tmp_path / "state", users=0))
+        assert not ok
+        assert "holds nobody" in detail
+
+    def test_a_missing_onboarding_store_is_a_failure(self, backup, tmp_path):
+        empty = tmp_path / "state"
+        empty.mkdir()
+        ok, detail = backup.verify_gate_state(empty)
+        assert not ok
+        assert "would serve unguarded" in detail
+
+    def test_corrupt_json_is_caught(self, backup, tmp_path):
+        state = _gate_state(tmp_path / "state")
+        state.joinpath("ted-safety-gates-onboarding.json").write_text("{ truncated")
+        ok, detail = backup.verify_gate_state(state)
+        assert not ok
+        assert "does not parse" in detail
+
+    def test_a_store_missing_its_users_key_is_caught(self, backup, tmp_path):
+        state = _gate_state(tmp_path / "state")
+        state.joinpath("ted-safety-gates-onboarding.json").write_text(json.dumps({"nope": {}}))
+        ok, detail = backup.verify_gate_state(state)
+        assert not ok
+        assert "'users'" in detail
+
+    def test_restore_puts_the_safety_store_back(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: False)
+        source = tmp_path / "a-backup"
+        source.mkdir()
+        _state_db(source / "state.db")
+        _gate_state(source / "state")
+        (source / "receipt.json").write_text(json.dumps({"verified": True}))
+        into = tmp_path / "home"
+        ok, notes = backup.restore(source, into, force=False)
+        assert ok
+        assert "state" in notes
+        restored, _ = backup.verify_gate_state(into / "state")
+        assert restored, "a restore that forgets the safety store serves unguarded"
