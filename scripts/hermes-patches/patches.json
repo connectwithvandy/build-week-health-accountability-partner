@@ -27,7 +27,7 @@
     },
     {
       "file": "03-voice-listening-ack.patch",
-      "what": "the voice-note 'Listening…' acknowledgement",
+      "what": "the voice-note 'Listening\u2026' acknowledgement",
       "checks": [
         {
           "path": "gateway/run.py",
@@ -62,7 +62,7 @@
             "one sec, finishing the last one first"
           ],
           "absent": [
-            "⚡ Interrupting current task"
+            "\u26a1 Interrupting current task"
           ]
         }
       ]
@@ -91,7 +91,7 @@
             "_gateway_provider_message"
           ],
           "absent": [
-            "    return \"⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.\""
+            "    return \"\u23f1\ufe0f The model provider is rate-limiting requests. Please wait a moment and try again.\""
           ]
         }
       ]
@@ -217,6 +217,32 @@
             "return True, skip_doc, SILENT_MARKER, None"
           ],
           "absent": []
+        }
+      ]
+    },
+    {
+      "file": "14-no-user-text-in-logs.patch",
+      "what": "user message text kept out of the logs",
+      "checks": [
+        {
+          "path": "gateway/run.py",
+          "present": [
+            "TED_LOG_MESSAGE_TEXT",
+            "chars withheld"
+          ],
+          "absent": [
+            "_msg_preview = (event.text or \"\")[:80].replace(\"\\n\", \" \")"
+          ]
+        },
+        {
+          "path": "agent/turn_context.py",
+          "present": [
+            "TED_LOG_MESSAGE_TEXT",
+            "chars withheld"
+          ],
+          "absent": [
+            "_msg_preview = (_preview_text[:80] + \"...\") if len(_preview_text) > 80 else _preview_text\n    _msg_preview = _msg_preview.replace"
+          ]
         }
       ]
     }

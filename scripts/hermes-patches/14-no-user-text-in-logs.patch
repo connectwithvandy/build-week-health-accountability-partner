@@ -1,0 +1,62 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -12296,9 +12296,29 @@
+         """Inner handler that runs under the _running_agents sentinel guard."""
+         _msg_start_time = time.time()
+         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
++        # Ted patch 14. What a person eats, weighs and worries about is the
++        # product, and this line wrote all of it to ~/.hermes/logs in the
++        # clear: "msg='i\'m having 2 rotis and paneer'", next to their name.
++        # `ted-forget-user.py` says outright that it cannot reach a log the
++        # gateway is writing to, so "delete my data" left that text behind.
++        #
++        # The content belongs in state.db, which deletion can reach, and the
++        # log keeps what a log is for: that a message of some size arrived,
++        # from whom, on which chat, at what time. Set TED_LOG_MESSAGE_TEXT=1
++        # to get the old behaviour back for a debugging session.
++        _msg_text = event.text or ""
++        _msg_preview = (
++            _msg_text[:80].replace("\n", " ")
++            if os.environ.get("TED_LOG_MESSAGE_TEXT") == "1"
++            else f"<{len(_msg_text)} chars withheld>"
++        )
+         _reply_id = getattr(event, "reply_to_message_id", None)
+-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
++        _reply_raw = getattr(event, "reply_to_text", None) or ""
++        _reply_txt = (
++            _reply_raw[:80].replace("\n", " ")
++            if os.environ.get("TED_LOG_MESSAGE_TEXT") == "1"
++            else f"<{len(_reply_raw)} chars withheld>"
++        )
+         logger.info(
+             "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+             _platform_name, source.user_name or source.user_id or "unknown",
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -25,6 +25,7 @@
+ from __future__ import annotations
+ 
+ import logging
++import os
+ import threading
+ import uuid
+ from dataclasses import dataclass
+@@ -434,9 +435,15 @@
+     agent.iteration_budget = IterationBudget(agent.max_iterations)
+ 
+     # Log conversation turn start for debugging/observability.
++    # Ted patch 14. The second door onto the same words: this line logged the
++    # user's message again, one entry below the gateway's. Both are closed, or
++    # neither is. TED_LOG_MESSAGE_TEXT=1 restores the preview for debugging.
+     _preview_text = summarize_user_message_for_log(user_message)
+-    _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
+-    _msg_preview = _msg_preview.replace("\n", " ")
++    if os.environ.get("TED_LOG_MESSAGE_TEXT") == "1":
++        _msg_preview = (_preview_text[:80] + "...") if len(_preview_text) > 80 else _preview_text
++        _msg_preview = _msg_preview.replace("\n", " ")
++    else:
++        _msg_preview = f"<{len(_preview_text)} chars withheld>"
+     logger.info(
+         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+         agent.session_id or "none", agent.model, agent.provider or "unknown",
