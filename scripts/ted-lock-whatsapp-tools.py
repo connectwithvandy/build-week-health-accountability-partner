@@ -177,10 +177,16 @@ def main() -> int:
     atomic_write(args.config, after)
     if tools_change:
         print("WhatsApp is now limited to cronjob, ted, and vision.")
+        # Only this half changes what a live turn carries. The recording half
+        # changes why a plugin is off, not which tools load, and telling
+        # somebody to restart for it costs real people a real outage for a
+        # resolved toolset list that is identical either way.
+        print("Restart the gateway before serving another message.")
     if door_change:
         print("WhatsApp has recorded the plugins installed here; spotify is off it")
         print("by decision now rather than by a Hermes default.")
-    print("Restart the gateway before serving another message.")
+        if not tools_change:
+            print("No restart needed: the toolsets a turn carries are unchanged.")
     return 0
 
 
