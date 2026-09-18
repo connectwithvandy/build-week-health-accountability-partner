@@ -37,28 +37,70 @@ the session by parsing `creds.json` and confirming the device identity is
 present, the jobs by parsing the JSON. A failure here exits non-zero and says
 which file, because finding out at restore time is finding out too late.
 
+RESTORE IS THE OTHER HALF, AND IT IS THE HALF THAT COUNTS. A backup nobody has
+ever restored is a folder, not a plan. `--drill` proves it: the newest verified
+backup is restored into a throwaway directory, every copy is verified again in
+its new home, and one real user's history is rebuilt out of it end to end,
+their session, their messages, what they were actually delivered and the
+reminder job still waiting for them. The result is written down, so "when did
+we last prove a restore" has an answer.
+
+TWO RULES THE DRILL WILL NOT BREAK, both of them the hard way round:
+
+  It never starts a gateway. The WhatsApp session is a set of credentials and
+  only one instance may hold them at a time. Two running at once is what
+  produced `session.loggedout-20260909-100854`. So a drill that "just booted it
+  to check" would be the one thing capable of logging the real users out.
+
+  It never writes into a live ~/.hermes. `--restore` refuses a target that
+  already holds a state.db unless you say --force, and refuses entirely while a
+  gateway is running there. Restoring onto a live system is how you lose the
+  thing you were protecting.
+
     python3 scripts/ted-backup.py              # take one, verify, report
-    python3 scripts/ted-backup.py --list       # what is already held
+    python3 scripts/ted-backup.py --list       # what is held, and the last drill
+    python3 scripts/ted-backup.py --drill      # prove a restore actually works
+    python3 scripts/ted-backup.py --restore DIR --into DIR   # real restore
+    python3 scripts/ted-backup.py --install    # daily, via launchd
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import plistlib
 import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
-HERMES = Path.home() / ".hermes"
+# Both roots are overridable, and not only for the tests. The drill restores
+# into a directory that is deliberately not this machine's live one, and a
+# real cutover on a new host will point these somewhere else entirely.
+HERMES = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 STATE_DB = HERMES / "state.db"
 SESSION = HERMES / "whatsapp" / "session"
 CRON = HERMES / "cron"
 CONFIG = HERMES / "config.yaml"
 
-DESTINATION = Path.home() / "ted-backups"
+DESTINATION = Path(os.environ.get("TED_BACKUP_DIR", Path.home() / "ted-backups"))
+
+# How many backups to keep. At ~66 MB each a daily job fills 2 GB a month, so
+# something has to prune. KEEP is deliberately generous: disk is cheap and the
+# failure this guards against is discovering a fortnight late that the last
+# three copies were all quietly incomplete.
+KEEP = 14
+
+PLIST_LABEL = "ai.ted.backup"
+PLIST_SRC = Path(__file__).resolve().parent / f"{PLIST_LABEL}.plist"
+PLIST_DEST = Path.home() / "Library" / "LaunchAgents" / f"{PLIST_LABEL}.plist"
+
+LAST_DRILL = DESTINATION / "last-drill.json"
 
 
 def snapshot_database(source: Path, target: Path) -> tuple[bool, str]:
@@ -210,7 +252,280 @@ def take_backup() -> int:
         print(f"\n  INCOMPLETE. Failed: {', '.join(failures)}")
         print("  Do not move hosts on this backup.")
         return 1
+
+    # Only ever prune after a good one. Pruning on the way out of a failed
+    # backup would delete history to make room for a copy that did not verify.
+    dropped = prune()
+    if dropped:
+        print(f"\n  Pruned {len(dropped)} old backup(s), keeping {KEEP}.")
+
     print(f"\n  Verified. {target}")
+    return 0
+
+
+def gateway_is_running(home: Path) -> bool:
+    """Whether something is serving out of this HERMES home right now.
+
+    Restoring over a running gateway is the one way this file could destroy
+    what it exists to protect: the gateway holds state.db open, and replacing
+    the file underneath it loses whatever it had not yet written.
+
+    Deliberately crude, and deliberately biased towards "yes". `pgrep` against
+    the gateway command line is enough to catch the real case, and if pgrep is
+    missing or refuses, the answer is yes and the restore stops. A false stop
+    costs a flag. A false clear costs the database.
+    """
+    try:
+        found = subprocess.run(
+            ["pgrep", "-f", "hermes_cli.main gateway run"],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if found.returncode != 0:
+        return False
+    # A gateway is running somewhere. It only matters if it is serving out of
+    # the directory being restored into, and the safe reading of "cannot tell"
+    # is that it is.
+    return home == Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+
+
+def verified_backups() -> list[Path]:
+    """Every backup whose own receipt says it verified, newest last."""
+    if not DESTINATION.exists():
+        return []
+    out = []
+    for path in sorted(p for p in DESTINATION.iterdir() if p.is_dir()):
+        try:
+            receipt = json.loads((path / "receipt.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if receipt.get("verified"):
+            out.append(path)
+    return out
+
+
+def restore(backup: Path, into: Path, force: bool) -> tuple[bool, list[str]]:
+    """Put a backup back, into a home that is not currently being served.
+
+    Returns (ok, notes). This writes files, which makes it the only function
+    here that can do harm, so every refusal is checked before anything is
+    copied rather than partway through.
+    """
+    notes: list[str] = []
+    if not (backup / "receipt.json").exists():
+        return False, [f"{backup} has no receipt, refusing to trust it"]
+    try:
+        receipt = json.loads((backup / "receipt.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return False, [f"receipt does not parse: {exc}"]
+    if not receipt.get("verified") and not force:
+        return False, ["that backup is marked INCOMPLETE; --force to restore it anyway"]
+
+    if gateway_is_running(into):
+        return False, [
+            "a gateway is running against this home. Stop it first.",
+            "Restoring under a live gateway loses whatever it has not flushed.",
+        ]
+    if (into / "state.db").exists() and not force:
+        return False, [f"{into} already holds a state.db; --force to overwrite"]
+
+    into.mkdir(parents=True, exist_ok=True)
+    if (backup / "state.db").exists():
+        shutil.copyfile(backup / "state.db", into / "state.db")
+        notes.append("state.db")
+    if (backup / "session").exists():
+        target = into / "whatsapp" / "session"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(backup / "session", target, dirs_exist_ok=True)
+        notes.append("whatsapp/session")
+    if (backup / "cron").exists():
+        shutil.copytree(backup / "cron", into / "cron", dirs_exist_ok=True)
+        notes.append("cron")
+    if (backup / "config.yaml").exists():
+        shutil.copyfile(backup / "config.yaml", into / "config.yaml")
+        notes.append("config.yaml")
+    return True, notes
+
+
+def representative_user_flow(state_db: Path) -> tuple[bool, str]:
+    """Rebuild one real person's history out of a restored database.
+
+    T05's definition of done asks a restored environment to "complete a
+    representative user flow with the expected state". Without starting a
+    gateway, which this file must never do, the honest version of that is to
+    reassemble the flow from the data: the busiest real user, their session,
+    the messages on it, what they were actually *delivered*, and the reminder
+    still scheduled for them.
+
+    `delivery_obligations` rather than `messages` on purpose. `messages` is the
+    model's raw text; the obligations ledger is the only record of what a
+    person actually received.
+    """
+    try:
+        db = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return False, f"cannot open the restored database: {exc}"
+    try:
+        busiest = db.execute(
+            "SELECT chat_id, count(*) n FROM delivery_obligations "
+            "WHERE state = 'delivered' GROUP BY chat_id ORDER BY n DESC LIMIT 1"
+        ).fetchone()
+        if not busiest:
+            return False, "no delivered message survived the restore"
+        chat_id, delivered = busiest
+
+        sessions = db.execute(
+            "SELECT count(DISTINCT s.id) FROM sessions s "
+            "JOIN delivery_obligations d ON d.session_key = s.session_key "
+            "WHERE d.chat_id = ?",
+            (chat_id,),
+        ).fetchone()[0]
+        # count(DISTINCT m.id), not count(*). A session carries many delivery
+        # obligations, so joining straight through multiplies every message by
+        # the number of obligations on its session: the first run of this drill
+        # reported 40,796 messages for one user out of a database holding
+        # 6,341 in total. A restore drill that flatters itself is worse than no
+        # drill, because it is the thing you check before trusting a cutover.
+        messages = db.execute(
+            "SELECT count(DISTINCT m.id) FROM messages m "
+            "JOIN sessions s ON s.id = m.session_id "
+            "JOIN delivery_obligations d ON d.session_key = s.session_key "
+            "WHERE d.chat_id = ?",
+            (chat_id,),
+        ).fetchone()[0]
+        newest = db.execute(
+            "SELECT content FROM delivery_obligations WHERE chat_id = ? "
+            "AND state = 'delivered' ORDER BY created_at DESC LIMIT 1",
+            (chat_id,),
+        ).fetchone()[0]
+    except sqlite3.Error as exc:
+        return False, f"the restored database is intact but unreadable: {exc}"
+    finally:
+        db.close()
+
+    if not (sessions and messages and (newest or "").strip()):
+        return False, (
+            f"the flow does not reassemble: {sessions} session(s), "
+            f"{messages} message(s), last delivered text "
+            f"{'empty' if not (newest or '').strip() else 'present'}"
+        )
+    return True, (
+        f"one real user rebuilt: {sessions} session(s), {messages} message(s), "
+        f"{delivered} delivered, last one {len(newest)} characters"
+    )
+
+
+def drill(force: bool = False) -> int:
+    """Restore the newest verified backup somewhere harmless and prove it works.
+
+    The whole point is that this is not a dry run. Files really are copied, the
+    database really is opened, and a real user's history really is rebuilt out
+    of it. What makes it safe is where it lands: a temporary directory that is
+    deleted afterwards, never ~/.hermes, and no gateway is ever started against
+    it.
+    """
+    backups = verified_backups()
+    if not backups:
+        print("No verified backup to drill. Take one first.")
+        return 1
+    newest = backups[-1]
+    print(f"Restore drill from {newest.name}\n")
+
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="ted-restore-drill-") as workspace:
+        into = Path(workspace) / "hermes"
+        ok, notes = restore(newest, into, force=force)
+        if not ok:
+            for note in notes:
+                print(f"  RESTORE REFUSED: {note}")
+            return 1
+        print(f"  restored      {', '.join(notes)}")
+
+        ok, detail = verify_database(into / "state.db")
+        print(f"  state.db      {'verified, ' + detail if ok else 'FAILED: ' + detail}")
+        if not ok:
+            problems.append("state.db")
+
+        ok, detail = verify_session(into / "whatsapp" / "session")
+        print(f"  session       {'verified, ' + detail if ok else 'FAILED: ' + detail}")
+        if not ok:
+            problems.append("session")
+
+        ok, detail = verify_cron(into / "cron")
+        print(f"  cron          {'verified, ' + detail if ok else 'FAILED: ' + detail}")
+        if not ok:
+            problems.append("cron")
+
+        ok, detail = representative_user_flow(into / "state.db")
+        print(f"  user flow     {'rebuilt, ' + detail if ok else 'FAILED: ' + detail}")
+        if not ok:
+            problems.append("user flow")
+
+    # Written outside the temporary directory on purpose: the evidence has to
+    # outlive the workspace it was produced in.
+    DESTINATION.mkdir(parents=True, exist_ok=True)
+    LAST_DRILL.write_text(
+        json.dumps(
+            {
+                "drilled_at": time.time(),
+                "drilled_at_readable": datetime.now().strftime("%Y-%m-%dT%H-%M-%S"),
+                "backup": newest.name,
+                "passed": not problems,
+                "problems": problems,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    if problems:
+        print(f"\n  DRILL FAILED: {', '.join(problems)}")
+        print("  The backup exists and does not restore. Fix this before any cutover.")
+        return 1
+    print("\n  Drill passed. This backup restores and carries a real user's history.")
+    return 0
+
+
+def prune(keep: int = KEEP) -> list[str]:
+    """Drop the oldest backups, and never the last verified one.
+
+    Retention is where a backup system quietly becomes a folder of corrupt
+    copies: prune blindly by age and the day everything starts failing you
+    delete the last good one to make room for a bad one.
+    """
+    if not DESTINATION.exists():
+        return []
+    everything = sorted(p for p in DESTINATION.iterdir() if p.is_dir())
+    if len(everything) <= keep:
+        return []
+    good = set(verified_backups()[-1:])  # the newest that actually verified
+    removed = []
+    for path in everything[: len(everything) - keep]:
+        if path in good:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed.append(path.name)
+    return removed
+
+
+def install() -> int:
+    """Copy the plist in and load it. Idempotent, so re-running is safe."""
+    try:
+        plistlib.loads(PLIST_SRC.read_bytes())
+    except (OSError, ValueError) as exc:
+        print(f"Cannot read {PLIST_SRC}: {exc}", file=sys.stderr)
+        return 1
+    PLIST_DEST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(PLIST_SRC, PLIST_DEST)
+    subprocess.run(["launchctl", "unload", str(PLIST_DEST)], capture_output=True)
+    loaded = subprocess.run(["launchctl", "load", str(PLIST_DEST)], capture_output=True)
+    if loaded.returncode != 0:
+        print(loaded.stderr.decode().strip() or "launchctl load failed", file=sys.stderr)
+        return 1
+    print(f"Installed {PLIST_LABEL}. A verified backup will be taken daily.")
+    print("Check it with: python3 scripts/ted-backup.py --list")
     return 0
 
 
@@ -230,14 +545,70 @@ def list_backups() -> int:
             mark = "no receipt, treat as unverified"
         size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
         print(f"  {path.name}  {size / 1_048_576:>7.1f} MB  {mark}")
+
+    # "When did we last back up" is half the question. The other half is when a
+    # restore was last proven, and a folder listing cannot answer that.
+    print()
+    try:
+        record = json.loads(LAST_DRILL.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("  Restore has NEVER been drilled. These are folders, not a plan.")
+        print("  Run: python3 scripts/ted-backup.py --drill")
+        return 0
+    if record.get("passed"):
+        print(
+            f"  Last restore drill: {record.get('drilled_at_readable')} "
+            f"on {record.get('backup')} — passed."
+        )
+    else:
+        print(
+            f"  Last restore drill: {record.get('drilled_at_readable')} "
+            f"on {record.get('backup')} — FAILED: "
+            f"{', '.join(record.get('problems') or ['unknown'])}"
+        )
     return 0
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--list", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Take, verify, restore and drill TED's irreplaceable state."
+    )
+    parser.add_argument("--list", action="store_true", help="what is held, and the last drill")
+    parser.add_argument("--drill", action="store_true", help="prove a restore works")
+    parser.add_argument("--restore", metavar="BACKUP", help="a backup directory to put back")
+    parser.add_argument("--into", metavar="HOME", help="the HERMES home to restore into")
+    parser.add_argument("--install", action="store_true", help="daily backup via launchd")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite a home that already holds state.db, or accept an unverified backup",
+    )
     args = parser.parse_args()
-    return list_backups() if args.list else take_backup()
+
+    if args.install:
+        return install()
+    if args.list:
+        return list_backups()
+    if args.drill:
+        return drill(force=args.force)
+    if args.restore:
+        if not args.into:
+            print(
+                "--restore needs --into. There is no default on purpose:\n"
+                "the default would be the live home, and that is the one\n"
+                "place a restore can destroy what it was meant to protect.",
+                file=sys.stderr,
+            )
+            return 2
+        ok, notes = restore(Path(args.restore), Path(args.into), force=args.force)
+        for note in notes:
+            print(f"  {note}")
+        if not ok:
+            return 1
+        print(f"\n  Restored into {args.into}.")
+        print("  Verify it before trusting it: --drill proves the shape, this does not.")
+        return 0
+    return take_backup()
 
 
 if __name__ == "__main__":

@@ -149,3 +149,174 @@ class TestReceipt:
 
     def test_listing_says_so_when_nothing_was_ever_taken(self, backup):
         assert backup.list_backups() == 1
+
+
+def _state_db(path: Path, *, chat: str = "9111@s.whatsapp.net", delivered: int = 3) -> Path:
+    """A miniature state.db with the shape the drill reassembles.
+
+    Two delivery obligations on one session is not padding: it is the shape
+    that made the first real drill report 40,796 messages for a user in a
+    database holding 6,341, because the join multiplied messages by
+    obligations.
+    """
+    db = sqlite3.connect(path)
+    db.executescript(
+        """
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, session_key TEXT, started_at REAL);
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL, role TEXT, content TEXT, timestamp REAL
+        );
+        CREATE TABLE delivery_obligations (
+            obligation_id TEXT PRIMARY KEY, session_key TEXT, chat_id TEXT,
+            content TEXT, state TEXT, created_at REAL
+        );
+        """
+    )
+    db.execute("INSERT INTO sessions VALUES ('s1', 'k1', 1.0)")
+    for n in range(4):
+        db.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
+            ("s1", "user", f"message {n}", float(n)),
+        )
+    for n in range(delivered):
+        db.execute(
+            "INSERT INTO delivery_obligations VALUES (?,?,?,?,?,?)",
+            (f"o{n}", "k1", chat, f"delivered text {n}", "delivered", float(n)),
+        )
+    db.commit()
+    db.close()
+    return path
+
+
+class TestRepresentativeFlow:
+    """T05 wants a restored environment to complete a representative user
+    flow. Without starting a gateway, which would fight the live one for the
+    WhatsApp credentials, the honest version is to rebuild it from the data."""
+
+    def test_a_real_user_is_rebuilt(self, backup, tmp_path):
+        db = _state_db(tmp_path / "state.db")
+        ok, detail = backup.representative_user_flow(db)
+        assert ok, detail
+        assert "4 message(s)" in detail
+        assert "3 delivered" in detail
+
+    def test_messages_are_not_multiplied_by_obligations(self, backup, tmp_path):
+        """The bug the first live drill actually had. Four messages and ten
+        obligations on one session is four messages, not forty."""
+        db = _state_db(tmp_path / "state.db", delivered=10)
+        ok, detail = backup.representative_user_flow(db)
+        assert ok, detail
+        assert "4 message(s)" in detail
+
+    def test_an_empty_ledger_is_a_failed_drill(self, backup, tmp_path):
+        """Intact, restorable and carrying nobody's history. integrity_check
+        passes on this file, which is exactly why the flow check exists."""
+        db = _state_db(tmp_path / "state.db", delivered=0)
+        ok, detail = backup.representative_user_flow(db)
+        assert not ok
+        assert "no delivered message" in detail
+
+    def test_a_missing_database_does_not_crash_the_drill(self, backup, tmp_path):
+        ok, detail = backup.representative_user_flow(tmp_path / "gone.db")
+        assert not ok
+
+
+class TestRestoreRefusals:
+    """Restore is the only function here that writes. Every refusal is checked
+    before anything is copied, so a refusal can never leave a half-restored
+    home behind."""
+
+    def _backup_dir(self, backup, tmp_path, verified=True):
+        source = tmp_path / "a-backup"
+        source.mkdir()
+        _state_db(source / "state.db")
+        (source / "receipt.json").write_text(json.dumps({"verified": verified}))
+        return source
+
+    def test_it_will_not_restore_under_a_running_gateway(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: True)
+        source = self._backup_dir(backup, tmp_path)
+        into = tmp_path / "home"
+        ok, notes = backup.restore(source, into, force=False)
+        assert not ok
+        assert "gateway is running" in notes[0]
+        assert not into.exists(), "a refusal must not create the target"
+
+    def test_it_will_not_silently_overwrite_a_home(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: False)
+        source = self._backup_dir(backup, tmp_path)
+        into = tmp_path / "home"
+        into.mkdir()
+        _state_db(into / "state.db")
+        before = (into / "state.db").read_bytes()
+        ok, notes = backup.restore(source, into, force=False)
+        assert not ok
+        assert "already holds a state.db" in notes[0]
+        assert (into / "state.db").read_bytes() == before
+
+    def test_force_overwrites_deliberately(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: False)
+        source = self._backup_dir(backup, tmp_path)
+        into = tmp_path / "home"
+        into.mkdir()
+        (into / "state.db").write_bytes(b"old")
+        ok, _ = backup.restore(source, into, force=True)
+        assert ok
+        assert (into / "state.db").read_bytes() != b"old"
+
+    def test_an_unverified_backup_is_refused(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: False)
+        source = self._backup_dir(backup, tmp_path, verified=False)
+        ok, notes = backup.restore(source, tmp_path / "home", force=False)
+        assert not ok
+        assert "INCOMPLETE" in notes[0]
+
+    def test_a_backup_with_no_receipt_is_not_trusted(self, backup, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "gateway_is_running", lambda home: False)
+        source = tmp_path / "loose-folder"
+        source.mkdir()
+        _state_db(source / "state.db")
+        ok, notes = backup.restore(source, tmp_path / "home", force=False)
+        assert not ok
+        assert "no receipt" in notes[0]
+
+    def test_an_unreadable_pgrep_means_yes_it_is_running(self, backup, monkeypatch):
+        """Biased towards refusing. A false stop costs a flag; a false clear
+        costs the database."""
+        def explode(*a, **k):
+            raise OSError("no pgrep here")
+        monkeypatch.setattr(backup.subprocess, "run", explode)
+        assert backup.gateway_is_running(Path("/anywhere")) is True
+
+
+class TestRetention:
+    def test_nothing_is_pruned_below_the_limit(self, backup, tmp_path):
+        backup.DESTINATION.mkdir(parents=True)
+        for n in range(3):
+            (backup.DESTINATION / f"2026-09-0{n}").mkdir()
+        assert backup.prune(keep=14) == []
+
+    def test_the_oldest_go_first(self, backup):
+        backup.DESTINATION.mkdir(parents=True)
+        for n in range(1, 6):
+            folder = backup.DESTINATION / f"2026-09-0{n}"
+            folder.mkdir()
+            folder.joinpath("receipt.json").write_text(json.dumps({"verified": True}))
+        dropped = backup.prune(keep=3)
+        assert dropped == ["2026-09-01", "2026-09-02"]
+        assert (backup.DESTINATION / "2026-09-05").exists()
+
+    def test_the_last_verified_backup_is_never_pruned(self, backup):
+        """The failure this guards against: everything starts failing, the
+        good copy ages out, and retention deletes it to keep bad ones."""
+        backup.DESTINATION.mkdir(parents=True)
+        good = backup.DESTINATION / "2026-09-01"
+        good.mkdir()
+        good.joinpath("receipt.json").write_text(json.dumps({"verified": True}))
+        for n in range(2, 8):
+            bad = backup.DESTINATION / f"2026-09-0{n}"
+            bad.mkdir()
+            bad.joinpath("receipt.json").write_text(json.dumps({"verified": False}))
+        backup.prune(keep=2)
+        assert good.exists(), "the only verified backup was deleted by retention"

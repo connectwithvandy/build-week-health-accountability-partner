@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.backup</string>
+
+  <!-- Takes one verified copy of everything that cannot be rebuilt, daily at
+       04:00, and prunes to the newest 14. T05 asks for a defined cadence, and
+       until this existed the only backup that had ever been taken was taken by
+       hand, which is a cadence of "whenever somebody remembers".
+
+       04:00 because the gateway is quietest then and the SQLite online backup
+       reads through the same locking the gateway uses: it is safe at any hour,
+       but a quiet hour finishes faster. RunAtLoad is deliberately false. A
+       backup on every login would fill the disk with near-identical copies and
+       push the older, differently-shaped ones out of the retention window.
+
+       It never restores. Restoring is a decision a person makes, never a thing
+       a timer does at four in the morning. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-backup.py</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-backup.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-backup.log</string>
+</dict>
+</plist>
