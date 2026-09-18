@@ -1969,10 +1969,33 @@ Ted's own voice — Aadi, Arpit, GT (two), Shabs, Shreya and Sid — and none of
 them is something a person asked for. Convex has to be deployed before the
 tool can write.
 
+### The check that was missing behind both of them
+
+Vandy's question on the deletion was the right one: does removing the rules
+make Ted worse. Nothing could answer it. Every check in the repo asks whether
+Ted worked, none asked whether the reply sounded like him.
+
+`ted-voice-check.py` (`npm run voice`) counts the SOUL.md rules a machine can
+count, on Ted's own outgoing words, with cron excluded. Three weeks, by week:
+mid-sentence dashes **8.5% to 0.3%**, capitalised openings **18.0% to 1.0%**,
+bullets **3.1% to 0%**, average reply **96 chars to 44**. The voice work of the
+last fortnight is visible in the traffic, not only in the file.
+
+Split by who holds a stored voice rule, the six are indistinguishable from
+everybody else and slightly worse on capitalised openings, so the deletion is
+expected to be neutral on voice. **Still breaking the rules today:** 10 receipt
+openings and 6 emojis beside a metric in one week, both explicit "never" rules.
+Not acted on.
+
+`--skip` was added to the purge tool for Arpit's "friend-first bangalore
+vibe", the one fragment of the seven that SOUL.md does not already say, and
+which is where he lives rather than how Ted talks.
+
 ### Numbers
 
-1,477 Python tests, 2,164 subtests, 161 in the web suite. Lint and TypeScript
-clean. Nothing was written to production in this session.
+1,498 Python tests, 2,164 subtests, 161 in the web suite. Lint and TypeScript
+clean. Convex was deployed to production (the `forget-facts` route, verified by
+`npm run convex:check`); no user data was written or deleted.
 
 ## Web product we are building
 
