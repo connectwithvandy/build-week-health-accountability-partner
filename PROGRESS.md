@@ -1991,6 +1991,23 @@ Not acted on.
 vibe", the one fragment of the seven that SOUL.md does not already say, and
 which is where he lives rather than how Ted talks.
 
+### Done, 19 Sep: six of the seven are gone
+
+Vandy ran `--apply --skip Arpit`. Six rows deleted across five people (Aadi,
+GT twice, Shabs, Shreya, Sid); `userFacts` went 92 to 86 and the `instruction`
+layer 7 to 1. Verified three ways: the purge tool, a direct table read and
+`npm run memory:audit`. The deleted values are kept at
+`~/.hermes/state/ted-voice-rules-removed-20260919.json`, so any one of them
+can go back through the `save` action.
+
+Arpit's stays by decision, not by oversight, and the audit no longer reads a
+single kept row as an infestation.
+
+**The measurement to re-run in a week:** the five who lost a rule were
+indistinguishable from everybody else before it happened, so the prediction is
+no change. `npm run voice --days 7 --voice-rules` is the same command that
+would show it if the prediction is wrong.
+
 ### Numbers
 
 1,498 Python tests, 2,164 subtests, 161 in the web suite. Lint and TypeScript

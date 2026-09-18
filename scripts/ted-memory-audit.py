@@ -384,12 +384,20 @@ def report(found: Dict[str, Any], show_keys: bool) -> None:
 
     instruction = found["layers"].get("instruction", {}).get("facts", 0)
     if instruction:
+        # Six of the original seven were deleted on 19 Sep 2026 by
+        # `ted-purge-voice-rules.py`. Arpit's was kept on purpose: it carries
+        # "bangalore vibe", the one fragment SOUL.md does not already say, and
+        # that is where he lives rather than how Ted talks. So the line has to
+        # be able to report a small number without calling it an infestation.
+        row = "fact is a rule" if instruction == 1 else "facts are rules"
         print(
             f"  `instruction` is the layer T14 does not name, and it should not\n"
-            f"  exist: {instruction} facts are rules about how Ted talks, stored per\n"
+            f"  exist: {instruction} {row} about how Ted talks, stored per\n"
             f"  user, injected every turn, on top of a SOUL.md that already says\n"
             f"  all of it. The model has been writing Ted's voice back into the\n"
-            f"  user's memory."
+            f"  user's memory.\n"
+            f"  The gate refuses new ones; `npm run memory:voice-rules` lists\n"
+            f"  what is left and deletes only with --apply."
         )
         print()
 
