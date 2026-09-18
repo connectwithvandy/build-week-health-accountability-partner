@@ -27,7 +27,7 @@
     },
     {
       "file": "03-voice-listening-ack.patch",
-      "what": "the voice-note 'Listening\u2026' acknowledgement",
+      "what": "the voice-note 'Listening…' acknowledgement",
       "checks": [
         {
           "path": "gateway/run.py",
@@ -62,7 +62,7 @@
             "one sec, finishing the last one first"
           ],
           "absent": [
-            "\u26a1 Interrupting current task"
+            "⚡ Interrupting current task"
           ]
         }
       ]
@@ -91,7 +91,7 @@
             "_gateway_provider_message"
           ],
           "absent": [
-            "    return \"\u23f1\ufe0f The model provider is rate-limiting requests. Please wait a moment and try again.\""
+            "    return \"⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.\""
           ]
         }
       ]
@@ -255,6 +255,20 @@
           "present": [
             "_ted_seen_inbound",
             "ted patch 15"
+          ],
+          "absent": []
+        }
+      ]
+    },
+    {
+      "file": "16-cron-sends-join-the-delivery-ledger.patch",
+      "what": "scheduled reminders recorded in the delivery ledger",
+      "checks": [
+        {
+          "path": "cron/scheduler.py",
+          "present": [
+            "_ted_record_cron_obligation",
+            "_ted_mark_cron_obligation_delivered(_ted_obligation)"
           ],
           "absent": []
         }

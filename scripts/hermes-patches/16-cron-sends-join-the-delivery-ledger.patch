@@ -1,0 +1,105 @@
+--- a/cron/scheduler.py
++++ b/cron/scheduler.py
+@@ -1468,6 +1468,74 @@
+     return is_channel
+ 
+ 
++# Ted patch 16. A scheduled reminder was the one thing Ted sends that nothing
++# durably recorded. A reply goes through the gateway's delivery ledger and gets
++# a row per message; a cron send is handed straight to the adapter and leaves
++# one line in agent.log, which rotates. 230 reminders were delivered between
++# 1 and 18 Sep 2026 and the only proof of any of them was a log file.
++#
++# That is roadmap T10's subject exactly: "every scheduled reminder or review
++# has a final known status or a visible unresolved state; delivery failure
++# cannot silently disappear." It also cost a week of wrong conclusions — a
++# check that read the ledger alone reported Ted had sent nothing proactive in
++# seven days, four times, while he was sending 7 to 21 reminders a day.
++#
++# These write to the same ledger the gateway uses, so reminders and replies are
++# finally countable from one place. Left deliberately at 'pending' when no
++# success site is reached: pending IS the visible unresolved state T10 asks
++# for, and Ted patch 12 already moves anything older than ten minutes to
++# 'failed' rather than delivering a stale nudge.
++#
++# Best-effort by the ledger's own contract — "ledger failures must never block
++# or delay an actual send" — so every call here swallows everything. A
++# reminder somebody set up must never fail to arrive because bookkeeping did.
++def _ted_record_cron_obligation(job, platform_name, chat_id, thread_id, content):
++    """Record one scheduled send as owed. Returns an id, or None."""
++    try:
++        from gateway.delivery_ledger import (
++            compute_obligation_id,
++            ledger_enabled,
++            mark_attempting,
++            record_obligation,
++        )
++
++        if not ledger_enabled():
++            return None
++        session_key = f"cron:{platform_name}:{chat_id}"
++        # The job id alone would collide across firings and the ledger would
++        # treat tonight's reminder as a re-record of last night's. The run
++        # stamp makes each firing its own row while staying idempotent inside
++        # one firing, which is what retries within a run need.
++        message_ref = f"{job.get('id', '?')}@{int(time.time())}"
++        obligation_id = compute_obligation_id(session_key, message_ref, content or "")
++        record_obligation(
++            obligation_id=obligation_id,
++            session_key=session_key,
++            platform=platform_name,
++            chat_id=str(chat_id),
++            thread_id=str(thread_id) if thread_id else None,
++            content=content or "",
++        )
++        mark_attempting(obligation_id)
++        return obligation_id
++    except Exception as exc:
++        logger.debug("Ted: could not record cron obligation: %s", exc)
++        return None
++
++
++def _ted_mark_cron_obligation_delivered(obligation_id):
++    """The adapter accepted it. Not the same as WhatsApp delivering it, which
++    is T10's remaining half and needs the Cloud API's status webhook."""
++    if not obligation_id:
++        return
++    try:
++        from gateway.delivery_ledger import mark_delivered
++
++        mark_delivered(obligation_id)
++    except Exception as exc:
++        logger.debug("Ted: could not close cron obligation: %s", exc)
++
++
+ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+     """
+     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
+@@ -1607,6 +1675,11 @@
+         runtime_adapter = (adapters or {}).get(platform)
+         delivered = False
+         target_errors = []
++        # Ted patch 16. Before any send attempt, so a crash between here and
++        # the adapter leaves a row rather than nothing.
++        _ted_obligation = _ted_record_cron_obligation(
++            job, platform_name, chat_id, thread_id, content
++        )
+ 
+         # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
+         # this platform generically from its config ``extra``. Default "thread"
+@@ -1918,6 +1991,7 @@
+                 if adapter_ok:
+                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                     delivered = True
++                    _ted_mark_cron_obligation_delivered(_ted_obligation)  # Ted patch 16
+                     # Seed the thread session only now that delivery into it
+                     # succeeded (deferred from thread-open above).
+                     if opened_thread_id and not thread_seeded:
+@@ -2028,6 +2102,7 @@
+                 continue
+ 
+             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
++            _ted_mark_cron_obligation_delivered(_ted_obligation)  # Ted patch 16
+             _maybe_mirror_cron_delivery(
+                 job, platform_name, chat_id, mirror_text,
+                 thread_id=thread_id, user_id=origin_user_id,
