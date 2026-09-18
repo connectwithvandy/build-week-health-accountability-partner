@@ -199,6 +199,12 @@ Each step is reversible until step 6.
    one rather than replacing it, behind config.
 3. **Templates drafted and submitted** for the reminders, in the *utility*
    category, and approved. This has a lead time and nothing else can start it.
+
+   *Drafted on 19 Sep: `T06_TEMPLATES.md` has three submission-ready templates
+   covering all 20 enabled reminder jobs, the categorisation reasoning against
+   Meta's own wording, and the answer this document left open — the nudge
+   becomes a knock on the door, and Ted's real sentence is sent once the tap
+   reopens the window. Not submitted: that needs step 1.*
 4. **Full flow on the test number**: onboarding, a meal photo, a correction,
    a reminder outside the window through a template, and a deletion.
 5. **Run both in parallel.** The test number serves up to five consenting
