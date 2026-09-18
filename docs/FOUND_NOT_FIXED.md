@@ -64,3 +64,27 @@ what it cannot prove. Costs nothing to leave.
 **The delivery ledger only reaches back to 11 Sep 2026.** 182 rows. Anything
 asking "what did users actually receive" before that date has no answer, which
 limits every measurement of the kind above to a seven-day window.
+
+---
+
+## 19 Sep 2026
+
+**Two people were lost on 4 September and nothing noticed for fifteen days.**
+Palak and Vishwas Mishra each sent "Okay Ted, let's do this" and received no
+reply, ever — not a late one, not a wrong one, silence — and neither wrote
+again. Vinit answered Ted's question at 01:51 the same day and got the same
+nothing. The cause is known and half of it is fixed: OpenRouter returned 402,
+out of credit, on both the primary model and the fallback, and at that time a
+provider failure produced no user-facing message. Hermes patch 2 and
+`display.provider_messages` fixed that half in the days after.
+
+**The unfixed half is the detection.** `ted-watch.py` watches the delivery
+ledger's `abandoned` state, which catches a reply that was written and could
+not be sent. Nothing watches for a turn that ended having composed nothing at
+all, which is what a 402 produces. Found by `npm run ordering`, written for
+T08, fifteen days late. Full evidence in `docs/T08_ORDERING.md` §4.
+
+**Not acted on** because it needs a decision about what watches what, and
+because the three affected people are fifteen days gone — a message to them now
+is a product decision, not a repair, and nobody is messaged without Vandy
+saying so.
