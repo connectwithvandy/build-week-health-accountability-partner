@@ -48,3 +48,4 @@ next-env.d.ts
 
 # Fonts the recap card downloads on first render
 /.recap-fonts/
+ted-backups/
