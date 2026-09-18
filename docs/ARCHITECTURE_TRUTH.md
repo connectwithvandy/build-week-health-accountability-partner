@@ -175,8 +175,29 @@ was wrong twice on the day it was written.
   gap, stated in the README:** there is no way to put a message through the
   live path without sending a real one. The gate's own pytest suite is the
   only coverage that path has.
-- **`known_plugin_toolsets.whatsapp`** is read by neither the lock nor the
-  guard. `spotify` is listed and not installed, so it is inert today.
+- **`known_plugin_toolsets.whatsapp`, looked at properly on 19 Sep.** The
+  earlier note here was wrong twice: `spotify` **is** installed (a bundled
+  Hermes plugin), and it is listed under `cli`, not `whatsapp`. What is true is
+  worse than what was written. `platform_toolsets.whatsapp` does not govern
+  plugin toolsets at all — Hermes resolves those in a separate pass, where a
+  toolset is enabled unless the platform has *seen* it, and WhatsApp has seen
+  nothing. `spotify` stays off WhatsApp only because of `_DEFAULT_OFF_TOOLSETS`,
+  a list inside Hermes.
+  **Recording the plugins does not close this**, and that was measured rather
+  than assumed: a config that records them and one that does not resolve
+  identically for a plugin toolset neither has heard of. A plugin installed
+  later is unseen by definition, on every platform, and arrives enabled. The
+  guard now watches the event that matters — a plugin appearing at all
+  (`unpinned_plugins`, pinned against the 19 plugins present today) — and
+  reports the missing record separately. Neither stops the gateway: nothing is
+  through the gap today.
+- **WhatsApp resolves to four toolsets, not three.** `cronjob`, `ted`,
+  `vision` **and `kanban`**, which no document mentioned. Its 12 tools are
+  inert: they need `HERMES_KANBAN_TASK` in the environment or `kanban` in a
+  top-level `toolsets:` key, and neither exists here. The live log agrees —
+  `check_fn _check_kanban_mode returned False` on every turn. Resolved tool
+  list on a WhatsApp turn: `ted_food_lookup`, `vision_analyze`, plus the
+  Convex-gated `ted_*` tools and `cronjob` when their check_fns pass.
 - **T04, the host itself.** The laptop was on battery at 71% while 56 chats
   depended on it, and nothing watched either the power or the sleep hold.
   `check_power` in `ted-watch.py` now does, and it retires itself on a host

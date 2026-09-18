@@ -41,6 +41,37 @@ REQUIRED_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
 LOG_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 WHATSAPP_ALLOWED_TOOLSETS = frozenset({"cronjob", "ted", "vision"})
 
+# Every plugin that ships with Hermes or is installed here, as of 19 Sep 2026.
+# This is a pinned inventory, not a permission list: a plugin appearing that is
+# not here is the exact event that can widen WhatsApp's tool surface without
+# anyone editing config.yaml, so the guard's job is to notice it, not to judge
+# it. Add a name here once its toolset has been placed deliberately.
+KNOWN_PLUGINS = frozenset({
+    "browser",
+    "context_engine",
+    "cron_providers",
+    "dashboard_auth",
+    "disk-cleanup",
+    "google_meet",
+    "hermes-achievements",
+    "image_gen",
+    "kanban",
+    "memory",
+    "model-providers",
+    "observability",
+    "platforms",
+    "security-guidance",
+    "spotify",
+    "teams_pipeline",
+    "ted-safety-gates",
+    "video_gen",
+    "web",
+})
+PLUGIN_DIRS = (
+    HERMES / "hermes-agent" / "plugins",
+    HERMES / "plugins",
+)
+
 
 def _fail(message: str) -> str:
     return f"  FAIL  {message}"
@@ -238,6 +269,86 @@ def unsafe_whatsapp_toolsets() -> list[str]:
         config = HERMES / "config.yaml"
         return ["<unreadable>" if not config.is_file() else "<unscoped>"]
     return sorted(set(toolsets) - WHATSAPP_ALLOWED_TOOLSETS)
+
+
+def _known_plugin_toolsets(platform: str) -> list[str] | None:
+    """What ``hermes tools`` has recorded as seen for one platform.
+
+    ``None`` means the key is absent, which is not the same as empty. See
+    ``plugin_toolsets_open_on_whatsapp`` for why the difference decides
+    whether a plugin arrives switched on.
+    """
+    try:
+        lines = (HERMES / "config.yaml").read_text().splitlines()
+    except OSError:
+        return None
+
+    try:
+        top = lines.index("known_plugin_toolsets:")
+    except ValueError:
+        return None
+
+    header = f"  {platform}:"
+    for index, line in enumerate(lines[top + 1 :], start=top + 1):
+        if line and not line[0].isspace():
+            break
+        if line == header:
+            names: list[str] = []
+            for child in lines[index + 1 :]:
+                if child and not child[0].isspace():
+                    break
+                if child.startswith("  ") and not child.startswith("    "):
+                    break
+                match = re.fullmatch(r"\s{4}-\s+([^\s#]+)\s*(?:#.*)?", child)
+                if match:
+                    names.append(match.group(1))
+            return names
+    return None
+
+
+def whatsapp_plugins_unrecorded() -> bool:
+    """Whether WhatsApp has no record of the plugin toolsets installed here.
+
+    ``platform_toolsets.whatsapp`` does not govern plugin toolsets at all.
+    Hermes resolves those in a separate pass (`hermes_cli/tools_config.py`,
+    `_get_platform_tools`): a plugin toolset is enabled unless the platform has
+    *seen* it, and "seen" means its name appears under
+    ``known_plugin_toolsets.<platform>``. WhatsApp has no entry, so the only
+    thing keeping today's plugins off it is `_DEFAULT_OFF_TOOLSETS`, a list
+    inside Hermes that an upgrade may rewrite.
+
+    **This is a hardening, not a closed door, and the difference was measured.**
+    Recording a plugin makes it our decision instead of Hermes'. It does
+    nothing for a plugin installed afterwards: that one is unseen by
+    definition, on every platform including `cli`, and arrives enabled. No
+    config value prevents that. ``unpinned_plugins`` is the check that can,
+    because a plugin appearing at all is the event.
+    """
+    return _known_plugin_toolsets("whatsapp") is None
+
+
+def unpinned_plugins() -> list[str]:
+    """Plugins present on this machine that nobody has placed deliberately.
+
+    This does not read toolsets and cannot: a plugin declares its tools in
+    `plugin.yaml` but names its *toolset* at registration, in Python. What it
+    proves is narrower and is the thing worth watching — a plugin that was not
+    here when the WhatsApp surface was last reasoned about is here now, most
+    likely carried in by a Hermes upgrade.
+    """
+    found: set[str] = set()
+    for directory in PLUGIN_DIRS:
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            if not (entry / "plugin.yaml").is_file():
+                continue
+            found.add(entry.name)
+    return sorted(found - KNOWN_PLUGINS)
 
 
 def cron_tools_unscoped() -> bool:
@@ -471,6 +582,35 @@ def main() -> int:
     else:
         report.append(_ok("WhatsApp is scoped to cronjob, ted, and vision"))
 
+    plugins_unrecorded = whatsapp_plugins_unrecorded()
+    if plugins_unrecorded:
+        report.append(
+            _fail(
+                "WhatsApp has no record of the installed plugins — "
+                "known_plugin_toolsets has\n        no whatsapp entry, so "
+                "spotify is off it only because a list inside Hermes\n"
+                "        says so. platform_toolsets does not govern plugins. "
+                "Record them: python3\n        "
+                "scripts/ted-lock-whatsapp-tools.py --apply"
+            )
+        )
+    else:
+        report.append(_ok("WhatsApp has recorded the plugins installed here"))
+
+    strangers = unpinned_plugins()
+    if strangers:
+        names = ", ".join(strangers)
+        report.append(
+            _fail(
+                f"{len(strangers)} plugin(s) arrived unannounced: {names}\n"
+                "        A plugin is how the WhatsApp tool surface widens "
+                "without config.yaml changing.\n        Decide where each one "
+                "belongs, then add it to KNOWN_PLUGINS in this file."
+            )
+        )
+    else:
+        report.append(_ok("no plugin has appeared since the surface was set"))
+
     cron_unscoped = cron_tools_unscoped()
     if cron_unscoped:
         report.append(
@@ -521,6 +661,22 @@ def main() -> int:
             return 1
         if absent:
             print("\nGates are on. Memory is off — see the FAIL line above.")
+            return 1
+        if strangers:
+            # Above the patches: a plugin that nobody put here is the one event
+            # that can widen the WhatsApp surface without config.yaml moving.
+            print(
+                "\nGates are on. A plugin arrived that was not here when the "
+                "WhatsApp tool surface\nwas last reasoned about — see above. "
+                "Decide where it belongs before the next restart."
+            )
+            return 1
+        if plugins_unrecorded:
+            print(
+                "\nGates are on. Which plugins WhatsApp may carry is Hermes' "
+                "decision today, not\nours — see above. Nothing is through it. "
+                "Record them: python3\nscripts/ted-lock-whatsapp-tools.py --apply"
+            )
             return 1
         if patches_missing:
             # Not ungated. Ted still refuses under-18s, still never returns a

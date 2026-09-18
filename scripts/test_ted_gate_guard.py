@@ -403,3 +403,132 @@ class TestItWaitsOutARestart:
         monkeypatch.setattr(guard.time, "sleep", lambda s: waited.append(s))
         assert guard.settled_pid() == 99
         assert waited == []
+
+
+# --- the second door ---------------------------------------------------------
+#
+# platform_toolsets.whatsapp was locked to three toolsets on 17 Sep and the
+# guard has checked it since. It reads one of the two lists Hermes consults.
+# Plugin toolsets go through `known_plugin_toolsets`, where a platform with no
+# entry has seen nothing, and anything it has not seen arrives enabled.
+
+
+DOOR_OPEN = """platform_toolsets:
+  whatsapp:
+    - cronjob
+    - ted
+    - vision
+known_plugin_toolsets:
+  cli:
+    - spotify
+"""
+
+DOOR_CLOSED = DOOR_OPEN + """  whatsapp:
+    - spotify
+    - ted
+"""
+
+
+def test_whatsapp_with_no_plugin_entry_is_open(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, DOOR_OPEN)
+    assert guard.whatsapp_plugins_unrecorded() is True
+
+
+def test_whatsapp_that_has_seen_its_plugins_is_closed(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, DOOR_CLOSED)
+    assert guard.whatsapp_plugins_unrecorded() is False
+
+
+def test_an_empty_whatsapp_entry_still_counts_as_seen(guard, tmp_path, monkeypatch):
+    # Hermes writes an empty list when a platform has plugins offered and none
+    # chosen. Empty is a decision; absent is not.
+    _config(guard, tmp_path, monkeypatch, DOOR_OPEN + "  whatsapp:\n")
+    assert guard.whatsapp_plugins_unrecorded() is False
+    assert guard._known_plugin_toolsets("whatsapp") == []
+
+
+def test_a_config_without_the_parent_key_is_open(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, "platform_toolsets:\n  whatsapp:\n    - ted\n")
+    assert guard.whatsapp_plugins_unrecorded() is True
+
+
+def test_an_unreadable_config_is_treated_as_open(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path / "gone")
+    assert guard.whatsapp_plugins_unrecorded() is True
+
+
+def test_a_cli_entry_does_not_close_whatsapp(guard, tmp_path, monkeypatch):
+    # The bug exactly: the file looks configured, and the configured platform
+    # is the one nobody talks to.
+    _config(guard, tmp_path, monkeypatch, DOOR_OPEN)
+    assert guard._known_plugin_toolsets("cli") == ["spotify"]
+    assert guard._known_plugin_toolsets("whatsapp") is None
+
+
+# --- a plugin that nobody put here -------------------------------------------
+
+
+def _plugin(root: Path, name: str) -> None:
+    folder = root / name
+    folder.mkdir(parents=True)
+    (folder / "plugin.yaml").write_text(f"name: {name}\n")
+
+
+def test_a_pinned_plugin_is_not_reported(guard, tmp_path, monkeypatch):
+    _plugin(tmp_path / "plugins", "ted-safety-gates")
+    monkeypatch.setattr(guard, "PLUGIN_DIRS", (tmp_path / "plugins",))
+    assert guard.unpinned_plugins() == []
+
+
+def test_a_new_plugin_is_reported(guard, tmp_path, monkeypatch):
+    _plugin(tmp_path / "plugins", "ted-safety-gates")
+    _plugin(tmp_path / "plugins", "shiny-new-thing")
+    monkeypatch.setattr(guard, "PLUGIN_DIRS", (tmp_path / "plugins",))
+    assert guard.unpinned_plugins() == ["shiny-new-thing"]
+
+
+def test_both_plugin_directories_are_read(guard, tmp_path, monkeypatch):
+    _plugin(tmp_path / "bundled", "arrived-with-the-upgrade")
+    _plugin(tmp_path / "installed", "installed-by-hand")
+    monkeypatch.setattr(
+        guard, "PLUGIN_DIRS", (tmp_path / "bundled", tmp_path / "installed")
+    )
+    assert guard.unpinned_plugins() == [
+        "arrived-with-the-upgrade",
+        "installed-by-hand",
+    ]
+
+
+def test_a_folder_without_a_manifest_is_not_a_plugin(guard, tmp_path, monkeypatch):
+    (tmp_path / "plugins" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "plugins" / "notes").mkdir()
+    monkeypatch.setattr(guard, "PLUGIN_DIRS", (tmp_path / "plugins",))
+    assert guard.unpinned_plugins() == []
+
+
+def test_a_missing_plugin_directory_is_not_a_finding(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "PLUGIN_DIRS", (tmp_path / "gone",))
+    assert guard.unpinned_plugins() == []
+
+
+def test_the_pinned_list_matches_this_machine():
+    # Not a fixture: if this fails, a plugin really did appear and the guard's
+    # inventory is the thing that is out of date.
+    guard = _load_guard()
+    assert guard.unpinned_plugins() == []
+
+
+def test_recording_plugins_is_not_the_same_as_closing_the_door(guard, tmp_path, monkeypatch):
+    """The limit of the entry, pinned so the report cannot overclaim again.
+
+    A config that records every plugin installed today and one that records
+    none are identical for a plugin that arrives tomorrow: both leave it
+    enabled, because `known_plugin_toolsets` is a record of what was seen, not
+    an allowlist. The first draft of this check said "the door is closed" and
+    was wrong; `unpinned_plugins` is what actually watches that case.
+    """
+    _config(guard, tmp_path, monkeypatch, DOOR_CLOSED)
+    recorded = guard._known_plugin_toolsets("whatsapp")
+
+    assert guard.whatsapp_plugins_unrecorded() is False
+    assert "arrived-tomorrow" not in recorded
