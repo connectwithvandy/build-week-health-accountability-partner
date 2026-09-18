@@ -1,9 +1,19 @@
 # Ted — WhatsApp Health Accountability V1 Progress
 
-Last updated: Sat 5 Sep 2026, Asia/Kolkata
+Last updated: Fri 18 Sep 2026, Asia/Kolkata
 
-Current open items are under **Open — 5 Sep 2026**, not under the older
-"Exact next step" section below, which is kept as the record of 4 Sep.
+**How to read this file.** Numbered Orders run in date order down to
+**Order 29 — 18 Sep 2026**, which is the newest and sits directly above the
+tail. Everything after it, from "Web product we are building" to the end, is
+early material from 1 to 4 Sep kept as a record; nothing there describes how
+the product works now.
+
+Two **Open** sections list findings written up rather than fixed, and neither
+has been marked resolved: **Open — 16 Sep 2026** (two findings) and the older
+**Open — 5 Sep 2026** (three findings). Read the newer one first. Before acting
+on either, check the code and the gateway rather than trusting the write-up,
+because some of it has been overtaken by later Orders without the section
+being edited.
 
 ## What we decided
 
@@ -1495,6 +1505,75 @@ Blocked on Vandy: the VM has to exist before the cutover can be written.
 
 Suite: 1127 Python tests, 2145 subtests, up from 1118.
 
+## Order 29 — 18 Sep 2026, midday, the name we actually own
+
+`heyted.in` was registered this morning through Openprovider and now serves the
+product. Until today the URL people were handed was `heyted.vercel.app`, a
+hostname the platform lends you.
+
+### What was wired
+
+The registrar's DNS was parked on `luna/neon/odin.mydnsvault.com`. The domain
+was added to the Vercel project, its nameservers moved to `ns1/ns2.vercel-dns.com`,
+and `www.heyted.in` added alongside so both spellings resolve. Vercel then
+issued a Let's Encrypt certificate for the apex and the subdomain on its own.
+
+Verified live rather than assumed: the `.in` registry delegates to the two
+Vercel nameservers, the certificate for `CN=heyted.in` validates with return
+code 0 and runs to 17 Dec 2026, `http://` answers 308 to `https://`, and `/`,
+`/privacy`, `/robots.txt` and `/brand/ted-whatsapp-cover.png` all return 200 on
+both `heyted.in` and `www.heyted.in`.
+
+Both older hostnames still serve the same deployment, so every link already
+sent to a tester keeps working.
+
+### The one string that was held back
+
+The swap went out in two commits on purpose. `610fd51` moved the seven places
+where the site speaks its own name: the canonical and link preview tags on the
+landing page, the robots.txt host, the `/privacy` footer, the recap card, the
+submission report, the README and the brand profile.
+
+`PRIVACY_URL` in `hermes/ted_safety_gates/__init__.py` waited for `f8365be`,
+because that line is the only string in this repo that reaches a user directly,
+in the disclosure Ted sends on first contact, and
+`~/.hermes/plugins/ted-safety-gates` symlinks straight into the file. A launchd
+restart would have shipped it with no deploy step in between. Pointing 56 chats
+at a hostname with no delegation was a cost with no upside, so it moved only
+after the domain answered.
+
+The quoted transcript at `hermes/test_ted_safety_gates.py:7485` keeps the old
+URL. It is copied verbatim out of `agent.log` and is the record of a message
+that was really sent, not a link anyone follows.
+
+### And then the site opened to search
+
+The private-beta `noindex` lived in three places, `src/app/robots.ts`,
+`src/app/layout.tsx` and a meta tag inside `public/landing-v6.html`, and they
+had to go together or not at all. They went together, same afternoon, on
+Vandy's call.
+
+Checked before opening rather than after: `/metrics` is the only page on the
+site that shows real numbers, and it is reached with `?key=`, returns 404
+without one, and sets its own `noindex`. The landing page and `/privacy` are
+the only other public pages and neither carries user data.
+
+`robots.txt` now allows `/` and shuts `/api/` and `/metrics`. `/api/` is
+machines talking to machines and the beacon endpoint accepts writes. `/metrics`
+is the third lock on a door that already has two, which keeps the URL out of
+the crawl rather than relying on the page to turn a crawler away once it has
+arrived.
+
+`layout.tsx` lost its `robots` key rather than gaining an inverted one, so the
+decision lives in `robots.ts` alone. The assertion in
+`__tests__/landing-page.test.ts` was inverted rather than deleted: it now fails
+if a `noindex` reappears on the landing page, which is the one regression
+nothing else would catch, because that file is static and the symptom would be
+the site falling out of search weeks later.
+
+Suite: 164 web tests, 826 gate tests and 2124 subtests, all passing, plus lint
+and a production build.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
@@ -1602,54 +1681,3 @@ Ordered by what a real user hits first.
 - It also adds the adult-only beta notice, uses the scoped salute-emoji opening message inside the experiment only, and names Vandana Agarwal as the independent beta operator. A verified public contact email is still required before any production use.
 - Static contrast checks pass for the intended text sizes. All 9 web tests, lint, and the production build pass. Browser review is still pending because no browser was connected in this session.
 
-## Order 29 — 18 Sep 2026, midday, the name we actually own
-
-`heyted.in` was registered this morning through Openprovider and now serves the
-product. Until today the URL people were handed was `heyted.vercel.app`, a
-hostname the platform lends you.
-
-### What was wired
-
-The registrar's DNS was parked on `luna/neon/odin.mydnsvault.com`. The domain
-was added to the Vercel project, its nameservers moved to `ns1/ns2.vercel-dns.com`,
-and `www.heyted.in` added alongside so both spellings resolve. Vercel then
-issued a Let's Encrypt certificate for the apex and the subdomain on its own.
-
-Verified live rather than assumed: the `.in` registry delegates to the two
-Vercel nameservers, the certificate for `CN=heyted.in` validates with return
-code 0 and runs to 17 Dec 2026, `http://` answers 308 to `https://`, and `/`,
-`/privacy`, `/robots.txt` and `/brand/ted-whatsapp-cover.png` all return 200 on
-both `heyted.in` and `www.heyted.in`.
-
-Both older hostnames still serve the same deployment, so every link already
-sent to a tester keeps working.
-
-### The one string that was held back
-
-The swap went out in two commits on purpose. `610fd51` moved the seven places
-where the site speaks its own name: the canonical and link preview tags on the
-landing page, the robots.txt host, the `/privacy` footer, the recap card, the
-submission report, the README and the brand profile.
-
-`PRIVACY_URL` in `hermes/ted_safety_gates/__init__.py` waited for `f8365be`,
-because that line is the only string in this repo that reaches a user directly,
-in the disclosure Ted sends on first contact, and
-`~/.hermes/plugins/ted-safety-gates` symlinks straight into the file. A launchd
-restart would have shipped it with no deploy step in between. Pointing 56 chats
-at a hostname with no delegation was a cost with no upside, so it moved only
-after the domain answered.
-
-The quoted transcript at `hermes/test_ted_safety_gates.py:7485` keeps the old
-URL. It is copied verbatim out of `agent.log` and is the record of a message
-that was really sent, not a link anyone follows.
-
-### Still true after this
-
-`robots.ts` sends `Disallow: /` and the pages carry `noindex`, in three places:
-`src/app/robots.ts`, `src/app/layout.tsx` and the meta tag inside
-`public/landing-v6.html`. A real domain does not change the beta decision that
-put them there. `heyted.in` will not appear in search until all three go
-together.
-
-Suite: 164 web tests, 826 gate tests and 2124 subtests, all passing, plus lint
-and a production build.

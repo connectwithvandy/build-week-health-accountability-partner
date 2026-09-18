@@ -1,18 +1,20 @@
 <!doctype html>
 <!-- Ted landing, v6.
      Copied from design-experiments/ted-landing-v6/ted-landing.html (frozen there)
-     and given the four things a deployed page needs and an experiment does not:
-     a mobile viewport, the private-beta noindex, a description and share tags,
-     and a favicon. Served at "/" by the rewrite in next.config.ts.
+     and given the three things a deployed page needs and an experiment does
+     not: a mobile viewport, a description and share tags, and a favicon.
+     Served at "/" by the rewrite in next.config.ts.
      To change the design: edit the experiment, re-copy, re-apply this head. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Private beta: the waitlist is exactly the people Vandy has messaged, so being
-     findable in search is a liability. Pairs with robots.ts (Disallow: /).
-     Remove both together when the beta opens. -->
-<meta name="robots" content="noindex, nofollow">
+<!-- The private-beta `noindex, nofollow` that sat here was removed on
+     18 Sep 2026, when the site opened to search on heyted.in. This file is
+     served at "/" by the rewrite in next.config.ts and never passes through
+     the App Router layout, so anything the layout sets has to be repeated
+     here. Nothing to repeat now: what stays out of the index is decided in
+     src/app/robots.ts. -->
 <meta name="description" content="Ted remembers your meals, movement, water, and commitments in WhatsApp. Then it gives you one useful thing you can still do today.">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="canonical" href="https://heyted.in/">

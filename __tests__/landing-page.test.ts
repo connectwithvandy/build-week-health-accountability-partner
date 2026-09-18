@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
  * The landing page is a static file (`public/landing-v6.html`) served at "/" by
  * the rewrite in `next.config.ts`, so React tests cannot reach it. These
  * assertions are the only thing standing between a design edit and a page that
- * quietly drops a safety disclosure, stops linking to /privacy, or becomes
- * indexable while the beta is still private.
+ * quietly drops a safety disclosure, stops linking to /privacy, or picks up a
+ * `noindex` again and falls out of search without anyone noticing.
  */
 const html = readFileSync(join(process.cwd(), "public/landing-v6.html"), "utf8");
 
@@ -35,8 +35,13 @@ describe("the v6 landing page", () => {
     expect(whatsappNumber).toBe(fromEnv);
   });
 
-  it("keeps the private beta out of search", () => {
-    expect(html).toContain('<meta name="robots" content="noindex, nofollow">');
+  /** The inverse of what this asserted until 18 Sep 2026, when the site opened
+   *  to search on heyted.in. Kept rather than deleted, because a `noindex`
+   *  reappearing here is exactly the silent regression this file exists to
+   *  catch: the page is static, so nothing else would notice, and the symptom
+   *  would be the site quietly falling out of search weeks later. */
+  it("does not carry a noindex left over from the private beta", () => {
+    expect(html).not.toMatch(/<meta\s+name="robots"/i);
   });
 
   it("renders at phone width instead of a zoomed-out desktop page", () => {

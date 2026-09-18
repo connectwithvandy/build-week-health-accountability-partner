@@ -33,13 +33,14 @@ export const metadata: Metadata = {
   title: "Ted. Your day, remembered",
   description:
     "Ted remembers your meals, movement, water, and commitments in WhatsApp. Then it gives you one useful thing you can still do today.",
-  // Private beta: the waitlist is exactly the people Vandy has messaged, so
-  // being findable in search is a liability, not a win. robots.ts asks
-  // crawlers not to fetch; this asks them not to index anything they fetched
-  // anyway. The landing page carries its own copy of this, because it is a
-  // static file that this metadata cannot reach. Remove all three together
-  // when the beta opens.
-  robots: { index: false, follow: false },
+  // No `robots` key here on purpose, since 18 Sep 2026. It used to carry
+  // `{ index: false, follow: false }` for the private beta, which applied to
+  // every App Router page at once. Leaving it off lets the default apply and
+  // keeps the decision in one place, `robots.ts`.
+  //
+  // `/metrics` is the exception and sets its own `noindex` in
+  // `metrics/page.tsx`, because a page that is reached with a key should say
+  // so itself rather than inherit it from a layout somebody may later edit.
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
