@@ -137,17 +137,80 @@ class TestPricing:
 
     def test_unknown_model_is_unpriced_not_free(self, monkeypatch, home):
         # Returning 0.0 here would quietly shrink the total every time a
-        # fallback to OpenRouter happened, which is the exact moment somebody
-        # is most likely to be reading this report.
+        # model this file has never heard of served a turn, which is the exact
+        # moment somebody is most likely to be reading this report.
+        #
+        # This used to use openai/gpt-5.3-codex as its stranger. It is not one
+        # any more: on 17 Sep 2026 the Anthropic balance emptied and that
+        # model served every call for a day, unpriced. A stranger for the test
+        # now has to be a model nothing on this box has ever routed to.
         module = _load(monkeypatch, home)
         row = {
-            "model": "openai/gpt-5.3-codex",
+            "model": "stepfun/step-3.7-flash:free",
             "input_tokens": 1_000_000,
             "output_tokens": 0,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0,
         }
         assert module.price_row(row, "1h") is None
+
+    def test_the_fallback_road_is_priced(self, monkeypatch, home):
+        """The gap that let a whole day read as free.
+
+        Rates from https://openrouter.ai/api/v1/models, read 18 Sep 2026:
+        $1.75 in, $14.00 out, $0.175 cached in, no write premium.
+        """
+        module = _load(monkeypatch, home)
+        row = {
+            "model": "openai/gpt-5.3-codex",
+            "input_tokens": 1_000_000,
+            "output_tokens": 1_000_000,
+            "cache_read_tokens": 1_000_000,
+            "cache_write_tokens": 0,
+        }
+        assert module.price_row(row, "1h") == pytest.approx(1.75 + 14.00 + 0.175)
+
+    def test_a_cached_openai_token_is_not_a_tenth(self, monkeypatch, home):
+        """gpt-4o-mini caches at half price, not a tenth.
+
+        Claude's 0.10x is a Claude fact. Inheriting it here would have priced
+        a cached mini token at $0.015 against a real $0.075, five times under.
+        """
+        module = _load(monkeypatch, home)
+        row = {
+            "model": "openai/gpt-4o-mini",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 1_000_000,
+            "cache_write_tokens": 0,
+        }
+        assert module.price_row(row, "1h") == pytest.approx(0.075)
+
+    def test_no_write_premium_on_the_fallback_road(self, monkeypatch, home):
+        """OpenAI charges nothing extra to write to cache, so a write token
+        bills as ordinary input. Claude's 2x here would invent money."""
+        module = _load(monkeypatch, home)
+        row = {
+            "model": "openai/gpt-5.3-codex",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 1_000_000,
+        }
+        assert module.price_row(row, "1h") == pytest.approx(1.75)
+        assert module.price_row(row, "5m") == pytest.approx(1.75)
+
+    def test_every_openrouter_model_states_its_own_cache_rates(self, monkeypatch, home):
+        """A non-Claude model must not inherit Claude's cache shape by
+        default. Adding one without both rates fails here rather than
+        printing a wrong number in a report nobody re-derives."""
+        module = _load(monkeypatch, home)
+        for model in module._INPUT_RATE:
+            if model.startswith("claude-"):
+                continue
+            override = module._CACHE_RATE_OVERRIDE.get(model)
+            assert override is not None, f"{model} has no cache rates of its own"
+            assert "read" in override and "write" in override
 
 
 class TestCronSplit:
@@ -457,7 +520,7 @@ class TestModelNormalization:
         Unpriced is the safe direction: it is counted and reported, not hidden."""
         spend = _load(monkeypatch, home)
         row = {
-            "model": "openai/gpt-5.3-codex",
+            "model": "stepfun/step-3.7-flash:free",
             "input_tokens": 1_000_000,
             "output_tokens": 0,
             "cache_read_tokens": 0,
@@ -465,6 +528,29 @@ class TestModelNormalization:
             "api_call_count": 1,
         }
         assert spend.price_row(row, "1h") is None
+
+    def test_openrouters_spelling_of_sonnet_is_the_same_money(self, monkeypatch, home):
+        """The one that was quietly missing. Bedrock writes `anthropic.` and
+        OpenRouter writes `anthropic/`; only the first was recognised, so 245
+        calls of real Sonnet traffic sat outside the total."""
+        spend = _load(monkeypatch, home)
+        assert spend.normalize_model("anthropic/claude-sonnet-5") == "claude-sonnet-5"
+        row = {
+            "model": "anthropic/claude-sonnet-5",
+            "input_tokens": 1_000_000,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "api_call_count": 1,
+        }
+        direct = dict(row, model="claude-sonnet-5")
+        assert spend.price_row(row, "1h") == spend.price_row(direct, "1h") == 2.00
+
+    def test_the_fallback_keeps_its_vendor_prefix(self, monkeypatch, home):
+        """`openai/` must survive normalisation. It is a different model at a
+        different price and has its own row in the table."""
+        spend = _load(monkeypatch, home)
+        assert spend.normalize_model("openai/gpt-5.3-codex") == "openai/gpt-5.3-codex"
 
     def test_regional_profile_is_flagged_not_repriced(self, monkeypatch, home):
         """A regional endpoint may cost more than these Anthropic rates. The

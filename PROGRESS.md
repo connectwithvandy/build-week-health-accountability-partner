@@ -1671,6 +1671,130 @@ cost drivers" says plainly that it can take a live app offline.
   limit before TED ever runs on Bedrock: at `$176` a month gross, a `$40`
   ceiling pauses the project in a week.
 
+## Order 31 — 18 Sep 2026, night, the day the bill read zero and wasn't
+
+This session set out to read the measurement order 27 was waiting for: did the
+two cron fixes of 17 Sep work. They did. Something else had happened in the
+meantime and the spend report could not see it.
+
+### The balance emptied and nothing stopped
+
+At about 22:31 on 17 Sep the Anthropic credit ran out. Every call since has
+failed with `Your credit balance is too low` and fallen back to
+`openai/gpt-5.3-codex` through OpenRouter. Users saw nothing: the "switched to
+fallback model" notice is suppressed on WhatsApp, and 11 messages went out
+today with none abandoned. The voice held, Hinglish and meal cards and the
+numbered onboarding intact.
+
+`ted-watch.py`'s `check_model` did its job and has said `model: FAILING` every
+fifteen minutes since. Pushover is still not configured; email is, and a test
+alert sent successfully, so the alarm has been arriving in an inbox. Nothing
+about the alarm is broken. Whether it is being read is a different question.
+
+**The Codex fallback was the one open half of order 09, never force-tested.**
+It has now been tested by twenty-two hours of production and it held.
+
+### The measurement, with the contaminated half thrown out
+
+The dollar drop is not the proof, because for most of the window Anthropic
+could not bill at all. The tokens are the proof, and they are unambiguous. The
+cut lands between 16:00 and 17:00 on 17 Sep:
+
+```
+2026-09-17 16:00:35   44,412 prompt tokens per cron call
+2026-09-17 17:00:59   22,235
+```
+
+Cron firings a day, from `cron/executions.db`: 54, 55, 59, then 39 on 17 Sep,
+then 16 today. `ted-idle-nudges.py` now reports nothing left to pause and
+nobody to resume, so the 35 paused jobs are holding.
+
+| window | firings | cron $ | chat $ | total |
+| --- | --- | --- | --- | --- |
+| 16 Sep, full day | 59 | 12.13 | 2.65 | 14.78 |
+| 17 Sep to 17:00 | 28 | 3.95 | 1.51 | 5.46 |
+| 17 Sep 17:00 to midnight | 11 | 0.81 | 1.53 | 2.34 |
+| 18 Sep, all on the fallback | 16 | 0.12 | 0.37 | 0.49 |
+
+**14 and 15 Sep are not a usable baseline.** The balance was empty then too and
+most of those calls went to the fallback: 43 of 51 cron rows on 15 Sep carried
+no price. The honest "before" is 16 Sep and the morning of 17 Sep.
+
+### Two holes in the bill, not one
+
+`ted-api-spend.py` looked its rates up by exact model name, so anything wearing
+another spelling fell out of the total. Over fourteen days the report said
+`$115.93`. The real figure is `$136.03`. **About $20, a seventh of the bill,
+was invisible.**
+
+- `openai/gpt-5.3-codex`, 921 calls, no rate at all. The one we went looking for.
+- `anthropic/claude-sonnet-5`, 245 calls. **The same Sonnet already being paid
+  for**, in OpenRouter's spelling. `normalize_model` knew Bedrock's `anthropic.`
+  with a dot and not OpenRouter's `anthropic/` with a slash. Found only by
+  accident while adding the first one.
+
+Rates were read from `https://openrouter.ai/api/v1/models` on the day, not from
+memory, and the source is recorded in the file. That mattered:
+**`gpt-4o-mini` caches at half price, not the tenth every Claude model uses.**
+Inheriting Claude's shape would have priced it five times under. Non-Claude
+models must now state their own cache rates and a test fails if one is added
+without them. A `None` write rate means the provider charges no premium to
+write cache, which is why every Codex row reports 0 cache-write tokens.
+
+The footnote now names the model. The old line said "388 row(s) on a model with
+no rate here", which was true and told nobody that an entire day had moved to
+the fallback. `stepfun/step-3.7-flash:free` is deliberately left unpriced: the
+`:free` suffix probably means free, the model is no longer listed on
+OpenRouter, and this file's rule is to say what it cannot prove.
+
+42 tests in `test_ted_api_spend.py`, up from 36. Two of the six new ones
+replace tests that had pinned the bug in place by asserting the fallback stays
+unpriced.
+
+### Should Codex be the primary model
+
+Asked directly, and the answer is no, not yet. The same tokens under both price
+lists:
+
+| traffic | as Claude | as Codex |
+| --- | --- | --- |
+| 16 Sep, all day | 14.86 | 6.83 |
+| 18 Sep, all day | 0.47 | 0.45 |
+
+Codex was half price on September's traffic and level on today's. The whole
+difference is one line item: **Claude charges 2x input to write to cache at the
+1h TTL and OpenAI charges nothing extra.** Codex output is 40% dearer, $14
+against $10 per million, which does not matter while Ted's replies are 70
+tokens. So the saving was never "Claude is expensive", it was "we were writing
+3.5 million cache tokens a day", and 17 Sep fixed that.
+
+Switching now buys roughly $10 a month, throws away order 30's Bedrock credit
+plan, and does not simplify funding: today worked *because* OpenRouter had
+credit when Anthropic did not, and flipping only changes which account must
+never run dry. **The fact that decides it is order 30's open item, whether the
+Activate application was submitted.** Rejected or never sent, and Codex-primary
+becomes reasonable.
+
+### Is it sustainable
+
+At today's size, yes. Roughly ₹39,000 a month before the fixes, roughly ₹1,300
+now, against about ₹1,050 of hosting. The model is no longer fifteen times the
+server.
+
+The number to watch is not the total. It is **about $0.074 per conversation and
+$0.0075 per reminder firing**, so a daily-active user costs ₹250 to ₹600 a
+month. At 2 to 5 active that is comfortable. **At all 47 active it is ₹12,000 a
+month or more**, which is the same trouble in a different shape.
+
+### Open
+
+- The Anthropic balance is still empty. Only Vandy can top it up.
+- Pushover still not configured. Email is the only remote channel that works.
+- Delivered messages went 33, 36, then 11 today. Most of that is the paused
+  reminders working as designed. Not proven that none of it is a real person
+  going unanswered.
+- `:free` models are still unpriced and still counted in the footnote.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.

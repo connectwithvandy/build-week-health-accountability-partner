@@ -60,26 +60,60 @@ STATE_DB = HERMES / "state.db"
 CONFIG = HERMES / "config.yaml"
 EXECUTIONS_DB = HERMES / "cron" / "executions.db"
 
-# Per million tokens, Anthropic first-party rates. Input and output are read
-# straight off the pricing page; the two cache rates are derived from input so
-# a price change only has to be made in one place per model.
+# Per million tokens. Input and output are read straight off each vendor's
+# own pricing; a Claude row's two cache rates are derived from its input rate
+# so a price change only has to be made in one place per model.
 #
-# Source: https://platform.claude.com/docs/en/about-claude/pricing
+# Sources, both read on 18 Sep 2026:
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#   https://openrouter.ai/api/v1/models
+#
+# The OpenRouter entries are not decoration. When the Anthropic balance
+# emptied on 17 Sep 2026 every call fell back to `openai/gpt-5.3-codex` and
+# this file had no rate for it, so a full day of real traffic printed as
+# $0.00 under a one-line footnote. A bill that reads as zero while money
+# leaves is the failure this script exists to prevent, and it had already
+# happened here once.
 _INPUT_RATE = {
     "claude-sonnet-5": 2.00,
     "claude-opus-5": 5.00,
     "claude-haiku-4-5": 1.00,
+    "openai/gpt-5.3-codex": 1.75,
+    "openai/gpt-4o-mini": 0.15,
 }
 _OUTPUT_RATE = {
     "claude-sonnet-5": 10.00,
     "claude-opus-5": 25.00,
     "claude-haiku-4-5": 5.00,
+    "openai/gpt-5.3-codex": 14.00,
+    "openai/gpt-4o-mini": 0.60,
 }
-# A cache read is a tenth of input on every current model. A cache write
-# depends on how long you asked the cache to live: 1.25x at the 5-minute
-# default, 2x at 1h. This multiplier is the whole reason this script exists.
+# A cache read is a tenth of input on every current Claude model. A cache
+# write depends on how long you asked the cache to live: 1.25x at the
+# 5-minute default, 2x at 1h. This multiplier is the whole reason this script
+# exists. It describes Claude's shape and nothing else.
 _CACHE_READ_MULTIPLIER = 0.10
 _CACHE_WRITE_MULTIPLIER = {"5m": 1.25, "1h": 2.00}
+
+# Anything reached through OpenRouter bills on a different shape and states
+# its own cache rates rather than inheriting Claude's. This is not caution for
+# its own sake: gpt-4o-mini's cached input is HALF price, not a tenth, so the
+# multiplier above would have understated it five times over.
+#
+# A `None` write rate means the provider charges no premium for writing to
+# cache, which is why every Codex row on this box reports 0 cache-write
+# tokens: those tokens arrive counted as ordinary input. They are priced at
+# the input rate rather than dropped, so the day that changes it shows up as
+# money and not as silence.
+#
+# A model here that is not a Claude model must state both rates.
+# `test_every_openrouter_model_states_its_own_cache_rates` fails if one is
+# added without them, because inheriting Claude's shape by accident is
+# exactly how gpt-4o-mini would have been priced wrong.
+_CACHE_RATE_OVERRIDE = {
+    "openai/gpt-5.3-codex": {"read": 0.175, "write": None},
+    "openai/gpt-4o-mini": {"read": 0.075, "write": None},
+}
 
 
 def configured_cache_ttl() -> str:
@@ -117,7 +151,13 @@ def configured_cache_ttl() -> str:
 # same model at the same price, and an exact-match rate lookup prices the first
 # at nothing. Stripped in this order, outermost first.
 _BEDROCK_REGION_PREFIX = re.compile(r"^(?:us|eu|apac|global)\.")
-_VENDOR_PREFIX = re.compile(r"^anthropic\.")
+# Two spellings of the same vendor segment: Bedrock writes `anthropic.` and
+# OpenRouter writes `anthropic/`. The slash form was arriving on this box and
+# going unpriced, because the rate table is keyed on the plain name. Checked
+# 18 Sep 2026: OpenRouter charges Anthropic's own rates for
+# `anthropic/claude-sonnet-5`, input, output and both cache rates alike, so
+# the two roads really are the same money and may share one entry.
+_VENDOR_PREFIX = re.compile(r"^anthropic[./]")
 _VERSION_SUFFIX = re.compile(r"(?:-v\d+)?(?::\d+)?$")
 _DATED_BUILD_SUFFIX = re.compile(r"-\d{8}$")
 
@@ -133,8 +173,10 @@ def normalize_model(model: str) -> str:
 
     Deliberately conservative. Each pattern is anchored and removes decoration
     only, so an unknown model stays unknown rather than being rounded into a
-    known one. Anything that does not match is returned untouched, which keeps
-    `openai/gpt-5.3-codex` unpriced exactly as it is today.
+    known one. Anything that does not match is returned untouched, which is
+    why `openai/gpt-5.3-codex` keeps its vendor prefix: it is a different
+    model at a different price, and it earns its own row in the rate table
+    rather than being normalised into somebody else's.
     """
     name = _BEDROCK_REGION_PREFIX.sub("", model.strip())
     name = _VENDOR_PREFIX.sub("", name)
@@ -164,18 +206,27 @@ def price_row(row: dict, ttl: str) -> float | None:
 
     Returning None rather than 0 keeps an unpriced model out of the totals
     instead of silently making the bill look smaller than it is. The caller
-    counts those rows and says so.
+    counts those rows and names the model, because a count on its own did not
+    get read: `openai/gpt-5.3-codex` sat in that footnote through a day of
+    real traffic while the headline said $0.00.
     """
     model = normalize_model(str(row.get("model") or ""))
     inp = _INPUT_RATE.get(model)
     out = _OUTPUT_RATE.get(model)
     if inp is None or out is None:
         return None
-    write_multiplier = _CACHE_WRITE_MULTIPLIER.get(ttl, 1.25)
+    override = _CACHE_RATE_OVERRIDE.get(model)
+    if override is None:
+        read_rate = inp * _CACHE_READ_MULTIPLIER
+        write_rate = inp * _CACHE_WRITE_MULTIPLIER.get(ttl, 1.25)
+    else:
+        read_rate = override["read"]
+        # No write premium on this road, so a written token bills as input.
+        write_rate = inp if override["write"] is None else override["write"]
     return (
         row["input_tokens"] * inp
-        + row["cache_read_tokens"] * inp * _CACHE_READ_MULTIPLIER
-        + row["cache_write_tokens"] * inp * write_multiplier
+        + row["cache_read_tokens"] * read_rate
+        + row["cache_write_tokens"] * write_rate
         + row["output_tokens"] * out
     ) / 1_000_000.0
 
@@ -277,6 +328,7 @@ def summarise(rows: list[dict], ttl: str) -> dict:
             "cache_write_tokens": 0,
             "usd": 0.0,
             "unpriced_rows": 0,
+            "unpriced_models": set(),
             "regional_bedrock_rows": 0,
         }
 
@@ -296,6 +348,12 @@ def summarise(rows: list[dict], ttl: str) -> dict:
                 bucket[column] += row[column]
             if cost is None:
                 bucket["unpriced_rows"] += 1
+                # Which model, not just how many rows. The count alone was
+                # already being printed on 18 Sep and told nobody that the
+                # whole day had moved to the fallback.
+                bucket["unpriced_models"].add(
+                    normalize_model(str(row.get("model") or "")) or "(unnamed)"
+                )
             else:
                 bucket["usd"] += cost
             if is_bedrock_regional(str(row.get("model") or "")):
@@ -303,6 +361,8 @@ def summarise(rows: list[dict], ttl: str) -> dict:
 
     for bucket in buckets.values():
         bucket["sessions"] = len(bucket["sessions"])
+        # A set will not survive --json, and this report is piped.
+        bucket["unpriced_models"] = sorted(bucket["unpriced_models"])
         served = bucket["cache_read_tokens"] + bucket["cache_write_tokens"] + bucket["input_tokens"]
         # The share of prompt tokens that arrived from cache. This is the
         # number both 17 Sep fixes are supposed to move, and the one that went
@@ -361,7 +421,11 @@ def print_window(title: str, buckets: dict, ttl: str, firings: int | None = None
         )
     unpriced = buckets["all"]["unpriced_rows"]
     if unpriced:
-        print(f"\n  {unpriced} row(s) on a model with no rate here, left out of USD.")
+        named = ", ".join(buckets["all"]["unpriced_models"])
+        print(
+            f"\n  {unpriced} row(s) left out of USD, on a model with no rate here:\n"
+            f"  {named}. Traffic that happened and is not in the totals above."
+        )
     regional = buckets["all"]["regional_bedrock_rows"]
     if regional:
         print(
@@ -369,7 +433,11 @@ def print_window(title: str, buckets: dict, ttl: str, firings: int | None = None
             "  here are Anthropic's own, and a regional endpoint is reported to cost\n"
             "  more than the global default, so USD above may be an underestimate."
         )
-    print(f"\n  Cache writes priced at {_CACHE_WRITE_MULTIPLIER[ttl]:.2f}x input (cache_ttl: {ttl}).")
+    print(
+        f"\n  Claude cache writes priced at {_CACHE_WRITE_MULTIPLIER[ttl]:.2f}x input "
+        f"(cache_ttl: {ttl}).\n"
+        "  OpenRouter rows carry their own cache rates and no write premium."
+    )
 
 
 def ttl_caution(since: float) -> str | None:
