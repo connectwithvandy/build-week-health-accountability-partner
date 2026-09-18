@@ -159,3 +159,49 @@ class TestTheRegistry:
         assert migrate.find("003").script == "ted-repair-language-preference.py"
         assert migrate.find("ted-repair-language-preference.py").id == "003"
         assert migrate.find("nope") is None
+
+
+class TestTheRestartHazard:
+    """A repair to the gate's store is live in the file and stale in the
+    running process, which will write the old values straight back on its next
+    persist. Both 005 and 006 say so in their own output, which means a person
+    has to notice it in passing. This makes it the runner's job."""
+
+    def _applied(self, migrate, when: float) -> dict:
+        return {"at": when, "at_readable": "x", "script": "s", "what": "w", "store": "gate"}
+
+    def _heartbeat(self, migrate, started: float) -> None:
+        migrate.HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
+        migrate.HEARTBEAT.write_text(json.dumps({"pid": 1, "start_time": started}))
+
+    def test_applied_after_the_gateway_started_is_at_risk(self, migrate):
+        self._heartbeat(migrate, 1000.0)
+        one = migrate.find("005")
+        assert migrate.at_risk(one, self._applied(migrate, 2000.0)) is True
+
+    def test_applied_before_a_restart_is_safe(self, migrate):
+        self._heartbeat(migrate, 3000.0)
+        one = migrate.find("005")
+        assert migrate.at_risk(one, self._applied(migrate, 2000.0)) is False
+
+    def test_an_unreadable_heartbeat_warns_rather_than_reassures(self, migrate):
+        """Not being able to prove a restart happened is not proof that it did."""
+        one = migrate.find("005")
+        assert migrate.at_risk(one, self._applied(migrate, 2000.0)) is True
+
+    def test_a_migration_that_needs_no_restart_is_never_at_risk(self, migrate):
+        self._heartbeat(migrate, 1000.0)
+        convex_only = migrate.find("001")
+        assert convex_only.needs_restart is False
+        assert migrate.at_risk(convex_only, self._applied(migrate, 2000.0)) is False
+
+    def test_one_never_run_is_not_at_risk(self, migrate):
+        self._heartbeat(migrate, 1000.0)
+        assert migrate.at_risk(migrate.find("005"), None) is False
+
+    def test_every_gate_writing_migration_is_marked(self, migrate):
+        """The gate's store is the one held in memory. If a repair touches it
+        and is not marked, its fix quietly evaporates on the next persist."""
+        for one in migrate.MIGRATIONS:
+            if one.store in ("gate", "both"):
+                assert one.needs_restart, f"{one.id} writes the gate store unmarked"

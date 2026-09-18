@@ -66,6 +66,12 @@ class Migration:
     clean_when: str | None = None
     interpreter: str = field(default=SYSTEM_PYTHON)
     note: str = ""
+    # The gate loads its store into memory at import and writes the whole thing
+    # back. A repair to that store therefore survives only until the running
+    # process next persists, which will quietly overwrite it. 005 and 006 both
+    # say so in their own output, which is a thing a person has to notice in
+    # passing at half past nine at night. This makes it the runner's job.
+    needs_restart: bool = False
 
 
 MIGRATIONS = (
@@ -84,27 +90,27 @@ MIGRATIONS = (
     Migration(
         "003", "ted-repair-language-preference.py",
         "the language each user already asked for", "gate",
-        clean_when="Nothing to do.",
+        clean_when="Nothing to do.", needs_restart=True,
     ),
     Migration(
         "004", "ted-repair-missing-answers.py",
         "three answers no store kept", "gate",
-        clean_when="Nothing to write.",
+        clean_when="Nothing to write.", needs_restart=True,
     ),
     Migration(
         "005", "ted-repair-swallowed-weights.py",
         "weights the 4 Sep anchoring bug swallowed", "gate",
-        clean_when="nothing to repair.",
+        clean_when="nothing to repair.", needs_restart=True,
     ),
     Migration(
         "006", "ted-repair-profile-drift.py",
         "the gate's profile copy against Convex, safer answer wins", "both",
-        clean_when="Nothing to repair.",
+        clean_when="Nothing to repair.", needs_restart=True,
     ),
     Migration(
         "007", "ted-repair-goal-drift.py",
         "the gate's goal and calories against the user's real goal", "both",
-        clean_when=None,
+        clean_when=None, needs_restart=True,
         note="Gourav at 1550 and Vandy at 1350 are deliberate and flag every "
              "run. This one never reads clean and that is correct.",
     ),
@@ -127,6 +133,41 @@ def load_ledger() -> dict:
 def save_ledger(ledger: dict) -> None:
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
     LEDGER.write_text(json.dumps(ledger, indent=2, sort_keys=True), encoding="utf-8")
+
+
+HEARTBEAT = HERMES / "state" / "gateway.heartbeat"
+
+
+def gateway_started_at() -> float | None:
+    """When the running gateway last started, or None if it cannot be read.
+
+    None fails towards the warning: an unreadable heartbeat must not be taken
+    as proof that a restart happened.
+    """
+    try:
+        payload = json.loads(HEARTBEAT.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    started = payload.get("start_time")
+    return float(started) if isinstance(started, (int, float)) else None
+
+
+def at_risk(migration: Migration, record: dict | None) -> bool:
+    """Whether a repair has been applied but not yet made permanent.
+
+    The gate holds its store in memory. A repair applied while the process was
+    already up is live in the file and stale in the process, and the next
+    persist writes the old values straight back over it.
+    """
+    if not migration.needs_restart or not record:
+        return False
+    applied = record.get("at")
+    if not isinstance(applied, (int, float)):
+        return False
+    started = gateway_started_at()
+    if started is None:
+        return True  # cannot prove a restart happened
+    return applied > started
 
 
 def find(identifier: str) -> Migration | None:
@@ -181,6 +222,11 @@ def status(check: bool) -> int:
         print(f"        {migration.what}")
         if migration.note:
             print(f"        note: {migration.note}")
+        if at_risk(migration, record):
+            print("        AT RISK: applied after the gateway started, so it is")
+            print("        live in the file and stale in the process. The next")
+            print("        persist writes the old values back. Restart to keep it:")
+            print("          hermes gateway restart && npm run gates:guard")
         if check:
             verdict, detail = dry_run(migration)
             mark = {"clean": "clean", "pending": "PENDING", "unknown": "unknown"}[verdict]
@@ -211,6 +257,12 @@ def run(identifier: str) -> int:
         return result.returncode
     record(migration, why="run by ted-migrate.py")
     print(f"\n  Recorded {migration.id} in {LEDGER}")
+    if migration.needs_restart:
+        print(
+            "\n  NOT PERMANENT YET. The gateway holds this store in memory and\n"
+            "  will write the old values back on its next persist. Run now:\n"
+            "    hermes gateway restart && npm run gates:guard"
+        )
     return 0
 
 
