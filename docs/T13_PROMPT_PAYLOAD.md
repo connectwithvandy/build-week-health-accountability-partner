@@ -1,9 +1,15 @@
 # T13 — the prompt payload, measured 19 September 2026
 
 **Status: measured, and the measurement changed the answer. The largest saving
-turned out not to be an edit at all — it is Hermes patch 17, applied to the
-checkout and waiting on a gateway restart. The editorial shrink is deliberately
-not applied; section 3 says why.**
+turned out not to be an edit at all — it is Hermes patch 17, live since the
+gateway restarted at 23:38 on 18 Sep and confirmed by the first firing under
+it (section 5). The editorial shrink is deliberately not applied; section 3
+says why.**
+
+*Section 2 is left as it was written, including the $26–$45 range and the
+unexplained 1.5x. Section 5 settles both. The working is kept because the
+conservative number was conservative for a reason that turned out to be wrong,
+and that is worth being able to read back.*
 
 T13's definition of done:
 
