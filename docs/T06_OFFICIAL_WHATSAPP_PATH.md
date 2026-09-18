@@ -1,0 +1,172 @@
+# T06 — the official WhatsApp path
+
+**Status: decided, not executed.** Every claim here was checked on 18 Sep 2026
+against the source named beside it, or measured from this system's own data.
+Where something could not be verified it says so rather than guessing.
+
+Ted runs today on **Baileys** (`@whiskeysockets/baileys` 7.0.0-rc13), an
+unofficial WhatsApp client. It works, and it is the single largest structural
+risk left in the project: it is a reverse-engineered client on somebody else's
+network, and the number it uses is Vandy's.
+
+---
+
+## 1. Is Ted allowed on the official platform at all?
+
+**Yes.** This was the part most likely to end the discussion, and it does not.
+
+Meta changed the [Business Solution Terms](https://www.whatsapp.com/legal/business-solution-terms)
+effective **15 January 2026** (immediately for numbers registered after
+15 October 2025). The clause:
+
+> Providers and developers of artificial intelligence or machine learning
+> technologies... are strictly prohibited from accessing or using the WhatsApp
+> Business Solution... for the purposes of providing... such technologies
+> **when such technologies are the primary (rather than incidental or
+> ancillary) functionality** being made available for use, as determined by
+> Meta in its sole discretion.
+
+It binds **AI Providers** shipping a general assistant. The reported bans hit
+ChatGPT and Perplexity, which were exactly that. Ted is a health
+accountability service whose product is meal logging, a calorie target and
+reminders; the model is how it is built, not what is sold. That is the
+permitted side of the line.
+
+**The residual risk is real but small:** "as determined by Meta in its sole
+discretion", and Ted *is* conversational. The mitigation is to describe the
+service as what it does, never as an AI assistant, in the display name, the
+business description and the app review.
+
+**Health messaging.** The [Business Messaging Policy](https://whatsappbusiness.com/policy/)
+says: *"Don't use WhatsApp for telemedicine or to send or request any health
+related information, if applicable regulations prohibit"*. Conditional on local
+regulation. Ted gives calorie estimates, not diagnosis or treatment, and
+already refuses under-18s and never returns a deficit. No change needed, but
+the gates are now load-bearing for platform compliance and not only for safety.
+
+---
+
+## 2. Cloud API direct, or a BSP?
+
+**Direct Meta Cloud API.**
+
+| | Cloud API direct | BSP |
+| --- | --- | --- |
+| Per-message cost | Meta's rate | Meta's rate **plus** a platform fee |
+| Hosting | Meta hosts it | Meta hosts it |
+| Integration work | a Hermes adapter | a Hermes adapter, against their API |
+| Verification help | none | usually assists |
+| Lock-in | none | their abstraction |
+
+The integration cost is the same either way, because Hermes needs a new
+platform adapter for either. A BSP's real value is hand-holding through
+business verification, and that is not the blocker here (§3). A BSP's cost is
+permanent. Direct.
+
+---
+
+## 3. What actually gates it
+
+**Business verification is not required to start.** An unverified business is
+capped at **250 unique customers per 24 hours**. Ted has **56 users**. The cap
+bites at roughly four times the current size, so the stuck sole proprietorship
+delays *scale*, not *migration*.
+
+**Number identity.** Moving a number onto the Business Platform takes it off
+the normal WhatsApp app. The thread history users can see stays on their
+handsets; Ted's own record is in `state.db` either way. The display name needs
+Meta approval and should describe the service, per §1.
+
+**Not verified here:** whether Vandy's current number can be migrated without
+losing the Baileys session in a way that strands anyone mid-conversation. This
+needs a test number, and is the first thing to try.
+
+---
+
+## 4. The 24-hour window, which is the real question
+
+Inside 24 hours of a user's message, Ted may say anything, in his own words,
+free. Outside it, only a **pre-approved template**: fixed text with variable
+slots, submitted in advance, charged per delivered message.
+
+So the cost of migrating is a property of how Ted talks. Measured with
+`scripts/ted-window-check.py` against `delivery_obligations`, which is the only
+record of what people actually received:
+
+```
+178 message(s) delivered in the last 7 days
+  inside the 24h window, free      178   100.0%
+  outside it, needs a template       0     0.0%
+```
+
+**Nothing Ted currently sends would need a template.** Migration costs nothing
+in message fees today.
+
+**This is not good news.** It is 100% because Ted has sent no proactive message
+in seven days: every reminder is skipped with `paused_until`, `dailyCap`, or
+the agent returning `[SILENT]`. The reminders are the half that would need
+templates, and they are not running. See `docs/FOUND_NOT_FIXED.md`.
+
+**So the question T06 has to answer is a product question:** when the nudges
+come back, can they be templates? A utility template can carry variables
+("you logged {{1}} yesterday") but cannot improvise. "arre, you skipped
+yesterday yaar, what's the plan?" cannot be generated per person outside the
+window. Either the nudge becomes a fixed opener whose job is to reopen the
+window, and the real conversation happens once they reply, or the product
+changes.
+
+**Rates** (India, read 18 Sep 2026, [Meta pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing)):
+
+- non-template messages inside an open window: **free**
+- utility template: **~₹0.115**
+- marketing template: **~₹0.8631**, about 7.5x
+
+At 20 enabled reminder jobs firing daily, utility templates would cost roughly
+**₹70 a month**. Cost is not the obstacle. Filing a reminder as *marketing*
+rather than *utility* would make it ₹520 a month and is the mistake to avoid.
+
+**Unconfirmed and worth re-checking:** several vendor blogs say Meta will
+charge for service messages from **1 October 2026** at the utility rate. Meta's
+own pricing page still says non-template messages inside the window are free
+and names no such date. If the blogs are right, Ted's current traffic of ~760
+delivered messages a month becomes roughly **₹87 a month**. Still not the
+obstacle; recheck near the date.
+
+---
+
+## 5. Migration sequence
+
+Each step is reversible until step 6.
+
+1. **A second number.** Buy a spare SIM and register it on the Cloud API.
+   Nothing about the live service is touched. Everything up to step 5 runs
+   against this number.
+2. **A Hermes platform adapter** for the Cloud API, written beside the Baileys
+   one rather than replacing it, behind config.
+3. **Templates drafted and submitted** for the reminders, in the *utility*
+   category, and approved. This has a lead time and nothing else can start it.
+4. **Full flow on the test number**: onboarding, a meal photo, a correction,
+   a reminder outside the window through a template, and a deletion.
+5. **Run both in parallel.** The test number serves one or two consenting
+   users for a week while Baileys serves everybody else.
+6. **Cutover.** Verified backup first (`ted-backup.py`, drilled), then migrate
+   the live number, then start the Cloud adapter. Only one client may hold a
+   WhatsApp identity at a time.
+
+## 6. Rollback
+
+- **Before step 6:** stop the test number. There is nothing to undo.
+- **After step 6:** the honest answer is that rollback is slow. The number has
+  left the Baileys session and returning it means re-registering on the normal
+  app and re-pairing. **Users are not lost** — identity is the phone number and
+  their threads persist — but Ted is down while it happens.
+- **Therefore:** do not cut over without a drilled backup taken that day, and
+  do not cut over on a day nobody is watching. `ted-watch.py` stays on the
+  laptop watching from outside, as it does for any host move.
+
+## 7. What is still open
+
+- Whether the live number migrates cleanly. Needs step 1.
+- Whether Meta approves a reminder template in Ted's voice at all.
+- Whether service messages start being charged on 1 Oct 2026.
+- Business verification, whenever growth passes 250 unique users a day.
