@@ -164,9 +164,17 @@ was wrong twice on the day it was written.
   appear verbatim in `~/.hermes/logs/agent.log` (2.8 MB). The gate itself logs
   no user words; Hermes writes them. `ted-forget-user.py` already says it
   cannot reach that log. Retention is unset.
-- **Dead code that looks live.** `src/lib/hermes/handle-message.ts` returns a
-  hardcoded reply and `scripts/simulate-hermes-message.mjs` posts to it. It
-  resembles a test harness for the WhatsApp path and tests nothing. T41.
+- ~~**Dead code that looks live.**~~ **T41, closed 19 Sep.**
+  `src/lib/hermes/handle-message.ts`, `src/app/api/hermes/messages/route.ts`,
+  `scripts/simulate-hermes-message.mjs`, the three tests that asserted its
+  hardcoded reply and the `simulate:hermes` script are all deleted. Nothing
+  outside that chain imported any of it. A real inbound message reaches the
+  Hermes gateway and `hermes/ted_safety_gates/`, never this Next.js app, so
+  the harness could not have been repaired into a real one without
+  reimplementing the gate in TypeScript. **What is left in its place is a
+  gap, stated in the README:** there is no way to put a message through the
+  live path without sending a real one. The gate's own pytest suite is the
+  only coverage that path has.
 - **`known_plugin_toolsets.whatsapp`** is read by neither the lock nor the
   guard. `spotify` is listed and not installed, so it is inert today.
 - **T04, the host itself.** The laptop was on battery at 71% while 56 chats

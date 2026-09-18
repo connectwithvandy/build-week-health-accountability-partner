@@ -23,7 +23,6 @@ What lives where:
 | --- | --- |
 | `public/landing-v6.html` | The live landing page. One self-contained static file, served at `/` by a `beforeFiles` rewrite in `next.config.ts`, so what ships is byte-for-byte the design that was reviewed. There is deliberately no `src/app/page.tsx`. |
 | `src/app/privacy/` | The privacy page. Ordinary React, and the only route a user reaches besides `/`. |
-| `src/app/api/hermes/` | A local-only test endpoint. Disabled in production; it never touches WhatsApp. |
 | `convex/` | Schema, queries, mutations, and the authenticated `/ted-memory` HTTP endpoint. |
 | `hermes/ted_safety_gates/` | The safety gates Hermes loads as a plugin: the calorie, consent and claim rules. This is the load-bearing code. |
 | `scripts/` | Operational checks (see below) and re-appliable patches for the Hermes gateway. |
@@ -40,13 +39,12 @@ Copy `.env.example` to `.env.local` and fill it in. Note that the gateway reads
 `~/.hermes/.env`, **not** this file. Several variables must be set in both
 places, and `.env.example` says which.
 
-Send a Hermes-shaped message through the local handler, with the dev server
-running in another terminal:
-
-```bash
-npm run simulate:hermes
-npm run simulate:hermes -- "I ate two rotis and paneer"
-```
+There is no local simulator for an inbound WhatsApp message. A real message
+never reaches this Next.js app: it arrives at the Hermes gateway, which loads
+`hermes/ted_safety_gates/` as a plugin. The way to exercise that path is the
+safety-gate tests below. A `npm run simulate:hermes` once existed and posted to
+a route that returned one hardcoded line, which made it look like the WhatsApp
+path was covered when nothing about it was. It was removed rather than fixed.
 
 ## Tests
 

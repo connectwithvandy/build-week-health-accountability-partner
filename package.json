@@ -7,7 +7,6 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "simulate:hermes": "node scripts/simulate-hermes-message.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "gates:guard": "python3 scripts/ted-gate-guard.py",
