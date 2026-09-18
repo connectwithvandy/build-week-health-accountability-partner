@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 LOGGER = logging.getLogger("ted.safety_gates")
-PRIVACY_URL = "https://heyted.vercel.app/privacy"
+PRIVACY_URL = "https://heyted.in/privacy"
 # One greeting, one question, and nothing else.
 #
 # The four-paragraph version this replaces explained the product to people who
