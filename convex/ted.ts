@@ -151,6 +151,61 @@ export const saveUserFacts = internalMutation({
   },
 });
 
+/**
+ * Forget named facts for one person, and nothing else about them.
+ *
+ * `deleteUserMemory` below is the privacy promise: it takes everything. This
+ * takes a list of keys, and exists because of what T14 found in the live
+ * table — seven rows that were not facts about anybody. The model had been
+ * writing Ted's own voice back into user memory as `tone_preference` and
+ * `meal_reply_rule`, restating a SOUL.md that already goes out on every turn.
+ * The gate refuses to save another one; these predate the gate.
+ *
+ * Deliberately by key and never by pattern. A mutation that deletes "anything
+ * matching" is one typo away from clearing somebody's health facts, and the
+ * decision about which keys go is made where it can be read and reviewed
+ * before it runs, not inside the write.
+ */
+export const deleteUserFacts = internalMutation({
+  args: {
+    whatsappUserId: v.string(),
+    keys: v.array(v.string()),
+  },
+  handler: async (ctx, { whatsappUserId, keys }) => {
+    if (keys.length === 0) return { success: true, deleted: 0, removed: [] };
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_whatsapp_user_id", (query) =>
+        query.eq("whatsappUserId", whatsappUserId),
+      )
+      .unique();
+    // Not an error. A caller working from an export taken minutes ago may name
+    // somebody who has since asked to be forgotten entirely, and that is the
+    // outcome it wanted anyway.
+    if (!user) return { success: true, deleted: 0, removed: [] };
+
+    const removed: string[] = [];
+    for (const raw of new Set(keys)) {
+      const key = raw.trim().toLowerCase();
+      const fact = await ctx.db
+        .query("userFacts")
+        .withIndex("by_user_and_key", (query) =>
+          query.eq("userId", user._id).eq("key", key),
+        )
+        .unique();
+      if (!fact) continue;
+      await ctx.db.delete(fact._id);
+      removed.push(key);
+    }
+
+    if (removed.length > 0) {
+      await ctx.db.patch(user._id, { updatedAt: Date.now() });
+    }
+    return { success: true, deleted: removed.length, removed };
+  },
+});
+
 export const deleteUserMemory = internalMutation({
   args: { whatsappUserId: v.string() },
   handler: async (ctx, { whatsappUserId }) => {

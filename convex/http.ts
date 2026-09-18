@@ -74,6 +74,26 @@ http.route({
       return json(result);
     }
 
+    // Named keys only, and never the whole memory: "delete" below is the
+    // privacy teardown and this is a cleanup. Capped at the same 10 as a save,
+    // because a caller asking to forget more than ten keys in one request is
+    // reaching for the teardown and should have to say so.
+    if (input.action === "forget-facts") {
+      const keys = Array.isArray((body as { keys?: unknown }).keys)
+        ? ((body as { keys: unknown[] }).keys.filter(
+            (key): key is string => typeof key === "string" && key.trim() !== "",
+          ))
+        : null;
+      if (!keys || keys.length === 0 || keys.length > 10) {
+        return json({ success: false, error: "Invalid keys" }, 400);
+      }
+      const result = await ctx.runMutation(internal.ted.deleteUserFacts, {
+        whatsappUserId: input.whatsappUserId,
+        keys,
+      });
+      return json(result);
+    }
+
     if (input.action === "delete") {
       const result = await ctx.runMutation(internal.ted.deleteUserMemory, {
         whatsappUserId: input.whatsappUserId,

@@ -1354,4 +1354,9 @@ export const TED_HTTP_ACTIONS = [
   "replied",
   "setupAudit",
   "refreshSetup",
+  // Named-key cleanup, called by scripts/ted-purge-voice-rules.py and never by
+  // the gate. Listed so `npm run convex:check` can say whether a deployment
+  // has it before somebody runs a deletion against production and reads
+  // "Unsupported action" as "nothing to delete".
+  "forget-facts",
 ] as const;

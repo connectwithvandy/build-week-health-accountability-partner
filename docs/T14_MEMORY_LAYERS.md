@@ -228,6 +228,17 @@ on deploy.
 untouched. Deleting live user data is irreversible and is Vandy's call, not a
 side effect of shipping a gate change.
 
+*19 Sep 2026: the tool exists, the deletion has not happened.*
+`scripts/ted-purge-voice-rules.py` (`npm run memory:voice-rules`) lists them
+and deletes them only with `--apply`. It selects with the gate's own
+`is_voice_rule_key`, so the list it would delete and the list the gate refuses
+can never disagree, and it prints the rules themselves by default because
+reading the values is what caught the four misfiled keys in section 2. The
+write goes through a new `forget-facts` action on `/ted-memory` that takes
+named keys only and is capped at ten: `delete` is the privacy teardown and
+this is a cleanup, and they must not be one call with a flag. Convex has to be
+deployed before it can run. Whether it runs at all is still Vandy's call.
+
 ---
 
 ## 7. How to re-run it

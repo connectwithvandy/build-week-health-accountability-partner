@@ -25,7 +25,8 @@
     "ordering": "python3 scripts/ted-ordering-check.py",
     "window": "python3 scripts/ted-window-check.py",
     "prompt:audit": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-prompt-audit.py",
-    "memory:audit": "python3 scripts/ted-memory-audit.py"
+    "memory:audit": "python3 scripts/ted-memory-audit.py",
+    "memory:voice-rules": "python3 scripts/ted-purge-voice-rules.py"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",

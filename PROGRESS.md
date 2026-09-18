@@ -1899,6 +1899,81 @@ without her.
 1,266 Python tests, 2,147 subtests, 123 in the Convex model suite. 15 Hermes
 patches. Gateway restarted and gates verified at 22:01.
 
+## Order 33 — 19 Sep 2026, the two things T13 and T14 left behind
+
+Both of these were written down as "found, not fixed" on purpose, and both
+were left because the fix needed a decision rather than a keystroke. Neither
+is a roadmap task.
+
+### The turn that wrote nothing, and nobody knew
+
+`check_dropped` watches a reply Ted wrote and could not send. On 4 Sep nothing
+was written to send: OpenRouter answered 402 on the primary model and on the
+fallback, the turn ended empty, and Palak, Vishwas Mishra and Vinit were left
+standing there. Two of them never wrote again. It took fifteen days and a check
+built for T08 to notice.
+
+`check_silent` in `ted-watch.py` is the watcher that was missing, running every
+fifteen minutes under `ai.ted.gatewatch` and alerting off WhatsApp like the
+rest. Three things about how it is built:
+
+- **It reads T08's own `unanswered`**, loaded from `ted-ordering-check.py`
+  rather than copied. Two files answering "was this message answered"
+  differently is how a watcher goes quietly wrong.
+- **It is written against the outcome, not the 402.** A dead provider, a crash,
+  a hung turn and a gate refusing without saying so all look the same from
+  where the person sits. A watcher pinned to the last outage's error string
+  only ever catches the last outage.
+- **One person cannot raise two alarms.** A delivery obligation created after
+  their message means something was composed, so that case stays
+  `check_dropped`'s and is skipped here.
+
+Proved against the real event rather than asserted: widened to a 30-day window
+it reports "3 people wrote and Ted composed nothing back, longest waiting 15
+days", and it correctly leaves out GT, whose reply was written and dropped on
+11 Sep. At the shipped 7-day window it is green, which is the honest reading —
+nothing has been missed this week.
+
+**Found while wiring it in:** the logged-out branch in `main()` sat ahead of
+every per-component branch, so a dead model during a WhatsApp logout was
+announced as the logout, with the QR instructions attached. Two things broken
+and one of them invisible is the shape of the 8 Sep outage. Now each component
+is described as itself, with a test that breaks the link and the model at once.
+
+**Checked and rejected:** adding the credential-pool lines to
+`MODEL_DEAD_ENDS`. `credential pool: no available entries (all exhausted or
+empty)` appears 645 times in the current log at INFO, and the turn goes on to
+succeed on the fallback. It is rotation, not a dead end, and it would have
+turned the model alarm into noise.
+
+### The seven voice rules, still in people's memory
+
+T14 closed the door: the gate refuses to save another rule about how Ted
+talks. It deliberately left the 7 rows already inside, because deleting live
+user data is not a side effect of shipping a gate change.
+
+`scripts/ted-purge-voice-rules.py` (`npm run memory:voice-rules`) is the tool
+for doing it, and it has not been run. Dry run by default. It selects with the
+gate's own `is_voice_rule_key` — one definition, so what it would delete and
+what the gate refuses cannot drift apart — and it prints the rules themselves,
+because reading the values is exactly what caught the four misfiled keys in
+T14 section 2. `nudge_preferences` and `daily_preference` are the person's own
+choices and sound like instructions.
+
+The write is a new `forget-facts` action on `/ted-memory`: named keys only,
+capped at ten, never a pattern. `delete` next to it is the privacy teardown
+that takes everything, and the two must not be one call with a flag.
+
+**Still open, and Vandy's call:** whether the 7 go at all. All seven read as
+Ted's own voice — Aadi, Arpit, GT (two), Shabs, Shreya and Sid — and none of
+them is something a person asked for. Convex has to be deployed before the
+tool can write.
+
+### Numbers
+
+1,477 Python tests, 2,164 subtests, 161 in the web suite. Lint and TypeScript
+clean. Nothing was written to production in this session.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
