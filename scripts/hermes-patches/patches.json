@@ -245,6 +245,20 @@
           ]
         }
       ]
+    },
+    {
+      "file": "15-one-reply-per-inbound-message.patch",
+      "what": "one reply per inbound message, even when it is redelivered",
+      "checks": [
+        {
+          "path": "gateway/run.py",
+          "present": [
+            "_ted_seen_inbound",
+            "ted patch 15"
+          ],
+          "absent": []
+        }
+      ]
     }
   ]
 }

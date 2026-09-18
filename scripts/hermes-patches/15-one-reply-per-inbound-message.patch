@@ -1,0 +1,62 @@
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -3424,6 +3424,13 @@
+         self._completion_deliveries_inflight: set[tuple[str, str, object]] = set()
+         self._completion_deliveries_delivered: "OrderedDict[tuple[str, str, object], None]" = OrderedDict()
+         self._completion_delivery_retention = 2048
++
++        # Ted patch 15. Inbound message ids already answered, oldest evicted
++        # first. An OrderedDict rather than a set because the bound has to drop
++        # the oldest rather than an arbitrary one: evicting at random would
++        # forget a message from a second ago and keep one from yesterday.
++        self._ted_seen_inbound: "OrderedDict[tuple[str, str, str], None]" = OrderedDict()
++        self._ted_seen_inbound_retention = 2048
+ 
+         # Cache AIAgent instances per session to preserve prompt caching.
+         # Without this, a new AIAgent is created per message, rebuilding the
+@@ -12294,6 +12301,45 @@
+ 
+     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+         """Inner handler that runs under the _running_agents sentinel guard."""
++        # Ted patch 15. One inbound message, one reply.
++        #
++        # Nothing above this deduplicates. Convex already refuses to log the
++        # same meal twice, keyed on this very id, so a redelivery cannot
++        # double-count anybody's breakfast. It would still be read, answered
++        # and charged for, and the person would watch Ted say the same thing
++        # twice for no reason.
++        #
++        # It has to happen here rather than in the plugin. A gate cannot
++        # suppress a reply on the WhatsApp path: `[SILENT]` is understood on
++        # the cron path only, and returning it from a chat turn delivers those
++        # eight characters to a real person.
++        #
++        # Today this is insurance; no duplicate has been observed on Baileys.
++        # On the official Cloud API it stops being optional, because Meta
++        # retries a webhook whenever it does not get a 2xx quickly enough, and
++        # a slow model turn is exactly that.
++        #
++        # Bounded, and deliberately in memory only. A restart forgets, which is
++        # the right trade: the alternative is a durable write on the hot path
++        # of every inbound message to defend against a redelivery spanning a
++        # restart, and Convex still holds the line on state either way.
++        _ted_id = str(getattr(event, "message_id", "") or "")
++        if _ted_id:
++            _ted_key = (
++                str(getattr(source, "platform", "")),
++                str(getattr(source, "chat_id", "")),
++                _ted_id,
++            )
++            if _ted_key in self._ted_seen_inbound:
++                logger.info(
++                    "ted patch 15: %s already answered on chat=%s, not answering twice",
++                    _ted_id, _ted_key[1] or "unknown",
++                )
++                return
++            self._ted_seen_inbound[_ted_key] = None
++            while len(self._ted_seen_inbound) > self._ted_seen_inbound_retention:
++                self._ted_seen_inbound.popitem(last=False)
++
+         _msg_start_time = time.time()
+         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+         # Ted patch 14. What a person eats, weighs and worries about is the
