@@ -38,16 +38,31 @@ not brevity. It is shape.
 |---|---:|---:|---|
 | profile | 45 | 49% | name, age, sex, height, weight, goal |
 | behavioural | 23 | 25% | activity level, work schedule, wake time, habits |
-| instruction | 11 | 12% | **how Ted should talk** |
 | health | 11 | 12% | supplements, symptoms, conditions |
-| preference | 2 | 2% | diet, drink |
+| instruction | 7 | 8% | **how Ted should talk** |
+| preference | 6 | 7% | diet, drink, which nudges, when to check in |
 
 T14 names four layers. A fifth had to be added on contact with the table, and
 it is the one that should not exist.
 
+### The first cut of this table was wrong, and the mistake is the point
+
+Four facts were filed as `instruction` on the strength of their key names —
+`nudge_preferences`, `daily_preference`, `logging_preference`,
+`coaching_preference` — and reading the values proved it wrong. They say
+"meals, water, supplements, moving", "wants end of day check for missed items",
+"needs patience for first 2-3 days while building habit". Those are the
+person's own choices, and deleting them as duplicated voice rules would have
+thrown away the only record of what they asked for.
+
+**A layer decided from a key the model invented is a layer decided from a
+guess.** That is the argument for fixing the key vocabulary before building
+retrieval rules on top of a layer, and it is why the ranking in section 6 puts
+the vocabulary first.
+
 ### `instruction` — SOUL.md, written back into the user's memory
 
-Eleven facts are not about the person at all. They are rules about how Ted
+Seven facts are not about the person at all. They are rules about how Ted
 speaks, stored per user, injected on every turn, on top of a SOUL.md that
 already says all of it at 14,670 tokens:
 
@@ -55,10 +70,13 @@ already says all of it at 14,670 tokens:
 voice_style_preference   233 chars
 chat_style_preference    171 chars
 tone_preference          117 chars  (x4 users)
-coaching_preference       54 chars
 meal_reply_rule           83 chars
-logging_preference        44 chars
 ```
+
+All seven say the same thing in different words: short, lowercase, one
+thought, light hinglish, no dashes, no receipt-style replies. SOUL.md's
+"How I talk" (1,651 tokens) and "How I actually sound" (1,740 tokens) already
+say exactly that, to every user, on every turn.
 
 One of them reads "short 1-2 line whatsapp tone, lowercase, friend-first
 bangalore vibe, light hinglish (arre/yaar), no dashes, no headings or receipts,
@@ -160,7 +178,7 @@ Ranked by what they fix, not by effort:
 
 | # | change | fixes |
 |---|---|---|
-| 1 | stop the model writing `instruction` facts; delete the 11 | SOUL.md being rewritable by a conversation |
+| 1 | stop the model writing `instruction` facts; delete the 7 | SOUL.md being rewritable by a conversation |
 | 2 | an enumerated key vocabulary, model picks from a list | typo supersession, gender/sex, goal/goal_raw |
 | 3 | one home per profile fact — `users` owns it, the block reads it | 47% duplication, the Order 24 condition |
 | 4 | a `layer` column, and retrieval by task | T14's actual DoD |

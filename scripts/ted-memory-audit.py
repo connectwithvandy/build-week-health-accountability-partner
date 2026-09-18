@@ -106,18 +106,29 @@ LAYERS: Dict[str, str] = {
     "supplements": "health",
     "intimacy_status": "health",
     "relationship_status": "health",
-    # preference — theirs
+    # preference — theirs. Four of these were filed as `instruction` in the
+    # first version of this table, on the strength of the key name, and reading
+    # the values proved it wrong. "wants end of day check for missed items" and
+    # "meals, water, supplements, moving" are this person's choices, not Ted's
+    # house style; deleting them as duplicated voice rules would have thrown
+    # away the only record of what they asked for.
+    #
+    # That mistake is the argument for a fixed key vocabulary before a layer
+    # scheme: a layer decided from a key the model invented is a layer decided
+    # from a guess, and `nudge_preferences` sounds exactly like an instruction.
     "diet_preference": "preference",
     "drink_preference": "preference",
-    # instruction — Ted's own voice, stored per user
+    "coaching_preference": "preference",
+    "logging_preference": "preference",
+    "daily_preference": "preference",
+    "nudge_preferences": "preference",
+    # instruction — Ted's own voice, stored per user. Every one of these
+    # restates SOUL.md's "How I talk" and "How I actually sound": short,
+    # lowercase, hinglish, one thought, no dashes, no receipt-style replies.
     "tone_preference": "instruction",
     "chat_style_preference": "instruction",
     "voice_style_preference": "instruction",
-    "coaching_preference": "instruction",
-    "logging_preference": "instruction",
     "meal_reply_rule": "instruction",
-    "daily_preference": "instruction",
-    "nudge_preferences": "instruction",
 }
 
 # Any key beginning with this is a health fact whatever follows, because the

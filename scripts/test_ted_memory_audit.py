@@ -53,15 +53,40 @@ def test_every_layer_name_is_one_t14_asks_for_or_the_one_it_missed():
 
 
 def test_teds_own_voice_rules_are_not_facts_about_the_person():
-    """The layer T14 does not name, and the reason it had to be added."""
+    """The layer T14 does not name, and the reason it had to be added.
+
+    Every one of these restates SOUL.md's "How I talk": short, lowercase,
+    hinglish, one thought, no dashes, no receipt-style replies.
+    """
     for key in (
         "tone_preference",
         "chat_style_preference",
         "voice_style_preference",
         "meal_reply_rule",
-        "nudge_preferences",
     ):
         assert audit.layer_of(key) == "instruction", key
+
+
+def test_a_preference_that_sounds_like_an_instruction_is_still_the_persons():
+    """The misfiling this table made, and the argument for a fixed vocabulary.
+
+    `nudge_preferences` is "meals, water, supplements, moving" — which nudges
+    this person wants. `daily_preference` is "wants end of day check for missed
+    items". Both were filed as `instruction` on the strength of the key name,
+    and deleting them as duplicated voice rules would have thrown away the only
+    record of what the user asked for.
+
+    A layer decided from a key the model invented is a layer decided from a
+    guess. That is why the key vocabulary has to be fixed before retrieval
+    rules can be keyed on a layer.
+    """
+    for key in (
+        "nudge_preferences",
+        "daily_preference",
+        "logging_preference",
+        "coaching_preference",
+    ):
+        assert audit.layer_of(key) == "preference", key
 
 
 def test_a_misspelled_supplement_is_still_a_health_fact():
