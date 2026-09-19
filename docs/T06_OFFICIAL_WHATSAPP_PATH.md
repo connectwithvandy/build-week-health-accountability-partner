@@ -317,13 +317,28 @@ with category Other. These fields exist only on the real number, at step 6.
 
 | field | text |
 | --- | --- |
-| Display name | `Ted Health` |
+| Display name | `Ted` |
 | About | `meal logging, a daily calorie target, and the reminders you ask for.` |
 | Business description | `Ted helps you log meals, keeps a daily calorie target, and sends the reminders you set. Not medical advice, not for emergencies, diagnosis or treatment.` |
 | Category | **Professional Services** |
 
 Every clause names something the product does. No "assistant", no "chat", no
 "AI", and no verb that only a model performs.
+
+**Why the display name is `Ted` and not `Ted Health` or `Ted Accountability
+Partner`.** Meta reviews a display name against the business's public presence,
+so the test is evidence, not taste. `heyted.in` never uses the word "health"
+once — its own description is *"Ted remembers your meals, movement, water, and
+commitments in WhatsApp"* and its title is *"Ted. Your day, remembered"*. But
+"accountability partner" appears nowhere on the site either, so it is no better
+evidenced. `Ted` is what the domain, the title and every heading call it, and
+it is a substring of the portfolio name, so it relates to the business as the
+rule asks. If Meta rejects it as too generic, the fallback is `Ted App`, with
+the description doing the explaining in the About line, where there is room.
+
+The business portfolio stays **Ted Health**. It is not user-facing on WhatsApp;
+it is the entity name business verification matches against, and renaming it is
+a separate decision with its own consequences.
 
 **Why Professional Services and not Medical & Health.** Medical & Health is the
 more literal label and the argument for it is honesty. It is also the category
@@ -347,6 +362,35 @@ App-level settings, checked and already correct on 19 Sep: app display name
 URLs all pointing at `https://heyted.in/privacy` (the last two were pointing at
 `https://www.facebook.com/`, which is what a placeholder looks like to a
 reviewer).
+
+## 7c. Everything Meta sees, audited 19 Sep 2026
+
+Checked field by field in the dashboard, not inferred.
+
+**Clean:** no required actions; privacy, terms and data-deletion URLs all
+`https://heyted.in/privacy`; contact email set; webhook verified with
+`messages` and `message_template_status_update` subscribed; payment method on
+file; `whatsapp_business_messaging` and `whatsapp_business_management` both at
+Ready for testing, which is the access an own-business sender needs; test
+number Connected, quality High; two templates in review.
+
+**Blocked together, and it is one form.** Business portfolio has no legal name,
+no address, no phone and **no website**, and Meta's edit dialog requires every
+one of them before Save enables — the website cannot be added on its own. That
+same dialog is business verification. So the field that would most help a
+template or display-name review is behind the same door as the thing that
+unlocks growth past 250 users a day. Filling it once does both, and it needs
+real legal details.
+
+**Open, small:** no app icon (the drop zone exposes no file input to automate;
+`public/brand/ted-profile-picture-orange.png` is the file to drag in).
+
+**Closed on the day:** the Cloud channel had no `WHATSAPP_CLOUD_ALLOWED_USERS`,
+so its DM policy defaulted to `open` — anyone reaching the webhook would have
+been served. Setting the allowlist also flips the policy, by the adapter's own
+`_default_dm_policy`. Now resolves to ALLOWLIST against Vandy's number only.
+Not verified end to end: no stranger has tried, and none can until the app is
+published.
 
 ## 8. What is still open
 
