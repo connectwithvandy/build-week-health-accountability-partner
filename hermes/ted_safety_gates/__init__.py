@@ -5407,20 +5407,31 @@ def _is_internal_note(text: str) -> bool:
     )
 
 
-def strip_assistant_speak(text: str) -> str:
-    """Ted's reply with the chatbot furniture taken off.
+def _differs_only_in_spacing(left: str, right: str) -> bool:
+    """Whether two versions of a line say the same words with different gaps."""
+    squash = lambda text: re.sub(r"\s+", " ", text or "").strip()
+    return squash(left) == squash(right)
 
-    Five things go: heading markers, list bullets, bold markers, a closing offer
-    that is the whole sentence, and a note Ted wrote to itself. Nothing is
-    rewritten — a bulleted line keeps its words and loses its dash, so the worst
-    case is a message that reads as lines instead of a list.
 
-    The one thing that can still get through is a message that is *nothing but*
-    an aside. Emptying it is not available: the live WhatsApp path has no way to
-    send nothing, `[SILENT]` is understood on the cron path only, and returning
-    it here would deliver those eight characters to a real person. So that case
-    is passed through and logged loudly instead, which at least makes a
-    recurrence visible rather than silent.
+def remove_chat_furniture(text: str) -> tuple[str, bool, bool]:
+    """The five removals, with no policy about what to do when nothing is left.
+
+    Split out of `strip_assistant_speak` on 19 Sep 2026 because two other
+    paths reach a real person without passing through it, and each one wants a
+    different answer to "what if this empties the message":
+
+    * the chat reply sends it over-polished rather than not at all;
+    * a cron reminder has `CRON_SILENT` and can genuinely send nothing;
+    * the meal card keeps the numbers below and can lose the sentence.
+
+    The removals themselves are the same on all three, and were not. Machine
+    talk was closed on the other two paths and the other four were left, which
+    is the instance fixed rather than the class: a reminder could still arrive
+    with bullets, bold, a "let me know if you want more" closer, or a note Ted
+    wrote to itself in brackets.
+
+    Returns the text, whether a note was dropped, and whether any of what was
+    dropped was machine talk. The caller decides what that means.
     """
     dropped_note = False
     # Tracked apart from `dropped_note`, because the two disagree about what to
@@ -5458,9 +5469,25 @@ def strip_assistant_speak(text: str) -> str:
         joined = " ".join(sentences).strip()
         if joined:
             kept.append(joined)
-    # A reply that was nothing but furniture is left alone rather than emptied:
-    # sending nothing is worse than sending something over-polished.
-    result = "\n".join(kept).strip()
+    return "\n".join(kept).strip(), dropped_note, dropped_machine
+
+
+def strip_assistant_speak(text: str) -> str:
+    """Ted's reply with the chatbot furniture taken off.
+
+    Five things go: heading markers, list bullets, bold markers, a closing offer
+    that is the whole sentence, and a note Ted wrote to itself. Nothing is
+    rewritten — a bulleted line keeps its words and loses its dash, so the worst
+    case is a message that reads as lines instead of a list.
+
+    The one thing that can still get through is a message that is *nothing but*
+    an aside. Emptying it is not available: the live WhatsApp path has no way to
+    send nothing, `[SILENT]` is understood on the cron path only, and returning
+    it here would deliver those eight characters to a real person. So that case
+    is passed through and logged loudly instead, which at least makes a
+    recurrence visible rather than silent.
+    """
+    result, dropped_note, dropped_machine = remove_chat_furniture(text)
     if dropped_note:
         LOGGER.warning(
             "ted_internal_note_in_reply removed=%s machine=%s text=%r",
@@ -5819,14 +5846,19 @@ def _with_meal_breakdown(
         note = _counted_note(meals or [meal], sources, user_words)
     if note:
         block = f"{block}\n\n{note}"
-    # Machine talk goes before the figures do. This branch returns straight to
+    # Machine talk goes before the figures do, and so does the furniture: the
+    # bullets, bold, closing offers and bracketed notes that a chat reply has
+    # taken off since the start. Emptying is safe on this path alone, because
+    # the card below still carries every number that mattered.
+    #
+    # This branch returns straight to
     # the user without passing `strip_assistant_speak`, and the real 8 Sep 2026
     # break — "I can't send a formatted breakdown like that, my numbers just
     # show up under my message automatically" — was a reply about a meal, on
     # this exact path. If it takes the whole sentence, the card below still
     # carries the numbers, which is the half that was ever load-bearing.
     words = _without_portion_question(
-        words_without_figures(drop_machine_talk(reply))
+        words_without_figures(remove_chat_furniture(drop_machine_talk(reply))[0])
     )
     # The food is named exactly once. If Ted already named it, Ted's version
     # wins: "ooh cheela and ketchup" carries warmth that "besan/moong dal
@@ -8798,8 +8830,34 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
             user_key,
             response_text[:200],
         )
-        return spoken
-    return None
+    else:
+        spoken = response_text
+
+    # The other four removals, which this path has never had. Machine talk was
+    # closed here on 19 Sep and the rest were left, so a reminder could still
+    # arrive with bullets, bold, a "let me know if you want anything else"
+    # closer, or a note Ted wrote to itself in brackets. Those are the same
+    # five things `strip_assistant_speak` takes off a chat reply, and there is
+    # no version of this where a nudge deserves them and a reply does not.
+    tidied, dropped_note, _ = remove_chat_furniture(spoken)
+    # A gate with nothing to remove must change nothing at all. This one
+    # rebuilds each line out of its sentences, so it also quietly normalises
+    # double spaces and trailing whitespace, and the first version of
+    # `drop_machine_talk` was rewritten for exactly that: 151 of 3,014 drafts
+    # came back altered and only 3 had anything wrong with them. A reminder
+    # whose only difference is spacing is left exactly as the model wrote it.
+    if _differs_only_in_spacing(tidied, spoken):
+        tidied = spoken
+    if dropped_note:
+        LOGGER.warning("ted_reminder_note_stripped user_key=%s", user_key)
+    # A reminder that was *nothing but* furniture is sent over-polished rather
+    # than not at all, which is the policy the chat path already uses. Silence
+    # is available here and is the wrong answer: this person asked for the
+    # nudge, and the thing that was wrong with it was punctuation.
+    spoken = tidied or spoken
+    # `None` still means "send what the model wrote", so an untouched reminder
+    # takes exactly the path it took before this existed.
+    return spoken if spoken != response_text else None
 
 
 # Cron job ownership — one beta user must never see or touch another's.

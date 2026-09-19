@@ -11670,6 +11670,138 @@ class TestTedNeverTalksAboutTheMachine(unittest.TestCase):
                 self.assertEqual(gates.strip_assistant_speak(said), said)
 
 
+class TestEveryLastMileRemovalOnEveryPath(unittest.TestCase):
+    """The class behind the 19 Sep machine-talk fix, closed a day later.
+
+    `strip_assistant_speak` takes five things off a chat reply: headings, list
+    bullets, bold markers, a closing offer, and a note Ted wrote to itself. The
+    cron path and the meal card return to the user without passing through it.
+    Machine talk was closed on both and the other four were left, which fixed
+    the instance that was found and not the class it belonged to. A reminder
+    could still arrive with bullets, or with "let me know if you want more"
+    underneath it.
+    """
+
+    SESSION = "cron_000000000000_20260903_084500"
+    CHAT = "000000000000000@lid"
+
+    def setUp(self) -> None:
+        self._dir = TemporaryDirectory()
+        self.tmp = self._dir.name
+        self.addCleanup(self._dir.cleanup)
+        gates._MEMORY_CACHE.clear()
+        self.addCleanup(gates._MEMORY_CACHE.clear)
+
+    def jobs_file(self) -> object:
+        path = Path(self.tmp) / "jobs.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "000000000000",
+                        "name": "protein reminder",
+                        "origin": {"platform": "whatsapp", "chat_id": self.CHAT},
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return patch.object(gates, "_CRON_JOBS_PATH", path)
+
+    def nudge(self, response_text: str):
+        """What the cron gate does to one reminder the gate has allowed."""
+
+        def responder(action, user_key, context_id="", body=None, **_):
+            if action == "reminderGate":
+                return {"success": True, "allowed": True, "reason": "ok"}
+            return {"success": True}
+
+        with self.jobs_file(), patch.object(
+            gates, "_convex_request", side_effect=responder
+        ):
+            return gates._cron_reminder_gate(
+                session_id=self.SESSION, response_text=response_text
+            )
+
+    def test_a_reminder_does_not_arrive_with_bullets(self) -> None:
+        out = self.nudge("time for your shake\n- 1 scoop\n- 300ml water")
+        self.assertIsNotNone(out)
+        self.assertNotIn("- 1 scoop", out)
+        self.assertIn("1 scoop", out)
+
+    def test_a_reminder_does_not_arrive_with_bold_markers(self) -> None:
+        out = self.nudge("**b12 time** yaar")
+        self.assertIsNotNone(out)
+        self.assertNotIn("**", out)
+        self.assertIn("b12 time", out)
+
+    def test_a_closing_offer_is_not_sent_with_a_nudge(self) -> None:
+        out = self.nudge("shake time. Let me know if you need anything else.")
+        self.assertIsNotNone(out)
+        self.assertNotIn("Let me know if", out)
+        self.assertIn("shake time", out)
+
+    def test_a_note_ted_wrote_to_itself_never_reaches_them(self) -> None:
+        out = self.nudge("shake time\n(waiting on their reply about dinner)")
+        self.assertIsNotNone(out)
+        self.assertNotIn("waiting on their", out)
+
+    def test_an_ordinary_nudge_comes_back_byte_identical(self) -> None:
+        """The whole point of the guard, and the reason this nearly regressed.
+
+        Rebuilding a line out of its sentences also normalises double spaces
+        and trailing whitespace. `drop_machine_talk` was rewritten once for
+        exactly that: 151 of 3,014 drafts came back altered and 3 of them had
+        anything wrong with them. `None` means "send what the model wrote", so
+        a clean nudge must still return None rather than a tidied copy.
+        """
+        for said in (
+            "protein shake time \U0001f4aa",
+            "shake time.  and water, please",
+            "sahi pakda yaar \U0001f605  \nab whole wheat pakka",
+        ):
+            with self.subTest(said=said):
+                self.assertIsNone(self.nudge(said))
+
+    def test_a_nudge_that_was_nothing_but_furniture_is_still_sent(self) -> None:
+        """Silence is available on this path and is the wrong answer here.
+
+        They asked for the nudge. What was wrong with it was punctuation, and
+        an over-polished ping beats no ping, which is the policy the chat path
+        already takes.
+        """
+        out = self.nudge("- \n- ")
+        self.assertNotEqual(out, gates.CRON_SILENT)
+
+    def test_the_meal_card_sentence_loses_its_furniture_too(self) -> None:
+        out = gates._with_meal_breakdown(
+            "**nice one**\n- that's a solid plate\n\nHope that helps!",
+            {"calories": 420, "proteinGrams": 20},
+            {"calories": 420, "proteinGrams": 20},
+            "whatsapp:test-user",
+        )
+        self.assertNotIn("**", out)
+        self.assertNotIn("Hope that helps", out)
+        self.assertIn("420", out)
+
+    def test_the_five_removals_are_one_function_not_three_copies(self) -> None:
+        """The reason this is a class fix rather than a third patch.
+
+        If a sixth thing is ever added to the chat gate, it has to arrive on
+        all three paths at once, and the only way to guarantee that is for
+        there to be one place it can be added.
+        """
+        said = "**hi**\n- one\n(waiting on their reply)\nHope that helps!"
+        shared, note, _ = gates.remove_chat_furniture(said)
+        self.assertTrue(note)
+        self.assertNotIn("**", shared)
+        self.assertNotIn("- one", shared)
+        self.assertNotIn("waiting on their", shared)
+        self.assertNotIn("Hope that helps", shared)
+        # The chat gate is now a policy on top of it, not a second copy of it.
+        self.assertIn(shared, gates.strip_assistant_speak(said))
+
+
 class TestMachineTalkOnThePathsThatSkipTheLastMileGate(unittest.TestCase):
     """`strip_assistant_speak` is the chat path's final gate, and two paths
     return before it ever runs. Both had to be closed separately, and the cron
