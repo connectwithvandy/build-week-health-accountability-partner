@@ -2094,6 +2094,42 @@ a blunt strip would leave three natural lines reading abrupt.
 So nothing in the gates changed today. The instrument did, which is the part
 that was actually broken.
 
+### Patch 17's first evidence, and it is not the number that proves it
+
+Patch 17 went live at 18 Sep 23:38, one minute after the commit. It was
+shipped on a prediction — cron writes a cache nobody reads, so drop the
+message-level breakpoints and keep the system one — and the prediction is now
+watchable in four rows:
+
+    19 Sep 00:00   write 42,075   read      0
+    19 Sep 10:30   write 21,222   read      0     writes the prefix
+    19 Sep 11:15   write      0   read 21,222     reads it back, free
+    19 Sep 11:30   write      0   read 21,222     reads it again
+
+That is the mechanism doing exactly what the patch claimed. Two firings paid
+nothing for a prefix a third had already written, which no cron firing had
+ever done before.
+
+The money, cron only, 17 to 18 Sep against 19 Sep:
+
+    cost per firing          $0.124  →  $0.068
+    cache written per firing  41,668  →  15,824 tokens
+    reads per token written     0.30  →  0.67
+
+**Four firings. Do not bank it.** Today's job mix is lighter than the
+comparison window (22k prompt per call against 35k), so some of that drop is
+not the patch. The direction is right and the size is not yet known.
+
+**The limit, visible on day one.** The saving needs firings inside the same
+hour. 00:00 and 10:30 are ten hours apart, the 1h TTL had expired, and both
+wrote the prefix fresh. 10:30, 11:15 and 11:30 are bunched, and two of the
+three rode free. The patch README predicted this in the same sentence that
+explained why the system breakpoint stays. Spreading reminder times, which
+`ted-spread-reminder-times.py` does for a different reason, works against it.
+
+Re-run `npm run spend --since 2026-09-19` around 26 Sep, the same day the
+voice-rules prediction comes due.
+
 ### Numbers
 
 1,507 Python tests, 2,164 subtests. 9 new, all on the check: the ledger read,
