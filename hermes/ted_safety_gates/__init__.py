@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Iterator
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 
 LOGGER = logging.getLogger("ted.safety_gates")
@@ -6900,6 +6900,84 @@ def _review_time_done(user_key: str) -> bool:
     return "dailyReview" in done or "complete" in done
 
 
+# Cities Ted's people actually live in, and the ones they move to. Every
+# Indian city is Asia/Kolkata, so the list is long and the mapping is boring:
+# the point is recognising the word, not the offset.
+#
+# A hand list *and* a generic match below, because zone names carry a city
+# ("Asia/Kolkata", "Europe/London") and most of the world is covered by
+# reading them, while the places Ted's users name most are exactly the ones
+# that are not zone names: mumbai, bangalore, gurgaon.
+_CITY_ZONES = {
+    city: "Asia/Kolkata"
+    for city in (
+        "mumbai", "bombay", "delhi", "new delhi", "gurgaon", "gurugram", "noida",
+        "bangalore", "bengaluru", "hyderabad", "chennai", "madras", "pune",
+        "ahmedabad", "jaipur", "lucknow", "kochi", "cochin", "goa", "chandigarh",
+        "indore", "bhopal", "nagpur", "surat", "patna", "guwahati", "ranchi",
+        "bhubaneswar", "coimbatore", "mysore", "mysuru", "vizag", "nashik",
+        "thiruvananthapuram", "trivandrum", "vadodara", "ludhiana", "india",
+    )
+}
+_CITY_ZONES.update({
+    "dubai": "Asia/Dubai", "abu dhabi": "Asia/Dubai", "sharjah": "Asia/Dubai",
+    "singapore": "Asia/Singapore", "london": "Europe/London",
+    "dublin": "Europe/Dublin", "berlin": "Europe/Berlin",
+    "new york": "America/New_York", "nyc": "America/New_York",
+    "san francisco": "America/Los_Angeles", "sf": "America/Los_Angeles",
+    "seattle": "America/Los_Angeles", "toronto": "America/Toronto",
+    "sydney": "Australia/Sydney", "melbourne": "Australia/Melbourne",
+})
+
+
+def _find_city(text: str) -> tuple[str, str] | None:
+    """The city they named and the zone it means, or None.
+
+    None is a real answer and the important one. An unrecognised city is left
+    unsaved and unmentioned rather than guessed at, because the whole reason
+    this exists is that Ted knew somebody wanted 9pm and not whose 9pm.
+    Inventing the wrong 9pm is not an improvement on not knowing.
+    """
+    written = (text or "").lower()
+    # Longest first, so "new delhi" is not read as "delhi" and "new york" is
+    # never read as "york".
+    for city in sorted(_CITY_ZONES, key=len, reverse=True):
+        if re.search(rf"(?<![a-z]){re.escape(city)}(?![a-z])", written):
+            return city, _CITY_ZONES[city]
+    # Anything else the system's own zone table knows by name. "Asia/Kolkata"
+    # and "Europe/London" carry their city in the last segment, which covers
+    # most of the world without a hand-written line each.
+    for name in available_timezones():
+        tail = name.rsplit("/", 1)[-1].replace("_", " ").lower()
+        if len(tail) > 3 and re.search(rf"(?<![a-z]){re.escape(tail)}(?![a-z])", written):
+            return tail, name
+    return None
+
+
+def _save_time_zone(user_key: str, zone_name: str, context_id: str) -> bool:
+    """Put the zone on the profile, where `_user_time_zone` already reads it.
+
+    Written through onboarding rather than the reminder, because `setReminder`
+    has no timezone argument and a check-in time without one is the bug this
+    closes. 28 users have been running on the Asia/Kolkata fallback, and in
+    197 log lines the stored value was empty every time.
+    """
+    written = _convex_write(
+        "onboarding",
+        user_key,
+        context_id,
+        body={"currentField": "dailyReview", "profile": {"timeZone": zone_name}},
+    )
+    if not written.get("success"):
+        LOGGER.warning(
+            "ted_time_zone_not_saved user_key=%s zone=%s error=%s",
+            user_key, zone_name, written.get("error"),
+        )
+        return False
+    LOGGER.info("ted_time_zone_saved user_key=%s zone=%s", user_key, zone_name)
+    return True
+
+
 def _save_review_time(user_key: str, local_time: str, context_id: str) -> bool:
     """Write the check-in time, and put it on the actual schedule.
 
@@ -7014,9 +7092,21 @@ def review_time_gate(
         if local_time:
             if not _save_review_time(user_key, local_time, context_id):
                 return REVIEW_TIME_NOT_SAVED
+            # The city half of the question, which until now was asked and
+            # thrown away. Said back to them on purpose: a timezone nobody can
+            # see is a timezone nobody can correct, and the failure it causes
+            # is a recap arriving at the wrong end of somebody's day.
+            where = ""
+            found = _find_city(user_text)
+            if found:
+                city, zone_name = found
+                if _save_time_zone(user_key, zone_name, context_id):
+                    _update_onboarding(user_key, review_city=city)
+                    where = f"{city} time "
             return (
-                f"{_spoken_time(local_time)} it is \u2705 that's when your day "
-                "gets added up. send me a meal whenever you like and we're running."
+                f"{_spoken_time(local_time)} {where}it is \u2705 that's when your "
+                "day gets added up. send me a meal whenever you like and we're "
+                "running."
             )
 
     # Asking. The model reached for the question in its own words, so it gets

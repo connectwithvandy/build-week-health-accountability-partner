@@ -9255,6 +9255,114 @@ class DeficitPhrasingTest(unittest.TestCase):
                 self.assertNotIn("1650", out)
 
 
+class TheCityHalfOfTheQuestionIsReadTest(unittest.TestCase):
+    """The question asked for a city and nothing read the answer.
+
+    The wording gained "and which city are you in?" on 16 Sep 2026 because 18
+    of the 24 people with a check-in time had no timezone: Ted knew somebody
+    wanted 9pm and not whose 9pm. The reading half was never built, so the
+    answer was parsed for a time and the city was dropped on the floor. 28
+    users have been running on the Asia/Kolkata fallback and in 197 log lines
+    the stored value was empty every time.
+
+    Same shape as the question itself: a step that is asked and not owned.
+    """
+
+    def _asked(self, name: str) -> str:
+        key = f"review-city-{name}"
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(key, None)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        gates._update_onboarding(key, review_state="asking")
+        return key
+
+    def _answer(self, key: str, said: str) -> str:
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            return gates.review_time_gate("all set!", said, key)
+
+    def test_an_indian_city_is_read_and_said_back(self) -> None:
+        key = self._asked("mumbai")
+        out = self._answer(key, "9pm, mumbai")
+        self.assertIn("9pm", out)
+        self.assertIn("mumbai time", out)
+
+    def test_a_city_that_is_not_a_zone_name_still_works(self) -> None:
+        """bengaluru, gurgaon and delhi are what people say, and none of them
+        is a timezone. The generic match over zone names does not cover them,
+        which is why the hand list exists beside it."""
+        for said, city in (("bengaluru, 10:30pm", "bengaluru"),
+                           ("9pm gurgaon", "gurgaon"),
+                           ("21:00 new delhi", "new delhi")):
+            with self.subTest(said=said):
+                out = self._answer(self._asked(city), said)
+                self.assertIn(f"{city} time", out)
+
+    def test_somewhere_outside_india_gets_its_own_zone(self) -> None:
+        key = self._asked("dubai")
+        self.assertIn("dubai time", self._answer(key, "9pm dubai"))
+        self.assertEqual(gates._find_city("9pm dubai")[1], "Asia/Dubai")
+
+    def test_a_city_it_does_not_know_is_never_guessed_at(self) -> None:
+        """The whole point. Inventing the wrong 9pm is not an improvement on
+        not knowing which 9pm, because a recap lands at the wrong end of
+        somebody's day either way and a guess cannot be seen to be wrong."""
+        self.assertIsNone(gates._find_city("9pm jhumritalaiya"))
+        out = self._answer(self._asked("unknown"), "9pm jhumritalaiya")
+        self.assertNotIn("time it is", out)
+        self.assertIn("9pm it is", out)
+
+    def test_no_city_leaves_the_approved_sentence_exactly_as_it_was(self) -> None:
+        """Copy that was signed off does not change because a feature landed
+        next to it. Byte for byte, or it is a rewrite nobody asked for."""
+        out = self._answer(self._asked("none"), "9am")
+        self.assertEqual(
+            out,
+            "9am it is \u2705 that's when your day gets added up. send me a "
+            "meal whenever you like and we're running.",
+        )
+
+    def test_the_zone_is_written_where_the_clock_actually_reads_it(self) -> None:
+        """`_user_time_zone` reads `timeZone` off the profile, so writing it
+        anywhere else would be a fact nobody consults."""
+        key = self._asked("written")
+        seen = []
+
+        def record(action, user_key, context_id="", body=None, **_):
+            seen.append((action, body))
+            return {"success": True}
+
+        with patch.object(gates, "_convex_request", side_effect=record):
+            gates.review_time_gate("all set!", "9pm, pune", key)
+        zones = [b for a, b in seen if isinstance(b, dict) and "profile" in b]
+        self.assertTrue(zones, "no profile write at all")
+        self.assertEqual(zones[0]["profile"]["timeZone"], "Asia/Kolkata")
+
+    def test_the_city_is_not_claimed_when_the_write_failed(self) -> None:
+        """Ted says what happened, not what was attempted."""
+        key = self._asked("failed")
+
+        def refuse(action, user_key, context_id="", body=None, **_):
+            if isinstance(body, dict) and "profile" in body:
+                return {"success": False, "error": "nope"}
+            return {"success": True}
+
+        with patch.object(gates, "_convex_request", side_effect=refuse):
+            out = gates.review_time_gate("all set!", "9pm, mumbai", key)
+        self.assertNotIn("mumbai", out)
+        self.assertIn("9pm it is", out)
+
+    def test_it_still_sounds_like_ted(self) -> None:
+        """Every rule npm run voice measures, on the line people receive."""
+        out = self._answer(self._asked("voice"), "9pm, mumbai")
+        self.assertEqual(out, out.lower().replace("✅", "✅"))
+        self.assertNotIn("timezone", out.lower())
+        self.assertNotIn("**", out)
+        self.assertLessEqual(out.count("?"), 1)
+        # No emoji beside a number: the tick follows "it is", never the time.
+        self.assertNotRegex(out, r"\d[ \t]*[\U0001F300-\U0001FAFF☀-➿]")
+
+
 class TheCheckInTimeIsActuallyAskedTest(unittest.TestCase):
     """19 Sep 2026. It was asked once, and mostly it was never asked at all.
 
