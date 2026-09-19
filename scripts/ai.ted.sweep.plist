@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.sweep</string>
+
+  <!-- The product checks, once a day, silent unless something moved.
+
+       ai.ted.gatewatch runs ted-watch.py every fifteen minutes and watches the
+       machine: gates, link, model, power, credit. Every check in it was
+       written after an outage. The checks this runs are the other half, the
+       ones about people rather than processes, and until now not one of them
+       ran unless somebody remembered to type it. On 3 Sep 2026 a user asked to
+       be forgotten; `npm run deletion:audit` would have said so on any day
+       since, and it was sixteen days before anybody looked.
+
+       09:00 rather than the small hours, because unlike a backup this is meant
+       to be read. It lands before the day starts rather than at the bottom of
+       an overnight inbox. Every fifteen minutes would be wrong for a different
+       reason: none of these numbers can move faster than a person can act on
+       them, and the cost of asking is a full 30-day scan and a Convex round
+       trip.
+
+       RunAtLoad is false. The first run of the day writes the baseline the
+       second compares against, and a run on every login would compare the
+       morning to twenty minutes ago and have nothing to say.
+
+       The interpreter is the Hermes venv's, not /usr/bin/python3, and that is
+       not a preference: macOS refuses a launchd agent access to ~/Documents
+       unless that binary has been granted it, and the Command Line Tools
+       python has not. See the same note in ai.ted.backup.plist, which was
+       written after that failure. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/vandana.agarwal/.hermes/hermes-agent/venv/bin/python3</string>
+    <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-sweep.py</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-sweep.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-sweep.log</string>
+</dict>
+</plist>
