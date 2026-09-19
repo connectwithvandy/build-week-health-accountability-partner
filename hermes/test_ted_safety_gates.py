@@ -3638,8 +3638,18 @@ class GoldenPathTest(unittest.TestCase):
         #    the answer rather than trusting the model to record it. This is
         #    what stopped the question going out twice on 4 Sep.
         self.assertEqual(self.turn("eat more protein", "good one, noted."), "good one, noted.")
-        asked = self.turn("when do you check in?", "good one. what time should i check in?")
-        self.assertEqual(asked, gates.REVIEW_TIME_QUESTION)
+        # The nudges question comes first, and the gate asks it. This path —
+        # a target closed by a reply that was not a choice — used to skip it
+        # entirely: the golden path itself ran from the target straight to the
+        # check-in time, and nobody on it was ever asked about nudges.
+        nudges = self.turn(
+            "when do you check in?", "good one. what time should i check in?"
+        )
+        self.assertEqual(nudges, gates.PICKS_QUESTION)
+        self.assertEqual(gates._onboarding(self.user_key).get("picks_state"), "asking")
+
+        asked = self.turn("none", "sure.")
+        self.assertIn(gates.REVIEW_TIME_QUESTION, asked)
         self.assertEqual(gates._review_state(self.user_key), "asking")
 
         # The answer is read here, not by the model, so a model that forgets to
@@ -9363,6 +9373,175 @@ class TheCityHalfOfTheQuestionIsReadTest(unittest.TestCase):
         self.assertNotRegex(out, r"\d[ \t]*[\U0001F300-\U0001FAFF☀-➿]")
 
 
+class TheNudgesQuestionIsActuallyAskedTest(unittest.TestCase):
+    """19 Sep 2026. The same fault as the check-in time, one step earlier.
+
+    Nine people have had this question closed as unanswered against six who
+    have ever answered it. It was asked by whichever reply happened to arm
+    the state, so a path that armed the state without sending the question
+    left somebody waiting on a question nobody had put — and somebody who did
+    not answer on that single turn was never asked again.
+
+    venky, 16 Sep 23:15:59, is the live instance. He answered the target
+    choice with something that was not a choice, the gate took its silent
+    branch, what he actually received was the model's own "2100 it is then",
+    and his record has said "asking" ever since.
+
+    It matters more here than one step later: the nudges are the difference
+    between something that waits to be opened and something that speaks
+    first.
+    """
+
+    def _ready(self, name: str, **extra) -> str:
+        """Somebody who has finished the six and agreed their numbers."""
+        key = f"picks-due-{name}"
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(key, None)
+        self.addCleanup(gates._forget_user, key)
+        fields = {"setup": "done", "profile_summary": "agreed"}
+        fields.update(extra)
+        gates._update_onboarding(key, **fields)
+        return key
+
+    def test_it_is_asked_when_the_record_says_it_is_owed(self) -> None:
+        key = self._ready("plain")
+        self.assertEqual(
+            gates.picks_gate("thanks", key, response_text="nice one."),
+            gates.PICKS_QUESTION,
+        )
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "asking")
+        self.assertEqual(gates._picks_asks(key), 1)
+
+    def test_it_waits_for_a_turn_that_is_not_already_asking(self) -> None:
+        """A turn belongs to one question."""
+        key = self._ready("busy")
+        self.assertIsNone(
+            gates.picks_gate("hi", key, response_text="sure. how many rotis?")
+        )
+        self.assertIsNone(gates._onboarding(key).get("picks_state"))
+
+    def test_the_model_reaching_for_the_check_in_time_does_not_hold_the_turn(
+        self,
+    ) -> None:
+        """The gate owns that question too, and asks it a step later.
+
+        Treating it as a real question is what let the flow run from the
+        target choice straight to the check-in time, skipping this step for
+        good: once the check-in question is out, going back reads as Ted
+        losing his place, so it is never re-opened.
+        """
+        key = self._ready("jumped")
+        self.assertEqual(
+            gates.picks_gate(
+                "ok", key, response_text="good one. what time should i check in?"
+            ),
+            gates.PICKS_QUESTION,
+        )
+
+    def test_the_silent_target_branch_no_longer_records_an_ask(self) -> None:
+        """venky. The question went out on neither branch and the record said
+        it had, which is the one thing `_ONBOARDING_STATE_PATH` forbids."""
+        key = self._ready(
+            "venky", target_state="asking", target_lower=2100, target_maintenance=1910
+        )
+        self.assertIsNone(gates.target_choice_gate("ate a lot today", key))
+        record = gates._onboarding(key)
+        self.assertEqual(record.get("target_state"), "done")
+        self.assertIsNone(record.get("picks_state"))
+        self.assertTrue(gates._picks_due(key))
+
+    def test_the_spoken_target_branch_does_record_one(self) -> None:
+        """The branch that really does carry the question still counts it."""
+        key = self._ready(
+            "spoken", target_state="asking", target_lower=2100, target_maintenance=1910
+        )
+        reply = gates.target_choice_gate("do it", key)
+        self.assertIn(gates.PICKS_QUESTION, reply)
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "asking")
+        self.assertEqual(gates._picks_asks(key), 1)
+
+    def test_a_reply_is_not_read_as_an_answer_to_an_unasked_question(self) -> None:
+        """The four sitting in "asking" tonight.
+
+        Nothing counted an ask against them, so the next thing they send is
+        not their answer. It is the turn the question finally goes out on.
+        """
+        key = self._ready("legacy", picks_state="asking")
+        self.assertEqual(gates._picks_asks(key), 0)
+        with patch.object(gates, "_convex_request") as write:
+            self.assertIsNone(gates.picks_gate("hmm", key))
+        write.assert_not_called()
+        self.assertEqual(
+            gates.picks_gate("hmm", key, response_text="sure."), gates.PICKS_QUESTION
+        )
+
+    def test_a_turn_that_does_not_answer_it_disarms_it_without_ending_it(self) -> None:
+        key = self._ready("disarmed", picks_state="asking", picks_asks=1)
+        self.assertIsNone(gates.picks_gate("3 rotis and dal for lunch", key))
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "unanswered")
+        self.assertTrue(gates._picks_due(key))
+
+    def test_it_stops_after_three_and_is_never_a_nag(self) -> None:
+        """The cap the name question settled on, for the same reason."""
+        key = self._ready("capped")
+        for _ in range(gates._MAX_PICKS_ASKS):
+            self.assertEqual(
+                gates.picks_gate("hmm", key, response_text="sure."),
+                gates.PICKS_QUESTION,
+            )
+            # The turn after, which does not answer it.
+            self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+        self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+        self.assertFalse(gates._picks_due(key))
+
+    def test_it_is_not_reopened_once_the_check_in_question_has_gone_out(self) -> None:
+        key = self._ready("moved-on", picks_state="unanswered", review_state="asking")
+        self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+
+    def test_it_is_not_asked_before_the_six_are_done(self) -> None:
+        key = self._ready("early", setup="running")
+        self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+
+    def test_it_does_not_jump_an_outstanding_target_choice(self) -> None:
+        key = self._ready("target", target_state="asking")
+        self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+
+    def test_it_never_arrives_instead_of_a_meal_card(self) -> None:
+        """Both onboarding questions replace Ted's whole reply, and the card
+        is built after them, so asking on a meal turn deletes the food.
+
+        Somebody who finally sends a photo of their lunch must get their
+        lunch back, not admin. It is asked on a quieter turn instead.
+        """
+        key = self._ready("mealtime")
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        out = gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="[image received]",
+            response_text="ooh sprouts bowl 😍",
+            user_key=key,
+            action_succeeded=True,
+            logged_meal={"calories": 220, "proteinGrams": 14},
+            day_summary={"calories": 1060, "proteinGrams": 46},
+        )
+        self.assertIn("Calories: 220 kcal", out)
+        self.assertNotIn(gates.PICKS_QUESTION, out)
+        self.assertNotIn(gates.REVIEW_TIME_QUESTION, out)
+        # Still owed, so it goes out on a turn with no plate on it.
+        self.assertTrue(gates._picks_due(key))
+
+    def test_answering_it_still_sets_the_reminders(self) -> None:
+        """The reading half survives the change to the asking half."""
+        key = self._ready("answers", picks_state="asking", picks_asks=1)
+        with patch.object(
+            gates, "_convex_request", return_value={"success": True}
+        ), patch.object(gates, "_schedule_saved_reminders"):
+            reply = gates.picks_gate("water", key)
+        self.assertIn("water", reply)
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "done")
+
+
 class TheCheckInTimeIsActuallyAskedTest(unittest.TestCase):
     """19 Sep 2026. It was asked once, and mostly it was never asked at all.
 
@@ -9382,16 +9561,29 @@ class TheCheckInTimeIsActuallyAskedTest(unittest.TestCase):
     """
 
     def _ready(self, name: str, **extra) -> str:
-        """Somebody who has finished the six and agreed their numbers."""
+        """Somebody who has finished the six, agreed their numbers, and
+        settled the nudges question, which is the step before this one."""
         key = f"review-due-{name}"
         gates._DISCLOSURE_SENT_KEYS.add(key)
         with gates._ONBOARDING_LOCK:
             gates._ONBOARDING_STATE.pop(key, None)
         self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
-        gates._update_onboarding(
-            key, setup="done", profile_summary="agreed", **extra
-        )
+        fields = {"setup": "done", "profile_summary": "agreed", "picks_state": "done"}
+        fields.update(extra)
+        gates._update_onboarding(key, **fields)
         return key
+
+    def test_it_does_not_jump_a_nudges_question_that_is_merely_owed(self) -> None:
+        """Not only one that is armed.
+
+        The nudges question has the same owner as this one now, so "owed" is
+        a state it really sits in: asked once, not answered on that turn, due
+        again. Jumping it is how it got skipped for everyone who did not
+        answer first time.
+        """
+        key = self._ready("owed", picks_state="unanswered")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+        self.assertTrue(gates._picks_due(key))
 
     def test_it_is_asked_even_though_the_model_never_reached_for_it(self) -> None:
         """The 15. Ted says something ordinary and the question goes with it."""
@@ -9420,6 +9612,14 @@ class TheCheckInTimeIsActuallyAskedTest(unittest.TestCase):
         key = self._ready("early")
         gates._update_onboarding(key, setup="running")
         self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_it_is_not_asked_on_a_turn_that_logged_a_meal(self) -> None:
+        """The card is built after this gate, so asking here deletes it."""
+        key = self._ready("mealtime")
+        self.assertIsNone(
+            gates.review_time_gate("nice plate.", "dal chawal", key, may_ask=False)
+        )
+        self.assertIsNone(gates._review_state(key))
 
     def test_it_is_not_asked_before_they_agree_their_numbers(self) -> None:
         key = self._ready("unagreed")
@@ -10157,12 +10357,17 @@ class TheNudgesAreOptInTest(unittest.TestCase):
     def test_a_logged_meal_is_not_a_request_for_meal_reminders(self) -> None:
         """"3 rotis and dal for lunch" carries "lunch"."""
         key = "picks-meal"
-        gates._update_onboarding(key, picks_state="asking")
+        gates._update_onboarding(
+            key, setup="done", profile_summary="agreed", picks_state="asking"
+        )
         self.addCleanup(gates._forget_user, key)
         with patch.object(gates, "_convex_request") as write:
             self.assertIsNone(gates.picks_gate("3 rotis and dal for lunch", key))
-        # Read as an answer it would have set meal reminders. It closes instead.
-        self.assertEqual(gates._onboarding(key).get("picks_state"), "done")
+        # Read as an answer it would have set meal reminders. It disarms
+        # instead — and stays askable, because a meal arriving at the wrong
+        # moment is not the person declining nudges.
+        self.assertEqual(gates._onboarding(key).get("picks_state"), "unanswered")
+        self.assertTrue(gates._picks_due(key))
 
     def test_the_words_people_use(self) -> None:
         for written, expected in (

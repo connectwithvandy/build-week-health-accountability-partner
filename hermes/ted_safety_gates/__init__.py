@@ -119,6 +119,8 @@ _MAX_NAME_ASKS = 3
 # is what the name question settled on: enough that a distracted person is
 # asked again, few enough that it is never a nag.
 _MAX_REVIEW_TIME_ASKS = 3
+# And on the question before it, which had the same hole for the same reason.
+_MAX_PICKS_ASKS = 3
 # The opener, plus one re-ask. Past that the question stops going out even
 # when the model keeps writing it: three asks in ninety seconds is what a
 # tester saw on 3 Sep, and the third one had already been answered.
@@ -4560,7 +4562,7 @@ def setup_gate(
         )
     else:
         # No choice to make, so the payoff ran straight on to the nudges.
-        _update_onboarding(user_key, tracking_kcal=maintenance, picks_state="asking")
+        _arm_picks_question(user_key, tracking_kcal=maintenance)
     LOGGER.info("ted_setup_complete user_key=%s", user_key)
     return _setup_payoff(profile)
 
@@ -6041,13 +6043,29 @@ def transform_response(
     chosen_target = target_choice_gate(user_text, user_key, context_id)
     if chosen_target:
         return chosen_target
+    # Neither of the two questions below asks on a turn that logged a meal.
+    # Both of them answer by replacing Ted's whole reply, and the meal card is
+    # built further down, so asking here does not sit alongside the card — it
+    # deletes it. Somebody who sent a photo of their lunch gets an onboarding
+    # question back instead of their food, which is the product asking for
+    # admin at the exact moment it was finally being used. Reading an answer
+    # is unaffected: that is what the person is doing on this turn.
+    quiet_turn = logged_meal is None
     if not target_was_open:
-        picked = picks_gate(user_text, user_key, context_id)
+        picked = picks_gate(
+            user_text,
+            user_key,
+            context_id,
+            response_text=response_text,
+            may_ask=quiet_turn,
+        )
         if picked:
             return picked
     # Above the calorie gate for the same reason the six sit there: it owns
     # this question, so nothing below gets to ask it in different words.
-    review_time = review_time_gate(response_text, user_text, user_key, context_id)
+    review_time = review_time_gate(
+        response_text, user_text, user_key, context_id, may_ask=quiet_turn
+    )
     if review_time:
         return review_time
     calorie = calorie_gate(
@@ -6666,11 +6684,21 @@ def target_choice_gate(
         # the number they would have had before any of this existed, and
         # `onboarding_close_gate` still refuses to let onboarding finish
         # without the rest.
+        # Deliberately not `picks_state="asking"`. The nudges question only
+        # goes out on the spoken branch below, and on the silent branch it
+        # does not go out at all — so recording it as asked is a lie the rest
+        # of onboarding then waits on. `_ONBOARDING_STATE_PATH` has warned
+        # since the beginning that a step is recorded by the code that
+        # performs it; this recorded a step nothing performed.
+        #
+        # venky, 16 Sep 23:15:59, is the live instance. He took this branch,
+        # the reply he got was the model's own "2100 it is then", the nudges
+        # question was never put to him, and his record has said "asking"
+        # ever since. `_picks_due` asks him properly on his next turn.
         _update_onboarding(
             user_key,
             tracking_kcal=maintenance,
             target_state="done",
-            picks_state="asking",
         )
         LOGGER.info("ted_target_unanswered user_key=%s", user_key)
         # Said out loud when they were trying to answer, and only then.
@@ -6691,15 +6719,15 @@ def target_choice_gate(
             # meal with a calorie choice is the same rudeness pointed the
             # other way.
             return None
+        _arm_picks_question(user_key)
         return (
             f"going with *{maintenance:,}* for now, the number where your "
             f"weight sits still. say *{lower:,}* if you'd rather have that "
             f"one.\n\n{PICKS_QUESTION}"
         )
 
-    _update_onboarding(
-        user_key, tracking_kcal=chosen, target_state="done", picks_state="asking"
-    )
+    _update_onboarding(user_key, tracking_kcal=chosen, target_state="done")
+    _arm_picks_question(user_key)
     # And into Convex, which is the other half of the same fact.
     #
     # Ted says this number out loud — "*1,870* it is" — and until now it was
@@ -6719,17 +6747,120 @@ def target_choice_gate(
     return f"*{chosen:,}* it is.\n\n{PICKS_QUESTION}"
 
 
-def picks_gate(user_text: str, user_key: str, context_id: str = "") -> str | None:
-    """Turn the nudges they asked for into real, managed reminders."""
-    if not user_key or _onboarding(user_key).get("picks_state") != "asking":
+def _asks_a_question_of_its_own(text: str) -> bool:
+    """Whether Ted's reply puts a question the gate does not already own.
+
+    A turn belongs to one question, so an outstanding gate question waits for
+    a reply that is not already asking. The check-in time is the exception,
+    and it has to be: the gate owns that question too and asks it a step
+    later in its own words, so treating the model's early reach for it as a
+    real question means the nudges step is skipped and never comes back.
+    That is how the golden path itself ran — straight from the target choice
+    to the check-in time, with the nudges never put to anybody.
+    """
+    if not _asks_something(text):
+        return False
+    return not _MODEL_REVIEW_TIME_ASK.search(text or "")
+
+
+def _picks_asks(user_key: str) -> int:
+    value = _onboarding(user_key).get("picks_asks", 0)
+    return value if isinstance(value, int) else 0
+
+
+def _arm_picks_question(user_key: str, **fields: Any) -> None:
+    """Record that the nudges question is going out on this turn.
+
+    Called from the three places that actually put it in a reply, and nowhere
+    else. Every one of them used to set `picks_state="asking"` inline, which
+    made it easy for a fourth path to set the state without sending the
+    question — and one did.
+    """
+    _update_onboarding(
+        user_key,
+        picks_state="asking",
+        picks_asks=_picks_asks(user_key) + 1,
+        **fields,
+    )
+
+
+def _picks_due(user_key: str) -> bool:
+    """Whether this person is owed the nudges question right now.
+
+    The same read-the-record test `_review_time_due` makes one step later,
+    and it is here for the same reason: 9 people have had this question
+    closed as unanswered and 6 have ever answered it, so the step that turns
+    Ted into something that speaks first was decided by a single turn.
+    """
+    record = _onboarding(user_key)
+    # Armed, or settled. Neither is owed.
+    if record.get("picks_state") in ("asking", "done"):
+        return False
+    if record.get("picks") or record.get("reminders_row"):
+        return False
+    # Not owed until the hard part is behind them and the numbers are agreed.
+    if record.get("setup") != "done" or record.get("profile_summary") != "agreed":
+        return False
+    # The target choice comes first and owns the turn while it is open.
+    if record.get("target_state") == "asking":
+        return False
+    # And never reopened behind the flow: once the check-in question has been
+    # put or answered, onboarding has moved on and going back a step reads as
+    # Ted losing his place.
+    if record.get("review_state") or _review_time_done(user_key):
+        return False
+    return _picks_asks(user_key) < _MAX_PICKS_ASKS
+
+
+def picks_gate(
+    user_text: str,
+    user_key: str,
+    context_id: str = "",
+    response_text: str = "",
+    may_ask: bool = True,
+) -> str | None:
+    """Own both halves of the nudges question: the asking and the reading.
+
+    WHY IT ASKS ON ITS OWN, since 19 Sep 2026. It only ever read. The asking
+    rode along with whatever reply happened to arm it, so a path that armed
+    the state without sending the question left the person waiting on a
+    question nobody had put, and a person who did not answer on that one turn
+    was never asked again. Nine were closed unanswered against six answered.
+
+    That is the same fault `review_time_gate` was given an owner for earlier
+    today, one step later in the flow, and it is worth more here: the nudges
+    are the whole difference between an app that waits to be opened and
+    something that speaks first.
+    """
+    if not user_key:
+        return None
+    if _onboarding(user_key).get("picks_state") != "asking":
+        # Asking. The record says it is owed, and this reply is not already
+        # putting a question to them: a turn belongs to one question.
+        if (
+            may_ask
+            and _picks_due(user_key)
+            and not _asks_a_question_of_its_own(response_text)
+        ):
+            _arm_picks_question(user_key)
+            LOGGER.info("ted_picks_asked user_key=%s source=gate", user_key)
+            return PICKS_QUESTION
         return None
     picked = _find_picks(user_text)
     if picked is None:
-        # One turn, for the same reason the target choice gets one: "3 rotis
-        # and dal for lunch" carries the word "lunch", and with this question
-        # left open a logged meal was read as asking for meal reminders.
-        _update_onboarding(user_key, picks_state="done")
-        LOGGER.info("ted_picks_unanswered user_key=%s", user_key)
+        # Armed for one turn, for the same reason the target choice gets one:
+        # "3 rotis and dal for lunch" carries the word "lunch", and with this
+        # question left open a logged meal was read as asking for meal
+        # reminders.
+        #
+        # Disarmed, though, not finished. "done" here used to mean both, so a
+        # meal sent at the wrong moment ended the question for good. The
+        # answer is still not read out of this turn — it is asked again on a
+        # later one, up to _MAX_PICKS_ASKS.
+        _update_onboarding(user_key, picks_state="unanswered")
+        LOGGER.info(
+            "ted_picks_unanswered user_key=%s asks=%s", user_key, _picks_asks(user_key)
+        )
         return None
 
     if not picked:
@@ -7065,6 +7196,7 @@ def review_time_gate(
     user_text: str,
     user_key: str,
     context_id: str = "",
+    may_ask: bool = True,
 ) -> str | None:
     """Own both halves of the check-in time: the asking and the reading.
 
@@ -7108,6 +7240,18 @@ def review_time_gate(
                 "day gets added up. send me a meal whenever you like and we're "
                 "running."
             )
+
+    # The step before this one comes first. `_review_time_due` says the same
+    # thing about a question that is armed; this says it about one that is
+    # merely owed, which is the state the nudges question sits in for anyone
+    # who did not answer it on the single turn it used to get.
+    if _picks_due(user_key):
+        return None
+
+    # Not on a turn that logged a meal. See the call site: the card is built
+    # after this and asking here replaces it rather than riding with it.
+    if not may_ask:
+        return None
 
     # Asking. The model reached for the question in its own words, so it gets
     # the gate's words instead, once.
