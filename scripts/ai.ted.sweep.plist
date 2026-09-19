@@ -37,6 +37,24 @@
     <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-sweep.py</string>
   </array>
 
+  <!-- launchd inherits almost nothing, and `ted-memory-audit.py` shells out to
+       `npx` to reach Convex. The first scheduled run proved it: six checks
+       read fine and the memory audit came back "did not print JSON", because
+       what it actually printed was "No such file or directory: 'npx'".
+       Without the PATH below that check is silently useless on a schedule and
+       perfect by hand, which is the worst of both.
+
+       ~/.local/bin is where `which npx` points on this machine;
+       ~/.hermes/node/bin is the node Hermes ships with, kept as a second road
+       for the day the first one is uninstalled. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/vandana.agarwal/.local/bin:/Users/vandana.agarwal/.hermes/node/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/vandana.agarwal</string>
+  </dict>
+
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
