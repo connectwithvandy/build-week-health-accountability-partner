@@ -95,6 +95,87 @@ class TestRedaction:
         assert twice == once
 
 
+class TestTheReportIsTrueBeforeItIsUseful:
+    """The alarm said 62 and the answer was 0.
+
+    Two separate reasons, and both of them make a privacy check worthless in
+    the same way: an alarm that is always red is one you stop reading, and the
+    real line is then missed inside the noise it made.
+    """
+
+    # What patch 14 writes: the gateway formats a str with %r, so its marker
+    # arrives quoted. This script writes its own bare. Both are redactions.
+    PATCH_14_LINE = (
+        "2026-09-11 12:06:40,967 INFO gateway.run: inbound message: platform=whatsapp "
+        "user=Ankiita chat=115650651500637@lid msg='<48 chars withheld>' "
+        "reply_to_id=None reply_to_text='<0 chars withheld>'\n"
+    )
+    # ngrok, in the same directory, in logfmt.
+    NGROK_LINE = (
+        't=2026-09-19T14:59:46+0530 lvl=info msg="starting web service" '
+        "obj=web addr=127.0.0.1:4041\n"
+    )
+    # Hermes' own stderr capture, which carries no timestamp at all. A first
+    # attempt at the ngrok fix skipped whole files by line shape and would
+    # have stopped reading this one.
+    ERROR_LOG_LINE = "WARNING gateway.run: turn failed msg='i had 2 rotis'\n"
+
+    def test_a_line_the_gateway_already_redacted_is_not_exposure(self, tool):
+        out, removed = tool.redact_line(self.PATCH_14_LINE)
+        assert removed == 0
+        assert out == self.PATCH_14_LINE
+
+    def test_a_fully_redacted_log_reports_zero_not_its_own_markers(self, tool):
+        log = Path(tool.LOG_DIR) / "agent.log"
+        log.write_text(self.PATCH_14_LINE * 3)
+        (path, exposed, withheld, _), = tool.survey()
+        assert path.name == "agent.log"
+        assert exposed == 0
+        assert withheld == 3
+
+    def test_another_tools_log_is_not_read_as_somebodys_food_diary(self, tool):
+        out, removed = tool.redact_line(self.NGROK_LINE)
+        assert removed == 0
+        assert out == self.NGROK_LINE
+
+    def test_a_scrub_leaves_another_tools_diagnostics_intact(
+        self, tool, monkeypatch
+    ):
+        # With the gateway down, so this proves the format rule rather than
+        # the live-file refusal, which would have passed either way.
+        monkeypatch.setattr(tool, "gateway_is_running", lambda: False)
+        log = Path(tool.LOG_DIR) / "ngrok.log"
+        log.write_text(self.NGROK_LINE * 4)
+        ok, _ = tool.scrub(log)
+        assert ok
+        assert log.read_text() == self.NGROK_LINE * 4
+
+    def test_a_hermes_line_with_no_timestamp_is_still_read(self, tool):
+        out, removed = tool.redact_line(self.ERROR_LOG_LINE)
+        assert removed == 1
+        assert "rotis" not in out
+
+    def test_real_exposure_is_still_caught_after_all_of_that(self, tool):
+        log = Path(tool.LOG_DIR) / "agent.log"
+        log.write_text(GATEWAY_LINE + self.PATCH_14_LINE + self.NGROK_LINE)
+        (_, exposed, withheld, _), = tool.survey()
+        assert exposed == 1
+        assert withheld == 1
+
+    def test_the_count_and_the_scrub_use_one_definition(self, tool, monkeypatch):
+        """A report that promises a redaction the scrubber then declines to
+        make is the same lie in the other direction."""
+        monkeypatch.setattr(tool, "gateway_is_running", lambda: False)
+        log = Path(tool.LOG_DIR) / "agent.log"
+        log.write_text(GATEWAY_LINE + self.NGROK_LINE + self.PATCH_14_LINE)
+        (_, exposed, _, _), = tool.survey()
+        ok, detail = tool.scrub(log)
+        assert ok
+        assert detail.startswith("2 field(s)")  # one line, msg and reply_to_text
+        (_, after, _, _), = tool.survey()
+        assert exposed == 1 and after == 0
+
+
 class TestWhatItRefusesToTouch:
     def test_it_will_not_rewrite_a_log_the_gateway_has_open(self, tool, monkeypatch):
         """Rewriting a file another process appends to does not shorten it, it

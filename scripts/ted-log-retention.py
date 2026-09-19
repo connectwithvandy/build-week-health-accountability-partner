@@ -57,18 +57,48 @@ _PATTERNS = tuple(
 # Already redacted, by this script or by patch 14. Counted separately so a
 # second run does not report the same lines as exposure all over again.
 _WITHHELD = re.compile(r"chars withheld")
+# The same marker as a *value*, which is the whole bug this once had. This
+# script writes `msg=<19 chars withheld>` bare, and patch 14 writes
+# `msg='<19 chars withheld>'` through %r, because the gateway formats a string.
+# The quoted one looks exactly like a user's words to the pattern above, so a
+# fully redacted log reported itself as 62 exposed lines and told you to scrub
+# what was already clean. An alarm that is always red is not an alarm.
+_WITHHELD_VALUE = re.compile(r"^<\d+ chars withheld>$")
+
+# A line in logfmt, which begins `key=value`. ~/.hermes/logs is not only
+# Hermes': ngrok writes ngrok.log there and spells its own status messages
+# `msg="starting web service"`, which is exactly what the patterns above look
+# for. Every one of its 43 lines was reported as somebody's food diary, and
+# `--scrub` with the gateway stopped would have replaced ngrok's own reasons
+# with `<30 chars withheld>`, deleting the diagnostics that exist because the
+# tunnel died silently on 19 Sep, to protect a user who was never in that file.
+#
+# Matched on the format rather than on a filename, so the next tool that drops
+# a log in here is handled without an edit, and matched per line rather than
+# per file, because a first attempt at this skipped whole files by shape and
+# would have stopped reading gateway.error.log, which is ours and does hold
+# lines worth checking. Python's logging never starts a line `key=value`: it
+# starts with a timestamp, a level, or a bracketed session id.
+_LOGFMT_LINE = re.compile(r"^\s*[a-z][\w.]*=[^\s=]")
 
 
 def redact_line(line: str) -> tuple[str, int]:
     """One log line with the user's words removed. Returns (line, how many)."""
+    if _LOGFMT_LINE.match(line):
+        return line, 0
     removed = 0
 
     def swap(match: re.Match) -> str:
         nonlocal removed
-        removed += 1
         # The repr's own quotes are not content, so the count is what the
         # person actually typed rather than how Python spelled it.
         inner = match.group(1)[1:-1]
+        if _WITHHELD_VALUE.match(inner):
+            # Already withheld. Counting it would report exposure, and
+            # rewriting it would replace the marker with a marker measuring
+            # the marker.
+            return match.group(0)
+        removed += 1
         return f"{match.group(0).split('=')[0]}=<{len(inner)} chars withheld>"
 
     for _, pattern in _PATTERNS:
@@ -110,17 +140,20 @@ def survey() -> list[tuple[Path, int, int, float]]:
     for path in sorted(LOG_DIR.iterdir()):
         if not path.is_file() or ".log" not in path.name:
             continue
+        age_days = (time.time() - path.stat().st_mtime) / 86400
         exposed = withheld = 0
         try:
             with path.open(errors="replace") as handle:
                 for line in handle:
-                    if any(pattern.search(line) for _, pattern in _PATTERNS):
+                    # One definition of exposure, shared with the scrubber, so
+                    # the count can never promise a redaction that `--scrub`
+                    # then declines to make.
+                    if redact_line(line)[1]:
                         exposed += 1
                     elif _WITHHELD.search(line):
                         withheld += 1
         except OSError:
             continue
-        age_days = (time.time() - path.stat().st_mtime) / 86400
         rows.append((path, exposed, withheld, age_days))
     return rows
 
