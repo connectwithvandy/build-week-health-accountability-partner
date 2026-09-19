@@ -1,6 +1,12 @@
 # T06 — the official WhatsApp path
 
-**Status: decided, not executed.** Every claim here was checked on 18 Sep 2026
+**Status: steps 1 and 3 executed, the app is published, 19 Sep 2026.**
+Step 1 was already done; step 3 is with Meta; the app went live at 15:01 and
+the first real webhook arrived the same minute. Business verification for
+**RKM Labs** is in review, about two working days. What is left is §7c and the
+`pre_cron_agent` wiring, which is code rather than Meta.
+
+The original framing, kept because the reasoning below is still the reasoning: Every claim here was checked on 18 Sep 2026
 against the source named beside it, or measured from this system's own data.
 Where something could not be verified it says so rather than guessing.
 
@@ -391,6 +397,38 @@ been served. Setting the allowlist also flips the policy, by the adapter's own
 `_default_dm_policy`. Now resolves to ALLOWLIST against Vandy's number only.
 Not verified end to end: no stranger has tried, and none can until the app is
 published.
+
+## 7d. The day it went live
+
+**Published 19 Sep 2026, ~15:01.** Blocked first by a missing privacy policy
+URL, which `heyted.in/privacy` already satisfied, and by two placeholder URLs
+pointing at `facebook.com`.
+
+**The first real webhook arrived the same minute:**
+
+```
+15:01:53  POST /whatsapp/webhook  200  "facebookexternalua"
+```
+
+It was not a message. It was the *delivery receipt* for the morning's test
+template to `919038897167`, which Meta had been holding because the app was
+unpublished, and released the moment it was. So Meta → tunnel → adapter is
+proved with real traffic rather than a local curl. **No inbound conversation
+has happened yet**; that is still the missing end-to-end test.
+
+**A dead tunnel, found minutes before publishing.** The callback URL answered
+`ERR_NGROK_3200` — endpoint offline. ngrok was installed and configured with no
+launchd job and nothing running, while the local adapter answered 400 the whole
+time, so no gateway log said anything was wrong. Publishing into that would
+have pointed Meta at an address that answers nobody, and Meta disables a
+webhook subscription after repeated delivery failures. `scripts/ai.ted.tunnel.plist`
+now supervises it. **A service reachable on localhost proves nothing about
+whether the outside world can reach it.**
+
+**Business verification submitted**, and it needed no document upload: the
+Udyam registration number matched Meta's records. Legal name **RKM LABS**,
+trade name **Ted** — which is the same evidence the display-name review in §7b
+will want, from the certificate itself.
 
 ## 8. What is still open
 

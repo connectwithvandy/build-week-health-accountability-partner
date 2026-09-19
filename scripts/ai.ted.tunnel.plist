@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.tunnel</string>
+
+  <!-- Carries Meta's webhooks from the public internet to the gateway.
+
+       On 19 Sep 2026, minutes before the app was to be published, the tunnel
+       was found dead:
+
+           ngrok-error-code: ERR_NGROK_3200   (endpoint offline)
+
+       The local adapter answered 400 on 127.0.0.1:8090 the whole time, so
+       nothing in the gateway's own logs said anything was wrong. Publishing
+       into that would have pointed Meta at an address that answers nobody,
+       and Meta disables a webhook subscription after repeated delivery
+       failures — so the cost is not a quiet outage, it is the subscription.
+
+       ngrok was installed and configured, with no launchd job and nothing
+       running. Same shape as the caffeinate in ai.ted.awake.plist: a command
+       somebody ran once and then had to remember forever.
+
+       The address is pinned with --url because it is registered in the app's
+       webhook settings. A changed host is a silent outage of exactly the kind
+       above. --log=stdout puts ngrok's own reasons in ~/.hermes/logs/ngrok.log
+       beside the gateway's, because "it is offline" is never the useful part.
+
+       Free-tier ngrok allows one agent session per endpoint. If this job is
+       failing with ERR_NGROK_334, something else already holds the endpoint —
+       a hand-started `ngrok http 8090` in a Terminal window is the usual
+       culprit. Stop that, do not add --pooling-enabled. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/ngrok</string>
+    <string>http</string>
+    <string>8090</string>
+    <string>--url=https://scarily-babbling-cupping.ngrok-free.dev</string>
+    <string>--log=stdout</string>
+    <string>--log-format=logfmt</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Matches the gateway's own job: back off rather than spin when ngrok is
+       failing for a reason a restart will not fix, such as a revoked token. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>LimitLoadToSessionType</key>
+  <array>
+    <string>Aqua</string>
+    <string>Background</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/vandana.agarwal</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/vandana.agarwal</string>
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ngrok.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ngrok.error.log</string>
+</dict>
+</plist>

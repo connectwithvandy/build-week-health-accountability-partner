@@ -27,9 +27,18 @@ wiring is a later patch: `pre_cron_agent` (patch 13) is the right hook and the
 right moment — before the model is paid for — but it understands `skip` and
 `allow` only, so carrying a template back needs a third action added there.
 
-**Nothing here is live.** No template has been submitted to Meta, so every
-`name` below is a draft name from `docs/T06_TEMPLATES.md`. If one comes back
-approved under a different name, this file is where that is corrected.
+**Submitted 19 Sep 2026, and still not live.** `ted_daily_review` and
+`ted_scheduled_reminder` are with Meta and *In review*, filed UTILITY, under
+exactly the names used below. `ted_quiet_check` was deliberately held back and
+is not with Meta at all. So the names here are no longer drafts for two of the
+three — but nothing is approved yet, and an approved template still sends
+nothing until the `pre_cron_agent` wiring above exists.
+
+One wording change happened at submission and is already reflected in
+`docs/T06_TEMPLATES.md`: `ted_daily_review`'s body now says *"it's the check-in
+time you set with me"*. Meta's pre-submit classifier refused the original,
+which never said the person had asked for it, and recommended Marketing. If a
+future template is pushed to Marketing, that sentence is the thing to add.
 """
 
 from __future__ import annotations
