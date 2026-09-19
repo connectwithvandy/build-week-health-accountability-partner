@@ -63,13 +63,63 @@ def test_refuses_to_invent_the_parent_block():
         raise AssertionError("missing parent block should be refused")
 
 
-def test_refuses_to_invent_whatsapp_scope():
-    try:
-        lock.replace_platform_toolsets("platform_toolsets:\n  cron:\n    - ted\n")
-    except ValueError as error:
-        assert "whatsapp" in str(error)
-    else:
-        raise AssertionError("missing WhatsApp block should be refused")
+def test_adds_a_missing_platform_block_rather_than_refusing():
+    """This used to refuse, and the refusal was the bug.
+
+    An absent platform under ``platform_toolsets`` is not an operator
+    preference to be respected. Hermes falls back to that platform's default
+    toolset, and for a WhatsApp that default is the whole core tool set. On
+    19 Sep 2026 `whatsapp_cloud` was live and absent, so it was carrying
+    terminal, files, patch and the browser on a channel open to strangers.
+    Refusing to write the block is what left it there. The parent key is still
+    never invented (see the test above): a config with no ``platform_toolsets``
+    at all is a shape we do not understand, which is different.
+    """
+    updated = lock.replace_platform_toolsets(
+        "platform_toolsets:\n  cron:\n    - ted\n", "whatsapp"
+    )
+    assert updated == (
+        "platform_toolsets:\n"
+        "  cron:\n"
+        "    - ted\n"
+        "  whatsapp:\n"
+        "    - cronjob\n"
+        "    - ted\n"
+        "    - vision\n"
+    )
+
+
+def test_adds_the_cloud_block_without_disturbing_the_baileys_one():
+    updated = lock.replace_platform_toolsets(
+        "platform_toolsets:\n"
+        "  whatsapp:\n"
+        "    - cronjob\n"
+        "    - ted\n"
+        "    - vision\n"
+        "  telegram:\n"
+        "    - hermes-telegram\n",
+        "whatsapp_cloud",
+    )
+    assert "  whatsapp:\n    - cronjob\n    - ted\n    - vision\n" in updated
+    assert "  whatsapp_cloud:\n    - cronjob\n    - ted\n    - vision\n" in updated
+    assert "  telegram:\n    - hermes-telegram\n" in updated
+
+
+def test_the_cloud_is_only_in_scope_once_it_can_reach_someone(tmp_path, monkeypatch):
+    for name in ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    env = tmp_path / "dotenv"
+
+    env.write_text("")
+    assert lock.live_whatsapp_platforms(env) == ["whatsapp"]
+
+    env.write_text("WHATSAPP_CLOUD_PHONE_NUMBER_ID=123\n")
+    assert lock.live_whatsapp_platforms(env) == ["whatsapp"]
+
+    env.write_text(
+        "WHATSAPP_CLOUD_PHONE_NUMBER_ID=123\nWHATSAPP_CLOUD_ACCESS_TOKEN=EAAx\n"
+    )
+    assert lock.live_whatsapp_platforms(env) == ["whatsapp", "whatsapp_cloud"]
 
 
 def test_marks_whatsapp_as_having_seen_every_plugin_toolset():

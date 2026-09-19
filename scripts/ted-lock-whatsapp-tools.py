@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Restrict Hermes' live WhatsApp toolset to Ted's required capabilities.
+"""Restrict every live WhatsApp toolset to Ted's required capabilities.
+
+**Every** WhatsApp, not the Baileys one. The Cloud API adapter is a second
+platform key, `whatsapp_cloud`, with its own scope, and on 19 Sep 2026 it was
+live and absent from `platform_toolsets` — so it was running on
+`hermes-whatsapp`, which is the full core tool set: terminal, files, patch and
+the browser, on a channel open to strangers. Scoping one key and not the other
+is how that happened, so this script now walks the same platform list the gate
+guard does.
 
 Two lists, not one. ``platform_toolsets.whatsapp`` decides which *built-in*
 toolsets WhatsApp carries. Plugin toolsets are resolved in a separate pass
@@ -24,12 +32,42 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import tempfile
 from pathlib import Path
 
 CONFIG = Path.home() / ".hermes" / "config.yaml"
+HERMES_ENV = Path.home() / ".hermes" / ".env"
 PLATFORM = "whatsapp"
 TOOLSETS = ("cronjob", "ted", "vision")
+
+
+def _env_set(name: str, env_path: Path = HERMES_ENV) -> bool:
+    """Whether one variable is set, in the environment or in ~/.hermes/.env."""
+    if os.environ.get(name):
+        return True
+    try:
+        text = env_path.read_text()
+    except OSError:
+        return False
+    return bool(re.search(rf"^\s*{name}\s*=\s*\S", text, re.MULTILINE))
+
+
+def live_whatsapp_platforms(env_path: Path = HERMES_ENV) -> list[str]:
+    """Every WhatsApp platform that can actually reach a person right now.
+
+    `gateway/config.py` adds `whatsapp_cloud` the moment a phone id and an
+    access token are both set; there is no enable flag. Mirroring that test
+    rather than keeping a list means a channel cannot go live unscoped, which
+    is exactly what happened before this existed. `scripts/ted-gate-guard.py`
+    asks the same question, and the two must agree.
+    """
+    platforms = [PLATFORM]
+    if _env_set("WHATSAPP_CLOUD_PHONE_NUMBER_ID", env_path) and _env_set(
+        "WHATSAPP_CLOUD_ACCESS_TOKEN", env_path
+    ):
+        platforms.append("whatsapp_cloud")
+    return platforms
 
 # Every plugin toolset installed here, as of 19 Sep 2026. Listing one marks it
 # *seen* by WhatsApp, which is what turns Hermes' "new plugin, default on" rule
@@ -53,14 +91,27 @@ def replace_platform_toolsets(
         raise ValueError("No platform_toolsets block in config.yaml") from error
 
     header = f"  {platform}:"
-    try:
-        start = next(
+    start = next(
+        (
             i
             for i in range(top + 1, len(lines))
             if lines[i].rstrip("\n") == header
-        )
-    except StopIteration as error:
-        raise ValueError(f"No {platform} block under platform_toolsets") from error
+        ),
+        None,
+    )
+
+    if start is None:
+        # An absent platform is not an absent scope. Hermes falls back to that
+        # platform's default toolset, and for a WhatsApp that default is the
+        # full core tool set, so adding the block *is* the fix rather than an
+        # error to report. Insert it at the end of platform_toolsets.
+        end_of_parent = len(lines)
+        for index in range(top + 1, len(lines)):
+            if lines[index].strip() and not lines[index][0].isspace():
+                end_of_parent = index
+                break
+        block = [f"  {platform}:\n", *(f"    - {name}\n" for name in toolsets)]
+        return "".join([*lines[:end_of_parent], *block, *lines[end_of_parent:]])
 
     end = start + 1
     while end < len(lines):
@@ -144,30 +195,51 @@ def main() -> int:
     parser.add_argument("--config", type=Path, default=CONFIG, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
+    platforms = live_whatsapp_platforms()
+
     try:
         before = args.config.read_text()
-        scoped = replace_platform_toolsets(before)
-        after = close_plugin_door(scoped)
+        text = before
+        scoped_platforms = []
+        recorded_platforms = []
+        for platform in platforms:
+            stepped = replace_platform_toolsets(text, platform)
+            if stepped != text:
+                scoped_platforms.append(platform)
+            text = stepped
+            stepped = close_plugin_door(text, platform)
+            if stepped != text:
+                recorded_platforms.append(platform)
+            text = stepped
+        after = text
     except (OSError, ValueError) as error:
         print(f"FAIL: {error}")
         return 1
 
-    tools_change = scoped != before
-    door_change = after != scoped
+    tools_change = bool(scoped_platforms)
+    door_change = bool(recorded_platforms)
+
+    print("Checking: " + ", ".join(platforms))
 
     if not tools_change and not door_change:
-        print("WhatsApp is already limited to cronjob, ted, and vision,")
-        print("and the plugins installed here are already recorded against it.")
+        print("Every live WhatsApp is already limited to cronjob, ted, and vision,")
+        print("and the plugins installed here are already recorded against each.")
         return 0
 
     if not args.apply:
         if tools_change:
-            print("Would remove broad WhatsApp tools and keep: cronjob, ted, vision.")
+            print(
+                "Would scope "
+                + ", ".join(scoped_platforms)
+                + " to cronjob, ted, vision, removing broad tools."
+            )
         if door_change:
             print(
                 "Would record "
                 + ", ".join(PLUGIN_TOOLSETS)
-                + " as seen by WhatsApp, so those two stop"
+                + " as seen by "
+                + ", ".join(recorded_platforms)
+                + ", so those two stop"
             )
             print("depending on a Hermes default. Only `ted` keeps its tools.")
             print("A plugin installed later is still unseen, and still arrives on.")
@@ -176,14 +248,20 @@ def main() -> int:
 
     atomic_write(args.config, after)
     if tools_change:
-        print("WhatsApp is now limited to cronjob, ted, and vision.")
+        print(
+            ", ".join(scoped_platforms)
+            + " is now limited to cronjob, ted, and vision."
+        )
         # Only this half changes what a live turn carries. The recording half
         # changes why a plugin is off, not which tools load, and telling
         # somebody to restart for it costs real people a real outage for a
         # resolved toolset list that is identical either way.
         print("Restart the gateway before serving another message.")
     if door_change:
-        print("WhatsApp has recorded the plugins installed here; spotify is off it")
+        print(
+            ", ".join(recorded_platforms)
+            + " has recorded the plugins installed here; spotify is off it"
+        )
         print("by decision now rather than by a Hermes default.")
         if not tools_change:
             print("No restart needed: the toolsets a turn carries are unchanged.")

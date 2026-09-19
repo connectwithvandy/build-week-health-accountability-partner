@@ -257,18 +257,62 @@ def _platform_toolsets(platform: str) -> list[str] | None:
     return None
 
 
-def unsafe_whatsapp_toolsets() -> list[str]:
+def _env_set(name: str) -> bool:
+    """Whether one variable is set, in the environment or in ~/.hermes/.env."""
+    if os.environ.get(name):
+        return True
+    try:
+        text = HERMES_ENV.read_text()
+    except OSError:
+        return False
+    return bool(re.search(rf"^\s*{name}\s*=\s*\S", text, re.MULTILINE))
+
+
+def whatsapp_platforms() -> list[str]:
+    """Every platform carrying public WhatsApp traffic that is actually live.
+
+    Checking ``whatsapp`` alone was the hole this function exists to close. The
+    Cloud API adapter is a second WhatsApp, with its own platform key and its
+    own toolset scope, and `gateway/config.py` switches it on the moment a
+    phone id and an access token are both present — there is no enable flag to
+    read. So mirror that same test rather than trusting a hand-kept list: a
+    channel that can reach users is in scope for the guard by definition.
+    """
+    platforms = ["whatsapp"]
+    if _env_set("WHATSAPP_CLOUD_PHONE_NUMBER_ID") and _env_set(
+        "WHATSAPP_CLOUD_ACCESS_TOKEN"
+    ):
+        platforms.append("whatsapp_cloud")
+    return platforms
+
+
+def unsafe_whatsapp_toolsets(platform: str = "whatsapp") -> list[str]:
     """Anything beyond Ted, reminders, and image understanding is unsafe.
 
     WhatsApp is untrusted public input. A general file, terminal, browser, or
     future power tool there turns a health conversation into access to the
     machine running it. An allowlist also makes a new Hermes tool fail closed.
+
+    An absent platform is ``<unscoped>``, not empty: Hermes falls back to that
+    platform's default toolset, and for every WhatsApp platform that default is
+    ``hermes-whatsapp``, which is the full core tool set — terminal, files,
+    patch and the browser. Silence in the config is the dangerous answer.
     """
-    toolsets = _platform_toolsets("whatsapp")
+    toolsets = _platform_toolsets(platform)
     if toolsets is None:
         config = HERMES / "config.yaml"
         return ["<unreadable>" if not config.is_file() else "<unscoped>"]
     return sorted(set(toolsets) - WHATSAPP_ALLOWED_TOOLSETS)
+
+
+def unsafe_whatsapp_toolsets_by_platform() -> dict[str, list[str]]:
+    """The unsafe toolsets on each live WhatsApp platform, worst kept first."""
+    found = {}
+    for platform in whatsapp_platforms():
+        unsafe = unsafe_whatsapp_toolsets(platform)
+        if unsafe:
+            found[platform] = unsafe
+    return found
 
 
 def _known_plugin_toolsets(platform: str) -> list[str] | None:
@@ -568,19 +612,29 @@ def main() -> int:
     else:
         report.append(_ok("Convex memory variables are set"))
 
-    unsafe_whatsapp = unsafe_whatsapp_toolsets()
-    if unsafe_whatsapp:
-        names = ", ".join(unsafe_whatsapp)
-        ungated.append(f"WhatsApp has unsafe or unscoped tool access: {names}")
+    unsafe_by_platform = unsafe_whatsapp_toolsets_by_platform()
+    checked = whatsapp_platforms()
+    if unsafe_by_platform:
+        for platform, unsafe in unsafe_by_platform.items():
+            names = ", ".join(unsafe)
+            ungated.append(
+                f"{platform} has unsafe or unscoped tool access: {names}"
+            )
+            report.append(
+                _fail(
+                    f"{platform} tool access is UNSAFE — "
+                    + names
+                    + ". Allowed: cronjob, ted, vision"
+                )
+            )
+    else:
         report.append(
-            _fail(
-                "WhatsApp tool access is UNSAFE — "
-                + names
-                + ". Allowed: cronjob, ted, vision"
+            _ok(
+                "WhatsApp is scoped to cronjob, ted, and vision ("
+                + ", ".join(checked)
+                + ")"
             )
         )
-    else:
-        report.append(_ok("WhatsApp is scoped to cronjob, ted, and vision"))
 
     plugins_unrecorded = whatsapp_plugins_unrecorded()
     if plugins_unrecorded:

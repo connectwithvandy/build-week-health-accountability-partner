@@ -184,6 +184,81 @@ def test_unreadable_config_fails_closed(guard, tmp_path, monkeypatch):
     assert guard.unsafe_whatsapp_toolsets() == ["<unreadable>"]
 
 
+# --- the Cloud API is a second WhatsApp, and the guard was blind to it ---
+#
+# On 19 Sep 2026 whatsapp_cloud was live, absent from platform_toolsets, and so
+# running on hermes-whatsapp: terminal, files, patch and the browser. The guard
+# read only the whatsapp key and said everything was fine. These tests exist so
+# that a third WhatsApp cannot repeat it.
+
+CLOUD_LIVE = (
+    "WHATSAPP_CLOUD_PHONE_NUMBER_ID=1324962557368120\n"
+    "WHATSAPP_CLOUD_ACCESS_TOKEN=EAAtoken\n"
+)
+
+
+def _env(guard, tmp_path, monkeypatch, text: str):
+    env = tmp_path / "dotenv"
+    env.write_text(text)
+    monkeypatch.setattr(guard, "HERMES_ENV", env)
+    for name in ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_cloud_is_out_of_scope_until_it_is_configured(guard, tmp_path, monkeypatch):
+    _env(guard, tmp_path, monkeypatch, "")
+    assert guard.whatsapp_platforms() == ["whatsapp"]
+
+
+def test_cloud_is_in_scope_once_phone_and_token_are_set(guard, tmp_path, monkeypatch):
+    _env(guard, tmp_path, monkeypatch, CLOUD_LIVE)
+    assert guard.whatsapp_platforms() == ["whatsapp", "whatsapp_cloud"]
+
+
+def test_cloud_needs_a_token_too_not_just_a_phone_id(guard, tmp_path, monkeypatch):
+    _env(guard, tmp_path, monkeypatch, "WHATSAPP_CLOUD_PHONE_NUMBER_ID=123\n")
+    assert guard.whatsapp_platforms() == ["whatsapp"]
+
+
+def test_live_cloud_without_a_scope_is_unsafe(guard, tmp_path, monkeypatch):
+    _config(guard, tmp_path, monkeypatch, SAFE_WHATSAPP)
+    _env(guard, tmp_path, monkeypatch, CLOUD_LIVE)
+    assert guard.unsafe_whatsapp_toolsets_by_platform() == {
+        "whatsapp_cloud": ["<unscoped>"]
+    }
+
+
+def test_scoping_the_cloud_clears_it(guard, tmp_path, monkeypatch):
+    _config(
+        guard,
+        tmp_path,
+        monkeypatch,
+        SAFE_WHATSAPP + "  whatsapp_cloud:\n    - cronjob\n    - ted\n    - vision\n",
+    )
+    _env(guard, tmp_path, monkeypatch, CLOUD_LIVE)
+    assert guard.unsafe_whatsapp_toolsets_by_platform() == {}
+
+
+def test_an_unsafe_tool_on_the_cloud_is_named(guard, tmp_path, monkeypatch):
+    _config(
+        guard,
+        tmp_path,
+        monkeypatch,
+        SAFE_WHATSAPP + "  whatsapp_cloud:\n    - ted\n    - terminal\n",
+    )
+    _env(guard, tmp_path, monkeypatch, CLOUD_LIVE)
+    assert guard.unsafe_whatsapp_toolsets_by_platform() == {
+        "whatsapp_cloud": ["terminal"]
+    }
+
+
+def test_a_dormant_cloud_does_not_fail_the_guard(guard, tmp_path, monkeypatch):
+    """No token means gateway/config.py never adds the platform, so no finding."""
+    _config(guard, tmp_path, monkeypatch, SAFE_WHATSAPP)
+    _env(guard, tmp_path, monkeypatch, "")
+    assert guard.unsafe_whatsapp_toolsets_by_platform() == {}
+
+
 def test_scoped_cron_passes(guard, tmp_path, monkeypatch):
     _config(guard, tmp_path, monkeypatch, SCOPED)
     assert guard.cron_tools_unscoped() is False
