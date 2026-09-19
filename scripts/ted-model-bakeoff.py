@@ -127,6 +127,20 @@ def _load(name: str, filename: str):
     return module
 
 
+# NOT DONE, ON PURPOSE: borrowing the keys out of Hermes.
+#
+# Hermes has public resolvers for exactly this — `auth.get_anthropic_key()` and
+# `config.get_env_value_prefer_dotenv` — and calling them would save whoever
+# runs this from finding a key. It was written, and then taken back out.
+#
+# A script whose job is to spend money on replays should not also be the thing
+# that fetches the credential to spend it with. Those are two capabilities, and
+# the safety here is that they stay apart: `--run` releases the money, and a
+# human supplies the key in the same breath. The convenience saved is one
+# environment variable; what it costs is that the repo gains a tool that can
+# pay for things by itself.
+
+
 def shortlist(need_context: int, want: int) -> list[str]:
     """The cheapest usable candidate from each family, cheapest family first.
 
@@ -499,7 +513,8 @@ def main() -> int:
         # credential store to spend money is a worse thing to have in the repo
         # than one extra step at the prompt.
         print(f"\n{' and '.join(needed)} not set, so nothing was called and")
-        print("nothing was spent. Export and re-run.")
+        print("nothing was spent. Export them on the same command that runs this;")
+        print("see the note above `main` for why this does not fetch them itself.")
         return 1
 
     print()
