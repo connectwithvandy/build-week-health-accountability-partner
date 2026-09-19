@@ -19,6 +19,7 @@ ungated; pass --check-only to report without touching anything.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -322,8 +323,77 @@ def startup_inputs() -> list[Path]:
     return paths
 
 
+def fingerprints_path() -> Path:
+    """Where the trusted fingerprints live.
+
+    A function rather than a constant because `HERMES` is redirected in tests,
+    and a constant resolved at import would have had the suite writing into the
+    real ~/.hermes/state — quietly, and only noticed later.
+    """
+    return HERMES / "state" / "ted-gate-guard-fingerprints.json"
+
+
+def _digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _trusted_fingerprints(registered: float) -> dict[str, str]:
+    """What each startup input contained when the running gateway read it.
+
+    A timestamp is the wrong question and this file learned that the hard way
+    on 19 Sep 2026, twice in one afternoon. `git checkout` rewrites every file
+    it touches, so switching branch or pulling makes mtime jump on files whose
+    contents did not change at all, and the report then says the running
+    gateway is stale when it is serving exactly what is on disk. A guard that
+    cries wolf is on its way to not being read, which is the same ending as a
+    guard that cannot see a stale process.
+
+    Only a fingerprint taken while the file was still untouched since boot is
+    trusted. That is the distinction that keeps this honest: if somebody edits
+    a file and this runs afterwards, the hash it sees is the *edited* one, and
+    recording that would bless the change instead of reporting it. Such an
+    entry is refused, and the check falls back to the timestamp, which is
+    wrong in the safe direction.
+    """
+    try:
+        stored = json.loads(fingerprints_path().read_text())
+    except (OSError, ValueError):
+        stored = {}
+    known = stored.get("hashes") or {}
+    if stored.get("registered") != registered:
+        known = {}
+
+    fresh = dict(known)
+    for path in startup_inputs():
+        key = str(path)
+        if key in fresh:
+            continue
+        try:
+            edited = path.stat().st_mtime
+        except OSError:
+            continue
+        # Untouched since the gateway read it, so what is on disk now is what
+        # it loaded, and this is worth remembering for after the next pull.
+        if edited <= registered + 5:
+            fresh[key] = _digest(path)
+
+    if fresh != known:
+        try:
+            target = fingerprints_path()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(
+                json.dumps({"registered": registered, "hashes": fresh}, indent=2)
+            )
+        except OSError:
+            pass
+    return fresh
+
+
 def stale_startup_inputs(registered: float) -> list[tuple[Path, float]]:
-    """Startup inputs edited since the running gateway last read them.
+    """Startup inputs whose contents differ from what the gateway read.
 
     Five seconds of slack, matching the registration check, because a restart
     triggered by an edit lands a moment after it.
@@ -332,15 +402,28 @@ def stale_startup_inputs(registered: float) -> list[tuple[Path, float]]:
     `config.yaml` and still unscoped in the running process, and every line of
     this report said ok. A guard that cannot see a stale process is a guard
     that will eventually be believed at the wrong moment.
+
+    The timestamp opens the question and the contents answer it. A file whose
+    mtime moved but whose bytes are unchanged is not stale: that is a checkout,
+    not an edit, and reporting it wakes somebody for nothing.
     """
+    trusted = _trusted_fingerprints(registered)
     stale = []
     for path in startup_inputs():
         try:
             edited = path.stat().st_mtime
         except OSError:
             continue
-        if edited > registered + 5:
-            stale.append((path, edited))
+        if edited <= registered + 5:
+            continue
+        known = trusted.get(str(path))
+        # No trusted fingerprint means this has never been seen unmodified
+        # since boot, so there is nothing to compare against and the timestamp
+        # stands. Reporting a stale process that is not stale costs a restart;
+        # missing one costs the thing this whole file exists to prevent.
+        if known and known == _digest(path):
+            continue
+        stale.append((path, edited))
     return sorted(stale, key=lambda item: item[1], reverse=True)
 
 

@@ -729,3 +729,98 @@ def test_the_gate_source_is_still_watched(guard, tmp_path, monkeypatch):
     assert [path.name for path, _ in guard.stale_startup_inputs(registered)] == [
         "gates.py"
     ]
+
+
+class TestACheckoutIsNotAnEdit:
+    """19 Sep 2026, twice in one afternoon.
+
+    Editing the gate source correctly reported the running gateway as stale,
+    and emailed about it. Then `git checkout main` rewrote every file in the
+    tree and reported it again, for files whose bytes had not changed at all.
+    The first was true and useful. The second was a false page, and a guard
+    that cries wolf ends the same way as one that cannot see a stale process:
+    unread at the moment it matters.
+
+    The timestamp opens the question now, and the contents answer it.
+    """
+
+    @staticmethod
+    def _bed(guard, tmp_path, monkeypatch, body: str = "platform_toolsets:\n"):
+        monkeypatch.setattr(guard, "HERMES", tmp_path)
+        monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+        monkeypatch.setattr(guard, "gate_source", lambda: None)
+        config = tmp_path / "config.yaml"
+        config.write_text(body)
+        (tmp_path / ".env").write_text("")
+        return config
+
+    def test_a_file_touched_but_unchanged_is_not_stale(
+        self, guard, tmp_path, monkeypatch
+    ):
+        config = self._bed(guard, tmp_path, monkeypatch)
+        registered = 1_000_000.0
+        _aged(config, -60, registered)
+        _aged(tmp_path / ".env", -60, registered)
+        # Seen once while untouched, which is what makes the fingerprint
+        # trustworthy.
+        assert guard.stale_startup_inputs(registered) == []
+        # Now a checkout: same bytes, new timestamp.
+        _aged(config, 60, registered)
+        assert guard.stale_startup_inputs(registered) == []
+
+    def test_a_real_edit_is_still_caught(self, guard, tmp_path, monkeypatch):
+        config = self._bed(guard, tmp_path, monkeypatch)
+        registered = 1_000_000.0
+        _aged(config, -60, registered)
+        _aged(tmp_path / ".env", -60, registered)
+        assert guard.stale_startup_inputs(registered) == []
+        config.write_text("platform_toolsets:\n  whatsapp: [ted]\n")
+        _aged(config, 60, registered)
+        assert [p.name for p, _ in guard.stale_startup_inputs(registered)] == [
+            "config.yaml"
+        ]
+
+    def test_a_file_never_seen_clean_falls_back_to_the_timestamp(
+        self, guard, tmp_path, monkeypatch
+    ):
+        """The hole this could have had. If somebody edits a file and the guard
+        first runs afterwards, the hash it sees is the edited one, and trusting
+        it would bless the change instead of reporting it. So a fingerprint is
+        only recorded while the file is still untouched since boot, and without
+        one the timestamp stands."""
+        config = self._bed(guard, tmp_path, monkeypatch)
+        registered = 1_000_000.0
+        _aged(config, 60, registered)
+        _aged(tmp_path / ".env", -60, registered)
+        assert [p.name for p, _ in guard.stale_startup_inputs(registered)] == [
+            "config.yaml"
+        ]
+
+    def test_a_restart_starts_the_fingerprints_over(
+        self, guard, tmp_path, monkeypatch
+    ):
+        """Fingerprints belong to one run of the gateway. Carrying them across
+        a restart would compare today's disk with what a dead process read."""
+        config = self._bed(guard, tmp_path, monkeypatch)
+        first = 1_000_000.0
+        _aged(config, -60, first)
+        _aged(tmp_path / ".env", -60, first)
+        assert guard.stale_startup_inputs(first) == []
+        stored = json.loads(guard.fingerprints_path().read_text())
+        assert stored["registered"] == first
+        second = 2_000_000.0
+        _aged(config, 60, second)
+        assert [p.name for p, _ in guard.stale_startup_inputs(second)] == [
+            "config.yaml"
+        ]
+
+    def test_it_never_writes_outside_the_hermes_home_it_was_given(
+        self, guard, tmp_path, monkeypatch
+    ):
+        config = self._bed(guard, tmp_path, monkeypatch)
+        registered = 1_000_000.0
+        _aged(config, -60, registered)
+        _aged(tmp_path / ".env", -60, registered)
+        guard.stale_startup_inputs(registered)
+        assert guard.fingerprints_path().is_relative_to(tmp_path)
+        assert guard.fingerprints_path().exists()
