@@ -4405,6 +4405,7 @@ def setup_gate(
     user_message: str,
     user_key: str = "",
     response_text: str = "",
+    meal_card: str | None = None,
 ) -> str | None:
     """Drive the counted five questions, from the name to the number.
 
@@ -4478,6 +4479,24 @@ def setup_gate(
         _record_setup_ask(user_key, field)
         # So the next turn knows what its answer is an answer to.
         _mark_setup_asking(user_key, field)
+        # T17: a meal logged mid-setup keeps its numbers.
+        #
+        # `_reply_then_question` runs `words_without_figures` over Ted's half,
+        # on purpose — the counted questions run before anything is known
+        # about this person, and a stray number in that gap is the failure
+        # this flow exists to prevent. A meal card is entirely numbers, so
+        # that path would gut it, and the person who just photographed their
+        # lunch would get a reaction and no food.
+        #
+        # The distinction is the one `calorie_gate` already makes with
+        # `meal_logged`: when Ted is replying about a plate the gate is about
+        # to render, "615 kcal" describes that plate and none of the target
+        # rules apply. Every other turn a figure here is a target.
+        #
+        # The caller only passes a card once an adult age is on file, which
+        # is the part that must never be relaxed for convenience.
+        if meal_card:
+            return f"{meal_card}\n\n{_setup_question(index)}"
         # Ted's own words first when he wrote any, then the counted question.
         # Deliberately not conditional on whether they answered: somebody who
         # answers "27" and adds "why do you need it?" deserves the same reply
@@ -6026,7 +6045,46 @@ def transform_response(
     # The counted five, while they are running. Above the calorie gate because
     # it owns the same fields and would otherwise ask for them in its own
     # uncounted words, breaking the "1/5" promise mid-flow.
-    counted = setup_gate(history, user_message, user_key, response_text)
+    # T17: profile completion must not block the first useful log.
+    #
+    # The meal is already being logged during setup — the tool runs, the row
+    # lands — but the card is built below this early return, so what the
+    # person saw was Ted reacting to their food and then "*1/6* how old are
+    # you?", with none of the numbers. The log happened and they could not
+    # tell.
+    #
+    # THE AGE IS THE CONDITION, AND IT IS NOT NEGOTIABLE. No calorie figure
+    # goes to somebody who has not yet said they are an adult; that is the
+    # whole reason the counted questions run before anything else and why
+    # `_reply_then_question` strips figures. `_stored_age` is the same sticky
+    # record the under-18 refusal reads, so a minor who photographs a plate
+    # gets the refusal, never a card.
+    #
+    # Before the age is known the behaviour is unchanged: the meal is still
+    # logged, and Ted's own reaction to the food still goes out above the
+    # question. What is withheld is the numbers, which is the right thing to
+    # withhold from somebody who might be fifteen.
+    setup_age = _stored_age(user_key)
+    mid_setup_card = None
+    if (
+        logged_meal
+        and not storage_failed
+        and setup_age is not None
+        and setup_age >= 18
+    ):
+        mid_setup_card = _with_meal_breakdown(
+            response_text,
+            logged_meal,
+            day_summary or {},
+            user_key,
+            meals=logged_meals,
+            unmatched=unmatched_foods,
+            sources=logged_meal_sources,
+            user_words=user_text,
+        )
+    counted = setup_gate(
+        history, user_message, user_key, response_text, meal_card=mid_setup_card
+    )
     if counted:
         return counted
     # The three steps that close onboarding, in the order they are asked:

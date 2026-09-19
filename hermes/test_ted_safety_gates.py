@@ -9373,6 +9373,112 @@ class TheCityHalfOfTheQuestionIsReadTest(unittest.TestCase):
         self.assertNotRegex(out, r"\d[ \t]*[\U0001F300-\U0001FAFF☀-➿]")
 
 
+class AMealLoggedDuringSetupKeepsItsNumbersTest(unittest.TestCase):
+    """T17: profile completion must not block the first useful log.
+
+    The meal was already being logged during the counted six — the tool ran,
+    the row landed — but the card is built after the setup gate's early
+    return, so what the person saw was Ted reacting to their food and then
+    "*1/6* how old are you?". The log happened and they could not tell.
+
+    The age is the condition and it is not negotiable. No calorie figure goes
+    to somebody who has not yet said they are an adult, which is why
+    `_reply_then_question` strips figures in the first place.
+    """
+
+    MEAL = {"calories": 220, "proteinGrams": 14}
+    DAY = {"calories": 1060, "proteinGrams": 46}
+
+    def _turn(self, name, age, **kw):
+        key = f"setup-meal-{name}"
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        self.addCleanup(gates._forget_user, key)
+        gates._mark_setup_running(key)
+        if age is not None:
+            gates._remember_age(key, age)
+        fields = {
+            "logged_meal": self.MEAL,
+            "day_summary": self.DAY,
+            "action_succeeded": True,
+        }
+        fields.update(kw)
+        return key, gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="[image received]",
+            response_text="ooh sprouts bowl 😍 nice protein",
+            user_key=key,
+            **fields,
+        )
+
+    def test_an_adult_sees_the_food_and_still_gets_the_count(self) -> None:
+        _key, out = self._turn("adult", 29)
+        self.assertIn("Calories: 220 kcal", out)
+        self.assertIn("Protein: 14g", out)
+        # The promise is the count, and it survives.
+        self.assertIn("/6", out)
+        # Food above the question, the way a person writes it.
+        self.assertLess(out.index("Calories: 220"), out.index("/6"))
+
+    def test_the_numbers_are_not_stripped_out_on_the_way(self) -> None:
+        """`_reply_then_question` runs words_without_figures and would gut
+        a card, which is exactly why this path bypasses it."""
+        _key, out = self._turn("figures", 29)
+        for figure in ("220", "14g", "1,060"):
+            self.assertIn(figure, out)
+
+    def test_an_unknown_age_gets_no_numbers(self) -> None:
+        """Unchanged, and deliberately. They might be fifteen."""
+        _key, out = self._turn("unknown", None)
+        self.assertNotIn("220", out)
+        self.assertNotIn("Calories", out)
+        self.assertIn("/6", out)
+        # The meal still logged, and Ted still reacted to it in words.
+        self.assertIn("sprouts", out)
+
+    def test_a_minor_gets_the_refusal_and_never_a_card(self) -> None:
+        """The load-bearing one."""
+        _key, out = self._turn("minor", 15)
+        self.assertEqual(out, gates.UNDER_18_REFUSAL)
+        self.assertNotIn("220", out)
+
+    def test_a_meal_that_did_not_store_shows_no_card(self) -> None:
+        _key, out = self._turn("unsaved", 29, storage_failed=True)
+        self.assertNotIn("Calories: 220 kcal", out)
+        self.assertIn("/6", out)
+
+    def test_a_turn_with_no_meal_is_unchanged(self) -> None:
+        key = "setup-meal-none"
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        self.addCleanup(gates._forget_user, key)
+        gates._mark_setup_running(key)
+        gates._remember_age(key, 29)
+        out = gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="hi",
+            response_text="hey!",
+            user_key=key,
+        )
+        self.assertIn("/6", out)
+        self.assertNotIn("Calories", out)
+
+    def test_the_count_still_advances_one_question_at_a_time(self) -> None:
+        """A card must not cost them a question or repeat one."""
+        key, first = self._turn("advance", 29)
+        self.assertIn("*2/6*", first)
+        second = gates.transform_response(
+            history=[message("assistant", DISCLOSURE_MESSAGE)],
+            user_message="[image received]",
+            response_text="another one 😍",
+            user_key=key,
+            action_succeeded=True,
+            logged_meal=self.MEAL,
+            day_summary=self.DAY,
+        )
+        self.assertIn("*2/6*", second)
+
+
 class TheNudgesQuestionIsActuallyAskedTest(unittest.TestCase):
     """19 Sep 2026. The same fault as the check-in time, one step earlier.
 
