@@ -305,6 +305,45 @@ def unsafe_whatsapp_toolsets(platform: str = "whatsapp") -> list[str]:
     return sorted(set(toolsets) - WHATSAPP_ALLOWED_TOOLSETS)
 
 
+def startup_inputs() -> list[Path]:
+    """Every file the gateway reads once, at startup, and then never again.
+
+    The gate source was the first of these and for a long time the only one
+    checked. It is not the only one. ``config.yaml`` holds `platform_toolsets`,
+    which decides the tools a turn carries, and ``.env`` decides which
+    platforms exist at all — `gateway/config.py` adds `whatsapp_cloud` from two
+    variables in it. Editing either and not restarting leaves the report green
+    over a process still serving the old answer.
+    """
+    paths = [HERMES / "config.yaml", HERMES_ENV]
+    source = gate_source()
+    if source is not None:
+        paths.insert(0, source)
+    return paths
+
+
+def stale_startup_inputs(registered: float) -> list[tuple[Path, float]]:
+    """Startup inputs edited since the running gateway last read them.
+
+    Five seconds of slack, matching the registration check, because a restart
+    triggered by an edit lands a moment after it.
+
+    This exists because of 19 Sep 2026: `whatsapp_cloud` was scoped in
+    `config.yaml` and still unscoped in the running process, and every line of
+    this report said ok. A guard that cannot see a stale process is a guard
+    that will eventually be believed at the wrong moment.
+    """
+    stale = []
+    for path in startup_inputs():
+        try:
+            edited = path.stat().st_mtime
+        except OSError:
+            continue
+        if edited > registered + 5:
+            stale.append((path, edited))
+    return sorted(stale, key=lambda item: item[1], reverse=True)
+
+
 def unsafe_whatsapp_toolsets_by_platform() -> dict[str, list[str]]:
     """The unsafe toolsets on each live WhatsApp platform, worst kept first."""
     found = {}
@@ -581,22 +620,19 @@ def main() -> int:
         when = datetime.fromtimestamp(registered).strftime("%Y-%m-%d %H:%M:%S")
         report.append(_ok(f"gates loaded in the running gateway at {when}"))
 
-    # Loaded is not the same as current. The gate source is the repo file, so
+    # Loaded is not the same as current. Every startup input is read once, so
     # an edit after the last load means the running gateway is still serving
-    # the previous version of every gate.
+    # the previous answer — the gates, the tool scope, or the platform list.
     if pid is not None and registered is not None:
-        source = gate_source()
-        if source is not None:
-            edited = source.stat().st_mtime
-            if edited > registered + 5:
-                when = datetime.fromtimestamp(edited).strftime("%Y-%m-%d %H:%M:%S")
-                report.append(
-                    _fail(
-                        f"STALE — the gate source changed at {when}, after the "
-                        "running gateway loaded it. Restart to pick it up."
-                    )
+        for path, edited in stale_startup_inputs(registered):
+            when = datetime.fromtimestamp(edited).strftime("%Y-%m-%d %H:%M:%S")
+            report.append(
+                _fail(
+                    f"STALE — {path.name} changed at {when}, after the running "
+                    "gateway read it. Restart to pick it up."
                 )
-                stale = True
+            )
+            stale = True
 
     absent = missing_env()
     if absent:
@@ -709,8 +745,9 @@ def main() -> int:
             return 3
         if stale:
             print(
-                "\nGates are on, but they are NOT the code in the repo — see the "
-                "STALE line above.\nRestart: hermes gateway restart"
+                "\nGates are on, but the running gateway is NOT reading what is on "
+                "disk — see the\nSTALE line(s) above. Restart: "
+                "launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway"
             )
             return 1
         if absent:

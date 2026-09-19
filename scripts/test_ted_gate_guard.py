@@ -607,3 +607,125 @@ def test_recording_plugins_is_not_the_same_as_closing_the_door(guard, tmp_path, 
 
     assert guard.whatsapp_plugins_unrecorded() is False
     assert "arrived-tomorrow" not in recorded
+
+
+# --- a green report over a stale process is the failure mode that fooled us ---
+#
+# On 19 Sep 2026 whatsapp_cloud was scoped in config.yaml and still unscoped in
+# the running gateway, and every line of the report said ok. The staleness
+# check covered the gate source only. It now covers every startup input.
+
+
+def _aged(path, seconds_after: float, registered: float):
+    """Give one file an mtime relative to the registration stamp."""
+    import os
+
+    os.utime(path, (registered + seconds_after, registered + seconds_after))
+
+
+def test_config_edited_after_the_gateway_read_it_is_stale(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(config, 60, registered)
+    _aged(tmp_path / ".env", -60, registered)
+
+    stale = guard.stale_startup_inputs(registered)
+    assert [path.name for path, _ in stale] == ["config.yaml"]
+
+
+def test_env_edited_after_the_gateway_read_it_is_stale(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(config, -60, registered)
+    _aged(tmp_path / ".env", 60, registered)
+
+    stale = guard.stale_startup_inputs(registered)
+    assert [path.name for path, _ in stale] == [".env"]
+
+
+def test_untouched_inputs_are_not_stale(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(config, -60, registered)
+    _aged(tmp_path / ".env", -60, registered)
+
+    assert guard.stale_startup_inputs(registered) == []
+
+
+def test_a_restart_moments_after_an_edit_is_not_stale(guard, tmp_path, monkeypatch):
+    """Five seconds of slack: the restart lands just after the edit."""
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(config, 3, registered)
+    _aged(tmp_path / ".env", -60, registered)
+
+    assert guard.stale_startup_inputs(registered) == []
+
+
+def test_a_missing_input_is_skipped_not_crashed_on(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / "gone.env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    assert guard.stale_startup_inputs(1_000_000.0) == []
+
+
+def test_the_worst_offender_is_reported_first(guard, tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    monkeypatch.setattr(guard, "gate_source", lambda: None)
+    config = tmp_path / "config.yaml"
+    config.write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(config, 30, registered)
+    _aged(tmp_path / ".env", 90, registered)
+
+    assert [path.name for path, _ in guard.stale_startup_inputs(registered)] == [
+        ".env",
+        "config.yaml",
+    ]
+
+
+def test_the_gate_source_is_still_watched(guard, tmp_path, monkeypatch):
+    """The original check must survive being generalised."""
+    monkeypatch.setattr(guard, "HERMES", tmp_path)
+    monkeypatch.setattr(guard, "HERMES_ENV", tmp_path / ".env")
+    source = tmp_path / "gates.py"
+    source.write_text("")
+    monkeypatch.setattr(guard, "gate_source", lambda: source)
+    (tmp_path / "config.yaml").write_text("platform_toolsets:\n")
+    (tmp_path / ".env").write_text("")
+
+    registered = 1_000_000.0
+    _aged(source, 60, registered)
+    _aged(tmp_path / "config.yaml", -60, registered)
+    _aged(tmp_path / ".env", -60, registered)
+
+    assert [path.name for path, _ in guard.stale_startup_inputs(registered)] == [
+        "gates.py"
+    ]
