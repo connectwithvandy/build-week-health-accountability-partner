@@ -44,8 +44,11 @@ import sys
 import time
 from pathlib import Path
 
+import ted_error_ledger
+
 HERMES = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 LOG_DIR = HERMES / "logs"
+ERROR_LEDGER = HERMES / "state" / "ted-error-ledger.json"
 
 # Both halves of what Hermes logged: the gateway's inbound line and the agent's
 # turn line both render the text with %r, so it arrives as a Python repr. The
@@ -283,6 +286,17 @@ def main() -> int:
     if args.install:
         return install()
 
+    # First, and above every early return below. A failed-and-retried API
+    # call leaves no trace anywhere but this log, so the retention rule in
+    # this same file is also a deletion of T12's error rate unless the count
+    # is kept first. A date and a number, never the line: see
+    # ted_error_ledger.
+    #
+    # It ran below the `--scrub` early return for one commit, which meant the
+    # default invocation — the one launchd actually makes — never reached it.
+    # The job would have exited 0 every morning having kept nothing.
+    rolled = ted_error_ledger.update(LOG_DIR, ERROR_LEDGER)
+
     rows = survey()
     if not rows:
         print(f"No logs under {LOG_DIR}.")
@@ -297,6 +311,11 @@ def main() -> int:
         if withheld:
             state += f", {withheld} already withheld"
         print(f"  {path.name:<28} {state}, {age:.1f} days old")
+
+    if rolled["new_days"] or rolled["raised_days"]:
+        print(f"\n  Error ledger: {len(rolled['new_days'])} new day(s), "
+              f"{len(rolled['raised_days'])} updated, "
+              f"{len(rolled['days'])} day(s) kept in total.")
 
     if not args.scrub:
         print(f"\n  {total} line(s) hold a user's words.")

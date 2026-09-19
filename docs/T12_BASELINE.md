@@ -77,11 +77,24 @@ a disconnect, not a queue fault.
 
 ## 3. What it cannot answer, stated rather than implied
 
-- **The error rate has no durable source.** A failed API call is retried and
-  the retry succeeds, so nothing in the database records that it happened. The
-  number comes from `agent.log`, which rotates. When it does, that column goes
-  blank for the rotated days. The report says so when the log does not reach
-  the start of the window rather than printing a flattering zero.
+- ~~**The error rate has no durable source.**~~ **Closed 19 Sep 2026.** A
+  failed API call is retried and the retry succeeds, so nothing in the
+  database records that it happened, and the only evidence is a line in
+  `agent.log`. That was "the log might have rotated" until `ai.ted.logs`
+  began pruning at 30 days the same day, which made it a scheduled deletion.
+  `ted-log-retention.py` now rolls the per-day totals into
+  `~/.hermes/state/ted-error-ledger.json` **before** it prunes — the thing
+  that destroys the evidence keeps the summary, so the two cannot drift and
+  there is no fourth timer to install. A date and a count, never the line: a
+  failure line can carry a prompt fragment. The count never revises
+  downward, because re-reading a rotated log finds fewer. First run kept 17
+  days, back to 30 Aug. The report still says so when neither source reaches
+  the start of the window.
+- **The first day of any window has no error rate**, and prints `-`. The
+  cutoff is a timestamp and lands mid-morning, so `calls` holds part of that
+  day while a failure count is per calendar day. The skew is not new; it hid
+  inside a plausible number until the ledger pushed 12 Sep to "179%", which
+  is the same error saying so out loud.
 - **Latency is wall-clock from the person's message to Ted's reply.** It
   includes queueing, tool calls, vision, and retries. It is what the person
   experienced, which is the right thing to baseline, but it is not a model

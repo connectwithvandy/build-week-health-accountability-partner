@@ -65,9 +65,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import ted_error_ledger
+
 HERMES = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 STATE_DB = HERMES / "state.db"
 LOGS = HERMES / "logs"
+ERROR_LEDGER = HERMES / "state" / "ted-error-ledger.json"
 
 DEFAULT_DAYS = 7
 
@@ -205,25 +208,38 @@ def people(db: sqlite3.Connection, cutoff: float) -> dict:
 
 
 def failures(cutoff: float) -> tuple[dict, bool]:
-    """Failed API attempts per day, and whether the log even covers the window."""
-    by_day: dict[str, int] = defaultdict(int)
+    """Failed API attempts per day, and whether anything covers the window.
+
+    Two sources, the larger count per day winning. The live logs are the only
+    place a failure is ever written, and `ted-error-ledger.json` is where
+    `ted-log-retention.py` copies the daily totals before it prunes — which
+    it does at 30 days, so the log alone was a source with a deletion date.
+    See `ted_error_ledger` for why the count never revises downward.
+
+    The ledger is not trusted over the logs, it is merged with them: it is
+    derived from the same lines, so a day still in the log reads the same
+    from both, and a day only in the log is one the ledger has not run over
+    yet.
+    """
     first_day = day_of(cutoff)
+    counts: dict[str, int] = {}
     earliest = None
-    for name in ("agent.log.1", "agent.log"):
-        path = LOGS / name
-        if not path.is_file():
-            continue
-        for line in path.read_text(errors="ignore").splitlines():
-            match = _FAILURE.match(line)
-            if not match:
-                continue
-            day = match.group(1)
-            earliest = min(earliest or day, day)
-            # Outside the window is not zero traffic, it is a different
-            # question. Letting it through added empty rows for days the rest
-            # of the report knows nothing about.
-            if day >= first_day:
-                by_day[day] += 1
+
+    for day, count in ted_error_ledger.read(ERROR_LEDGER).items():
+        earliest = min(earliest or day, day)
+        if day >= first_day:
+            counts[day] = max(counts.get(day, 0), count)
+
+    for day, count in ted_error_ledger.scan(LOGS).items():
+        earliest = min(earliest or day, day)
+        # Outside the window is not zero traffic, it is a different
+        # question. Letting it through added empty rows for days the rest
+        # of the report knows nothing about.
+        if day >= first_day:
+            counts[day] = max(counts.get(day, 0), count)
+
+    by_day: dict[str, int] = defaultdict(int)
+    by_day.update(counts)
     covered = bool(earliest) and earliest <= first_day
     return by_day, covered
 
@@ -231,6 +247,7 @@ def failures(cutoff: float) -> tuple[dict, bool]:
 def build(days: int) -> dict:
     db = connect()
     cutoff = (datetime.now() - timedelta(days=days)).timestamp()
+    first_day = day_of(cutoff)
 
     waits, slow = latencies(db, cutoff)
     spend = usage(db, cutoff)
@@ -277,7 +294,18 @@ def build(days: int) -> dict:
             "fallback_rate": (
                 round(money.get("fallback_calls", 0) / calls, 3) if calls else None
             ),
-            "error_rate": round(failed.get(day, 0) / calls, 3) if calls else None,
+            # Blank on the window's first day, always. The cutoff is a
+            # timestamp and lands mid-morning, so `calls` holds part of that
+            # day while a failure count is per calendar day — there is no
+            # time of day in either the log roll-up or this sum to trim it
+            # with. The mismatch is not new; it used to hide inside a
+            # plausible-looking number, and reading the ledger pushed 12 Sep
+            # to "179%", which is the same error saying so out loud.
+            "error_rate": (
+                None
+                if day == first_day
+                else round(failed.get(day, 0) / calls, 3) if calls else None
+            ),
             "delivery_rate": round(post["delivered"] / outbound, 3) if outbound else None,
         })
 
@@ -323,9 +351,10 @@ def render(report: dict) -> None:
     if not report["log_covers_window"]:
         print(
             "\n  note: agent.log does not reach the start of this window, so the "
-            "error rate\n  for the earliest day(s) reads low. The log is the only "
-            "record of a failed\n  call that was retried successfully — nothing "
-            "durable keeps it."
+            "error rate\n  for the earliest day(s) reads low, and the error "
+            "ledger does not reach back\n  that far either. The ledger keeps "
+            "every day it has seen since 19 Sep 2026;\n  days before it existed "
+            "are only covered while the log still holds them."
         )
 
     if report["slowest"]:

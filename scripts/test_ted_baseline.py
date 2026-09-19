@@ -10,9 +10,11 @@ days from outside the window arriving as rows of zeros.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -52,6 +54,11 @@ def db(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(baseline, "STATE_DB", path)
     monkeypatch.setattr(baseline, "LOGS", tmp_path / "logs")
+    # The error ledger is a second source for the same column, added 19 Sep
+    # 2026. Left unpatched, every test here would read the live ledger in
+    # ~/.hermes and pass or fail according to this laptop's real history —
+    # which is what conftest.py exists to prevent for the gate.
+    monkeypatch.setattr(baseline, "ERROR_LEDGER", tmp_path / "ted-error-ledger.json")
     return sqlite3.connect(path)
 
 
@@ -194,3 +201,27 @@ def test_a_short_log_is_flagged_rather_than_read_as_no_errors(db, tmp_path):
     (logs / "agent.log").write_text("nothing useful here\n")
     _turn(db, "s1", NOW - 3600, NOW - 3590)
     assert baseline.build(7)["log_covers_window"] is False
+
+
+def test_the_ledger_carries_the_error_rate_after_the_log_is_pruned(db, tmp_path):
+    """T12's gap, closed. The log is gone and the number survives.
+
+    `ai.ted.logs` deletes rotated logs at 30 days, so this is not a
+    hypothetical about rotation any more: it is the scheduled state.
+    """
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "agent.log").write_text("nothing useful here\n")
+
+    day = datetime.fromtimestamp(NOW - 3600).strftime("%Y-%m-%d")
+    # It has to reach the start of the window to count as covering it, which
+    # is the same test the log had to pass.
+    start = datetime.fromtimestamp(NOW - 2 * 86400).strftime("%Y-%m-%d")
+    (tmp_path / "ted-error-ledger.json").write_text(
+        json.dumps({"days": {start: 2, day: 7}}), encoding="utf-8"
+    )
+    _turn(db, "s1", NOW - 3600, NOW - 3590)
+
+    report = baseline.build(2)
+    assert report["log_covers_window"] is True
+    assert baseline.failures(NOW - 2 * 86400)[0][day] == 7
