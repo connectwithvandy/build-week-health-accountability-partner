@@ -9506,6 +9506,37 @@ class TheNudgesQuestionIsActuallyAskedTest(unittest.TestCase):
         key = self._ready("target", target_state="asking")
         self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
 
+    def test_a_person_who_answers_nothing_is_never_asked_forever(self) -> None:
+        """The worry this answers: the check-in question now waits behind the
+        nudges question, so a nudges question that never closed would hold
+        the one after it shut for good.
+
+        It cannot. Each cap is spent by asks that really went out, and a
+        question past its cap stops owning the turn. Forty turns of somebody
+        answering neither, in the order the call site runs them.
+        """
+        key = self._ready("silent")
+        asked: list[str] = []
+        for _ in range(40):
+            reply = gates.picks_gate("hmm", key, response_text="sure.")
+            if reply is None:
+                reply = gates.review_time_gate("sure.", "hmm", key)
+            if reply is not None:
+                asked.append(reply)
+        self.assertEqual(asked.count(gates.PICKS_QUESTION), gates._MAX_PICKS_ASKS)
+        self.assertEqual(
+            asked.count(gates.REVIEW_TIME_QUESTION), gates._MAX_REVIEW_TIME_ASKS
+        )
+        # Six questions across forty turns, and in the designed order: the
+        # nudges are settled before the check-in time is raised.
+        self.assertEqual(len(asked), 6)
+        self.assertEqual(
+            asked, [gates.PICKS_QUESTION] * 3 + [gates.REVIEW_TIME_QUESTION] * 3
+        )
+        # And then Ted is simply talking again, for good.
+        self.assertIsNone(gates.picks_gate("hmm", key, response_text="sure."))
+        self.assertIsNone(gates.review_time_gate("sure.", "hmm", key))
+
     def test_it_never_arrives_instead_of_a_meal_card(self) -> None:
         """Both onboarding questions replace Ted's whole reply, and the card
         is built after them, so asking on a meal turn deletes the food.
