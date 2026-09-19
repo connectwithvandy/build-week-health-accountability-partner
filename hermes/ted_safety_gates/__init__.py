@@ -5331,6 +5331,65 @@ def _is_machine_talk(text: str) -> bool:
     return bool(_MACHINE_TALK.search((text or "").strip()))
 
 
+def drop_machine_talk(text: str) -> str:
+    """The reply with any sentence about the machine removed, or "" if that was
+    all of it.
+
+    Surgical on purpose, and separate from `strip_assistant_speak`, because the
+    two are needed in different places. `strip_assistant_speak` is the chat
+    path's last-mile gate and does four other jobs besides this one; there are
+    two paths that return **before** it ever runs, and machine talk has to die
+    on those too:
+
+      * `_cron_reminder_gate` ends in `return None`, which means "send what the
+        model wrote". That is the path the whole problem was found on — a
+        candidate model answering a supplement reminder with a paragraph about
+        the WhatsApp Business API — so a fix that missed it would have fixed
+        everything except the place it came from.
+      * the meal-card branch of `transform_response` returns
+        `_with_meal_breakdown(...)` directly. The real 8 Sep break ("I can't
+        send a formatted breakdown like that") was a reply about a meal.
+
+    Returning "" rather than the original is the difference that matters. Every
+    other thing `strip_assistant_speak` removes is packaging, so an emptied
+    message is better sent over-polished than not at all. This one is not
+    packaging, and each caller has a better answer than the original: the card
+    still carries the numbers, and a cron send can simply not happen.
+    """
+    kept: list[str] = []
+    for line in (text or "").splitlines():
+        if not line.strip():
+            # A blank line is Ted's paragraph break, not something to tidy.
+            # The first version of this rebuilt the message from its non-empty
+            # lines and silently collapsed every "\n\n" to "\n": swept over the
+            # corpus it altered 246 of 3,014 drafts, and 243 of those were
+            # nothing but lost paragraph breaks in replies that contained no
+            # machine talk at all. On WhatsApp that is a visible change to how
+            # a message reads, made by a gate that is supposed to remove one
+            # kind of sentence and touch nothing else.
+            kept.append("")
+            continue
+        # A line with nothing to remove is returned exactly as it was. Rebuilt
+        # instead, this re-joined every line from its sentences and quietly
+        # normalised indentation and trailing spaces: 151 of 3,014 drafts came
+        # back changed, and only 3 of those had any machine talk in them. A
+        # gate that reformats 151 clean messages to fix 3 is doing a second job
+        # nobody asked for, and the second job is the one that breaks a meal
+        # card's indented rows.
+        parts = re.split(r"(?<=[.!?])\s+", line.strip())
+        if not any(_is_machine_talk(sentence) for sentence in parts):
+            kept.append(line)
+            continue
+        joined = " ".join(
+            sentence
+            for sentence in parts
+            if sentence.strip() and not _is_machine_talk(sentence)
+        ).strip()
+        if joined:
+            kept.append(joined)
+    return "\n".join(kept).strip()
+
+
 def _is_internal_note(text: str) -> bool:
     """A sentence or line that is Ted talking about the user, or about himself.
 
@@ -5760,7 +5819,15 @@ def _with_meal_breakdown(
         note = _counted_note(meals or [meal], sources, user_words)
     if note:
         block = f"{block}\n\n{note}"
-    words = _without_portion_question(words_without_figures(reply))
+    # Machine talk goes before the figures do. This branch returns straight to
+    # the user without passing `strip_assistant_speak`, and the real 8 Sep 2026
+    # break — "I can't send a formatted breakdown like that, my numbers just
+    # show up under my message automatically" — was a reply about a meal, on
+    # this exact path. If it takes the whole sentence, the card below still
+    # carries the numbers, which is the half that was ever load-bearing.
+    words = _without_portion_question(
+        words_without_figures(drop_machine_talk(reply))
+    )
     # The food is named exactly once. If Ted already named it, Ted's version
     # wins: "ooh cheela and ketchup" carries warmth that "besan/moong dal
     # cheela (2-3 pieces) and ketchup" does not. Matched on words rather than
@@ -8709,6 +8776,29 @@ def _cron_reminder_gate(**kwargs: Any) -> str | None:
         # can never take more than the send it is about.
         _release_reminder(user_key, delivery_id, "suppressed")
         return CRON_SILENT
+    # Machine talk, on the path where it was first seen. The T15 bakeoff caught
+    # a candidate model answering a supplement reminder with a paragraph about
+    # the WhatsApp Business API, and this function ends in `return None`, which
+    # means "send what the model wrote". `strip_assistant_speak` is the chat
+    # gate for this and a cron reply never reaches it.
+    if _is_machine_talk(response_text):
+        spoken = drop_machine_talk(response_text)
+        if not spoken:
+            # Nothing left. A missed nudge costs the user one ping; a paragraph
+            # about the gateway costs them their belief that Ted is a person.
+            # Suppressed the same way a stray calorie number is, and the send
+            # is given back by id so this can never take more than its own.
+            LOGGER.warning(
+                "ted_reminder_machine_talk_suppressed user_key=%s", user_key
+            )
+            _release_reminder(user_key, delivery_id, "machine_talk")
+            return CRON_SILENT
+        LOGGER.warning(
+            "ted_reminder_machine_talk_stripped user_key=%s text=%r",
+            user_key,
+            response_text[:200],
+        )
+        return spoken
     return None
 
 

@@ -11668,3 +11668,46 @@ class TestTedNeverTalksAboutTheMachine(unittest.TestCase):
         ):
             with self.subTest(said=said):
                 self.assertEqual(gates.strip_assistant_speak(said), said)
+
+
+class TestMachineTalkOnThePathsThatSkipTheLastMileGate(unittest.TestCase):
+    """`strip_assistant_speak` is the chat path's final gate, and two paths
+    return before it ever runs. Both had to be closed separately, and the cron
+    one is where the problem was found in the first place."""
+
+    def test_drop_machine_talk_leaves_a_clean_line_byte_identical(self) -> None:
+        """A gate with nothing to remove must change nothing at all.
+
+        The first version rebuilt each line from its sentences and quietly
+        normalised indentation and trailing spaces: 151 of 3,014 drafts came
+        back altered and only 3 had any machine talk in them.
+        """
+        for said in (
+            "Breakdown:\n  - Roti\n  - Dal",
+            "Thanks, Vandy.\n\nNext up, what's your age?",
+            "sahi pakda yaar \U0001f605  \nab whole wheat pakka",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.drop_machine_talk(said), said.strip())
+
+    def test_it_returns_empty_when_that_was_the_whole_message(self) -> None:
+        """Unlike `strip_assistant_speak`, which passes the original through.
+        Each caller here has a better answer than sending the original."""
+        self.assertEqual(
+            gates.drop_machine_talk("I can't access your meal pictures directly."),
+            "",
+        )
+
+    def test_the_meal_card_keeps_its_numbers_when_the_words_go(self) -> None:
+        """The 8 Sep break was a reply about a meal, and the meal branch
+        returns `_with_meal_breakdown(...)` without passing the last-mile gate.
+        If the sentence goes entirely, the card underneath still carries the
+        figures, which is the half that was ever load-bearing."""
+        out = gates._with_meal_breakdown(
+            "I can't send a formatted breakdown like that.",
+            {"calories": 420, "proteinGrams": 20},
+            {"calories": 420, "proteinGrams": 20},
+            "whatsapp:test-user",
+        )
+        self.assertNotIn("I can't send", out)
+        self.assertIn("420", out)
