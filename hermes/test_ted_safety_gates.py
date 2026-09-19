@@ -9373,6 +9373,134 @@ class TheCityHalfOfTheQuestionIsReadTest(unittest.TestCase):
         self.assertNotRegex(out, r"\d[ \t]*[\U0001F300-\U0001FAFF☀-➿]")
 
 
+class EveryTargetSaysWhereItCameFromTest(unittest.TestCase):
+    """T18: "any calculated target is traceable to inputs/formula/version and
+    explicit user choice."
+
+    `tracking_kcal` alone cannot answer that. Age, weight and activity all
+    change, so three months and four kilos later the stored number and the
+    stored profile disagree and nothing knows which one moved — or whether
+    the person ever agreed to the number at all.
+    """
+
+    def _ready(self, name: str, **extra) -> str:
+        key = f"provenance-{name}"
+        self.addCleanup(gates._forget_user, key)
+        fields = {
+            "setup": "done", "profile_summary": "agreed",
+            "age": 32, "sex": "male", "height_cm": 160.0, "weight_kg": 75.0,
+            "activity": "sedentary", "goal": "gainWeight",
+            "target_state": "asking",
+            "target_lower": 2100, "target_maintenance": 1910,
+        }
+        fields.update(extra)
+        gates._update_onboarding(key, **fields)
+        return key
+
+    def _settle(self, name: str, reply: str) -> dict:
+        key = self._ready(name)
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            gates.target_choice_gate(reply, key)
+        return gates._onboarding(key).get("target_provenance") or {}
+
+    def test_a_number_they_named_is_recorded_as_chosen(self) -> None:
+        prov = self._settle("chosen", "2100")
+        self.assertEqual(prov["source"], "chosen")
+        self.assertEqual(prov["kcal"], 2100)
+
+    def test_the_safe_default_is_recorded_as_a_default(self) -> None:
+        """It is not a choice and must never read as one."""
+        prov = self._settle("defaulted", "do it")
+        self.assertEqual(prov["source"], "maintenance_default")
+        self.assertEqual(prov["kcal"], 1910)
+
+    def test_moving_on_without_answering_is_also_a_default(self) -> None:
+        prov = self._settle("movedon", "ate a lot today")
+        self.assertEqual(prov["source"], "maintenance_default")
+
+    def test_a_goal_with_no_second_number_says_so(self) -> None:
+        """The payoff runs straight to the nudges, and that is its own source."""
+        key = "provenance-nochoice"
+        self.addCleanup(gates._forget_user, key)
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        profile = gates.CalorieProfile(
+            age=32, height_cm=160.0, weight_kg=75.0, sex="male",
+            activity="sedentary", goal="maintainWeight",
+        )
+        gates._update_onboarding(
+            key, age=32, sex="male", height_cm=160.0, weight_kg=75.0,
+            activity="sedentary", goal="maintainWeight",
+        )
+        gates._arm_picks_question(
+            key,
+            tracking_kcal=gates._estimated_maintenance(profile),
+            target_provenance=gates._target_provenance(
+                key, "no_choice_offered", gates._estimated_maintenance(profile)
+            ),
+        )
+        prov = gates._onboarding(key)["target_provenance"]
+        self.assertEqual(prov["source"], "no_choice_offered")
+
+    def test_the_inputs_are_snapshotted_not_referenced(self) -> None:
+        """The whole point. A later weight must not rewrite the old target."""
+        key = self._ready("snapshot")
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            gates.target_choice_gate("2100", key)
+        gates._update_onboarding(key, weight_kg=81.0)
+        prov = gates._onboarding(key)["target_provenance"]
+        self.assertEqual(prov["inputs"]["weight_kg"], 75.0)
+        self.assertEqual(gates._onboarding(key)["weight_kg"], 81.0)
+
+    def test_every_input_the_formula_uses_is_recorded(self) -> None:
+        prov = self._settle("inputs", "2100")
+        self.assertEqual(
+            set(prov["inputs"]),
+            {"age", "sex", "height_cm", "weight_kg", "activity", "goal"},
+        )
+
+    def test_the_confirmation_time_is_recorded(self) -> None:
+        before = time.time()
+        prov = self._settle("when", "2100")
+        self.assertGreaterEqual(prov["confirmed_at"], before)
+
+    def test_nothing_is_recorded_before_a_target_is_settled(self) -> None:
+        key = self._ready("unsettled")
+        self.assertIsNone(gates._onboarding(key).get("target_provenance"))
+
+    def test_the_version_cannot_drift_from_the_arithmetic(self) -> None:
+        """One documented formula, and a version that has to move with it.
+
+        These numbers are Mifflin-St Jeor with the file's own activity
+        factors and its rounding. Change a factor, the rounding, or the sex
+        adjustment and this fails — at which point
+        `MAINTENANCE_FORMULA_VERSION` has to be reconsidered in the same
+        edit, which is the only thing that keeps a saved version honest.
+        """
+        cases = (
+            (("male", "sedentary", 32, 160.0, 75.0), 1910),
+            (("female", "sedentary", 32, 160.0, 75.0), 1710),
+            (("male", "very active", 32, 160.0, 75.0), 3030),
+        )
+        for (sex, activity, age, cm, kg), expected in cases:
+            with self.subTest(sex=sex, activity=activity):
+                profile = gates.CalorieProfile(
+                    age=age, height_cm=cm, weight_kg=kg, sex=sex,
+                    activity=activity, goal="maintainWeight",
+                )
+                self.assertEqual(gates._estimated_maintenance(profile), expected)
+        self.assertEqual(
+            gates.MAINTENANCE_FORMULA_VERSION,
+            "mifflin-st-jeor/activity-v1/round10",
+        )
+
+    def test_the_version_is_saved_with_the_target(self) -> None:
+        prov = self._settle("version", "2100")
+        self.assertEqual(
+            prov["formula_version"], gates.MAINTENANCE_FORMULA_VERSION
+        )
+
+
 class AMealLoggedDuringSetupKeepsItsNumbersTest(unittest.TestCase):
     """T17: profile completion must not block the first useful log.
 

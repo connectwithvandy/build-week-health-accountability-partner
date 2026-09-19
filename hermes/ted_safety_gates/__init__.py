@@ -4021,6 +4021,54 @@ def _missing_profile_reply(profile: CalorieProfile) -> str | None:
     return None
 
 
+# T18 asks for "one documented maintenance-calorie formula/version" and for
+# the version to be saved with every target. The string lives here, beside
+# the arithmetic it names, so the two cannot drift: change a factor or the
+# rounding and this line has to change in the same edit or the test below
+# fails.
+#
+# mifflin-st-jeor: 10*kg + 6.25*cm - 5*age, +5 male / -161 female.
+# activity-v1:     the five factors in `_estimated_maintenance`.
+# round10:         to the nearest 10 kcal, which is what Ted says out loud.
+MAINTENANCE_FORMULA_VERSION = "mifflin-st-jeor/activity-v1/round10"
+
+
+def _target_provenance(user_key: str, source: str, kcal: int) -> dict:
+    """Everything needed to explain a target later, snapshotted now.
+
+    T18's definition of done: "any calculated target is traceable to
+    inputs/formula/version and explicit user choice."
+
+    The inputs are copied rather than referenced on purpose. Age, weight and
+    activity all change, and `maintenance_kcal` alone cannot say what it was
+    computed from — three months and four kilos later the stored number and
+    the stored profile disagree and nothing knows which moved. A snapshot at
+    the moment of agreement is the only thing that stays true.
+
+    `source` is how the number was arrived at, and it is the field that
+    answers "did the user actually choose this":
+
+        chosen              they named one of the two numbers
+        maintenance_default the choice was offered and not answered, so the
+                            safe number was taken and said out loud
+        no_choice_offered   their goal has no second number to offer
+    """
+    record = _onboarding(user_key)
+    return {
+        "kcal": int(kcal),
+        "source": source,
+        "formula_version": MAINTENANCE_FORMULA_VERSION,
+        "confirmed_at": time.time(),
+        # Read from the gate's own record rather than a CalorieProfile,
+        # because two of the three places a target is settled do not have one
+        # — and the record is what the number was actually computed from.
+        "inputs": {
+            name: record.get(name)
+            for name in ("age", "sex", "height_cm", "weight_kg", "activity", "goal")
+        },
+    }
+
+
 def _estimated_maintenance(profile: CalorieProfile) -> int:
     assert profile.age is not None
     assert profile.height_cm is not None
@@ -4581,7 +4629,13 @@ def setup_gate(
         )
     else:
         # No choice to make, so the payoff ran straight on to the nudges.
-        _arm_picks_question(user_key, tracking_kcal=maintenance)
+        _arm_picks_question(
+            user_key,
+            tracking_kcal=maintenance,
+            target_provenance=_target_provenance(
+                user_key, "no_choice_offered", maintenance
+            ),
+        )
     LOGGER.info("ted_setup_complete user_key=%s", user_key)
     return _setup_payoff(profile)
 
@@ -6757,6 +6811,9 @@ def target_choice_gate(
             user_key,
             tracking_kcal=maintenance,
             target_state="done",
+            target_provenance=_target_provenance(
+                user_key, "maintenance_default", maintenance
+            ),
         )
         LOGGER.info("ted_target_unanswered user_key=%s", user_key)
         # Said out loud when they were trying to answer, and only then.
@@ -6784,7 +6841,12 @@ def target_choice_gate(
             f"one.\n\n{PICKS_QUESTION}"
         )
 
-    _update_onboarding(user_key, tracking_kcal=chosen, target_state="done")
+    _update_onboarding(
+        user_key,
+        tracking_kcal=chosen,
+        target_state="done",
+        target_provenance=_target_provenance(user_key, "chosen", chosen),
+    )
     _arm_picks_question(user_key)
     # And into Convex, which is the other half of the same fact.
     #
