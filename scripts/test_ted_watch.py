@@ -1260,6 +1260,131 @@ class TestCheckJobs:
         assert "Iron" not in detail and "29mg" not in detail
 
 
+class TestTheFallbackCanStillPay:
+    """`check_credit`. The one check here that reads a number before it breaks.
+
+    Every other check in the watcher reads a failure that has already reached
+    somebody. This one exists because of 4 Sep 2026, when OpenRouter answered
+    402 on the primary model and on the fallback within the same minute, three
+    people got silence, and two of them never wrote again. By the time a log
+    says 402 the damage is done, so this is the alarm that has to be early.
+    """
+
+    @staticmethod
+    def _balance(watch, monkeypatch, granted, used):
+        """The provider's own answer, without touching the network."""
+        import io
+
+        class _Response(io.StringIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake(request, timeout=None):
+            payload = {"data": {"total_credits": granted, "total_usage": used}}
+            return _Response(json.dumps(payload))
+
+        monkeypatch.setattr(watch, "setting", lambda name: "a-key")
+        monkeypatch.setattr(watch.urllib.request, "urlopen", fake)
+
+    def test_a_healthy_balance_with_a_measured_burn_is_quiet(
+        self, watch, monkeypatch
+    ):
+        self._balance(watch, monkeypatch, granted=30.0, used=5.0)
+        # Six hours ago the counter read 4.00, so $1 has gone in six hours:
+        # $4 a day against $25 left, which is comfortable.
+        state = {
+            "credit_anchor_usage": 4.0,
+            "credit_anchor_at": watch.time.time() - 6 * 3600,
+        }
+        ok, detail = watch.check_credit(state)
+        assert ok is True
+        assert "$25.00" in detail
+
+    def test_days_of_cover_not_dollars_is_what_alarms(self, watch, monkeypatch):
+        # $8 is over the dollar floor and is still two days of cover. A check
+        # that only looked at the balance would say this was fine.
+        self._balance(watch, monkeypatch, granted=30.0, used=22.0)
+        state = {
+            "credit_anchor_usage": 21.0,
+            "credit_anchor_at": watch.time.time() - 6 * 3600,
+        }
+        ok, detail = watch.check_credit(state)
+        assert ok is False
+        assert "$8.00" in detail
+        assert "day" in detail
+
+    def test_an_empty_balance_alarms_before_any_burn_is_known(
+        self, watch, monkeypatch
+    ):
+        self._balance(watch, monkeypatch, granted=30.0, used=29.0)
+        state = {}
+        ok, detail = watch.check_credit(state)
+        assert ok is False
+        assert "$1.00" in detail
+
+    def test_a_first_run_anchors_the_burn_instead_of_guessing_it(
+        self, watch, monkeypatch
+    ):
+        self._balance(watch, monkeypatch, granted=30.0, used=6.0)
+        state = {}
+        ok, detail = watch.check_credit(state)
+        assert ok is True
+        assert "not measured yet" in detail
+        assert state["credit_anchor_usage"] == 6.0
+
+    def test_a_window_under_two_hours_is_noise_not_a_burn_rate(
+        self, watch, monkeypatch
+    ):
+        # One dollar in ten minutes is $144 a day if you believe it. Nobody
+        # should be woken for an extrapolation that wide.
+        self._balance(watch, monkeypatch, granted=30.0, used=7.0)
+        state = {
+            "credit_anchor_usage": 6.0,
+            "credit_anchor_at": watch.time.time() - 600,
+        }
+        ok, detail = watch.check_credit(state)
+        assert ok is True
+        assert "not measured yet" in detail
+
+    def test_a_top_up_reads_as_a_reset_not_as_infinite_runway(
+        self, watch, monkeypatch
+    ):
+        # A top-up moves the counter backwards. Believed as a burn rate it is
+        # negative, which divides into a runway of forever.
+        self._balance(watch, monkeypatch, granted=60.0, used=2.0)
+        state = {
+            "credit_anchor_usage": 25.0,
+            "credit_anchor_at": watch.time.time() - 6 * 3600,
+        }
+        ok, detail = watch.check_credit(state)
+        assert ok is True
+        assert state["credit_anchor_usage"] == 2.0
+
+    def test_an_unreachable_provider_is_not_an_unpaid_bill(
+        self, watch, monkeypatch
+    ):
+        monkeypatch.setattr(watch, "setting", lambda name: "a-key")
+
+        def unreachable(request, timeout=None):
+            raise watch.urllib.error.URLError("no route to host")
+
+        monkeypatch.setattr(watch.urllib.request, "urlopen", unreachable)
+        ok, detail = watch.check_credit({})
+        assert ok is True
+        assert "could not read" in detail
+
+    def test_no_key_is_reported_rather_than_read_as_empty(
+        self, watch, monkeypatch
+    ):
+        monkeypatch.setattr(watch, "setting", lambda name: "")
+        ok, detail = watch.check_credit({})
+        assert ok is True
+        assert "no OpenRouter key" in detail
+
+
 class TestOneSimulatedFailureOneAlert:
     """T11's definition of done, exercised rather than asserted.
 
@@ -1285,8 +1410,11 @@ class TestOneSimulatedFailureOneAlert:
         monkeypatch.setattr(watch, "check_runaway", lambda: (True, "none"))
         monkeypatch.setattr(watch, "check_power", lambda: (True, "plugged in"))
         monkeypatch.setattr(watch, "check_jobs", lambda: (True, "on time"))
+        # Takes the state dict, unlike every other check, so the stub has to
+        # accept it or main() dies on an argument rather than on a fault.
+        monkeypatch.setattr(watch, "check_credit", lambda state: (True, "funded"))
         for name, value in health.items():
-            monkeypatch.setattr(watch, name, lambda value=value: value)
+            monkeypatch.setattr(watch, name, lambda *args, value=value: value)
 
         def record(title, body, dry_run, urgent=True):
             sent.append((title, body))
@@ -1346,6 +1474,22 @@ class TestOneSimulatedFailureOneAlert:
         assert "credit balance is empty" in model
         assert "hermes whatsapp" not in model
         assert any("logged out of WhatsApp" in title for title in bodies)
+
+    def test_a_fallback_about_to_run_dry_produces_one_alert(
+        self, watch, tmp_path, monkeypatch
+    ):
+        sent = self._rig(
+            watch, tmp_path, monkeypatch,
+            check_credit=(False, "$1.20 left, about 0.4 day(s) at $3.00 a day"),
+        )
+        assert watch.main() == 0
+        assert len(sent) == 1
+        title, body = sent[0]
+        assert "credit" in title.lower()
+        assert "$1.20" in body
+        # Actionable, and it has to say why a funded fallback matters at all:
+        # nothing is broken at the moment the alert fires.
+        assert "Top up OpenRouter" in body
 
     def test_a_reminder_that_stopped_firing_produces_one_alert(
         self, watch, tmp_path, monkeypatch

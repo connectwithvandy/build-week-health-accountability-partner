@@ -869,6 +869,107 @@ def _reached_by_cron_since(chat_id: str, since: float) -> bool:
         return False
     return False
 
+CREDITS_URL = "https://openrouter.ai/api/v1/credits"
+# Below either of these the fallback is a countdown rather than a safety net.
+# Dollars alone are meaningless at an unknown burn, and days alone go silly
+# when nothing has been spent, so both are checked and the worse one wins.
+CREDIT_FLOOR_USD = 5.0
+CREDIT_FLOOR_DAYS = 3.0
+# The burn anchor. Under two hours the arithmetic is noise; over a day it is
+# describing a week that has already been paid for.
+CREDIT_ANCHOR_MIN_HOURS = 2
+CREDIT_ANCHOR_MAX_HOURS = 24
+
+
+def check_credit(state: dict) -> tuple[bool, str]:
+    """Whether the fallback provider can still pay for a reply.
+
+    `check_model` watches the primary failing over. This watches the thing it
+    fails over *to*. On 4 Sep 2026 both roads were empty at the same moment,
+    OpenRouter returned 402 on the primary model and on the fallback, and three
+    people got silence. Two of them never wrote again. That is the only failure
+    here that has ever cost a user, and nothing looked at it in advance.
+
+    Every other check in this file reads a failure that has already happened.
+    This one reads a number before it becomes one, which is the whole point:
+    by the time the log says 402, somebody has already been ignored.
+
+    ANTHROPIC IS NOT CHECKED HERE, because it publishes no balance endpoint.
+    Its dryness is caught after the fact by `check_model`, which is late but
+    is what exists. The fallback is the half that can be known in advance, so
+    it is the half that is watched.
+
+    Burn is measured from OpenRouter's own `total_usage` between two runs of
+    this script, not from `session_model_usage`: every cost column in that
+    table is zero on this machine, so a local estimate would report a comfort
+    it cannot see. Provider arithmetic on provider numbers.
+
+    Unreachable returns ok, in the house style. A network that is down is not
+    evidence of a bill that is unpaid, and an alarm that fires on wifi is an
+    alarm that gets muted.
+    """
+    key = setting("OPENROUTER_API_KEY")
+    if not key:
+        return True, "no OpenRouter key to read a balance with"
+    try:
+        request = urllib.request.Request(
+            CREDITS_URL, headers={"Authorization": f"Bearer {key}"}
+        )
+        with urllib.request.urlopen(request, timeout=20) as response:
+            data = json.load(response).get("data", {})
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return True, f"could not read the fallback balance: {exc}"
+
+    try:
+        granted = float(data.get("total_credits") or 0.0)
+        used = float(data.get("total_usage") or 0.0)
+    except (TypeError, ValueError):
+        return True, "the fallback balance did not parse"
+    left = granted - used
+
+    now = time.time()
+    anchor_usage = state.get("credit_anchor_usage")
+    anchor_at = state.get("credit_anchor_at") or 0
+    hours = (now - anchor_at) / 3600 if anchor_at else 0
+
+    per_day = None
+    if anchor_usage is not None and hours >= CREDIT_ANCHOR_MIN_HOURS:
+        spent = used - float(anchor_usage)
+        # A balance top-up shows up as usage going backwards. Reset rather than
+        # report a negative burn, which would read as infinite runway.
+        if spent >= 0:
+            per_day = spent / hours * 24
+
+    # Re-anchor on the first run, once the window is old enough to be stale,
+    # and whenever the counter moved backwards.
+    if (
+        anchor_usage is None
+        or hours >= CREDIT_ANCHOR_MAX_HOURS
+        or used < float(anchor_usage or 0)
+    ):
+        state["credit_anchor_usage"] = used
+        state["credit_anchor_at"] = now
+
+    if per_day is None:
+        if left < CREDIT_FLOOR_USD:
+            return False, (
+                f"the fallback provider has ${left:.2f} left of ${granted:.2f} "
+                "(burn not measured yet)"
+            )
+        return True, f"fallback has ${left:.2f}, burn not measured yet"
+
+    if per_day <= 0:
+        return True, f"fallback has ${left:.2f}, nothing spent on it lately"
+
+    days = left / per_day
+    if left < CREDIT_FLOOR_USD or days < CREDIT_FLOOR_DAYS:
+        return False, (
+            f"the fallback provider has ${left:.2f} left, about "
+            f"{days:.1f} day(s) at ${per_day:.2f} a day"
+        )
+    return True, f"fallback has ${left:.2f}, about {days:.0f} day(s) left"
+
+
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 PUSHOVER_KEYS = ("PUSHOVER_USER_KEY", "PUSHOVER_API_TOKEN")
 
@@ -1251,6 +1352,11 @@ def main() -> int:
     now = time.time()
     stamp = time.strftime("%H:%M")
 
+    # After read_state, alone among the checks: the burn rate is the change in
+    # the provider's own usage counter between two runs, so it needs somewhere
+    # to keep the previous reading.
+    credit_ok, credit_detail = check_credit(state)
+
     # Each component carries its own transition and its own repeat clock, so a
     # gate that flaps cannot swallow the alert for a link that died.
     components = [
@@ -1262,6 +1368,7 @@ def main() -> int:
         ("runaway", runaway_ok, "A conversation Ted stopped answering"),
         ("power", power_ok, "The laptop Ted runs on"),
         ("jobs", jobs_ok, "Ted's reminders"),
+        ("credit", credit_ok, "Ted's fallback credit"),
     ]
 
     for key, ok, label in components:
@@ -1329,6 +1436,15 @@ def main() -> int:
                 "knew for fifteen days. On the laptop: npm run ordering, then "
                 "find the session in ~/.hermes/logs/agent.log"
             )
+        elif key == "credit":
+            title = f"\u26a0\ufe0f {label} is running out"
+            body = (
+                f"{credit_detail}.\n\n"
+                "Nothing is broken yet. When the primary model next fails over "
+                "there will be nothing to fail over to, and a turn that pays "
+                "for nothing writes nothing: that is silence, not an error. "
+                "Three people were lost that way on 4 Sep. Top up OpenRouter."
+            )
         elif key == "dropped":
             title = f"⚠️ {label}"
             body = (
@@ -1348,6 +1464,7 @@ def main() -> int:
             "silent": silent_detail,
             "power": power_detail,
             "jobs": jobs_detail,
+            "credit": credit_detail,
         }.get(key, stamp)
         print(f"{key}: {'ok' if ok else 'FAILING'} ({detail})")
         if not ok and key == "gates":
