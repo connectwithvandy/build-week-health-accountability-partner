@@ -27,7 +27,8 @@
     "prompt:audit": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-prompt-audit.py",
     "memory:audit": "python3 scripts/ted-memory-audit.py",
     "memory:voice-rules": "python3 scripts/ted-purge-voice-rules.py",
-    "voice": "python3 scripts/ted-voice-check.py"
+    "voice": "python3 scripts/ted-voice-check.py",
+    "bakeoff": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-model-bakeoff.py"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",

@@ -264,6 +264,91 @@ def rule_holders() -> set[str]:
     return {row["name"] for row in rows}
 
 
+# Reminders, measured apart and never mixed in.
+#
+# The rule at the top of this file stands: a reminder is written to a
+# different shape, it is allowed to be one line with no reaction, and averaging
+# it with conversation moves every number without anything changing. That is an
+# argument for a **separate sample**, not for never looking, and until T15 came
+# up nobody had ever looked. `npm run voice` could not answer "does a reminder
+# sound like Ted", which is exactly the question a cheaper model on cron is
+# about to ask.
+#
+# The six rules are unchanged, because all six are "never" rules and a reminder
+# is still Ted writing. What changes is that the sample is reported on its own
+# and split by the model that produced it.
+#
+# HOW THE MODEL IS FOUND. The ledger does not record it. The cron session does:
+# a delivered reminder's text is matched back to its `cron_%` row in `messages`
+# and that session's row in `session_model_usage` names the model. Where
+# `_cron_reminder_gate` rewrote the text on the way out the match fails, and
+# that row is reported as `unknown` rather than guessed at. Undercounting a
+# known model is the safe direction; attributing a reply to the wrong one is
+# not.
+def delivered_reminders(
+    db: sqlite3.Connection, since: float, until: float
+) -> list[tuple[str, str]]:
+    """(model, reminder text) for scheduled sends that actually arrived."""
+    try:
+        rows = db.execute(
+            """
+            SELECT
+              o.content AS text,
+              (SELECT u.model FROM session_model_usage u
+                 WHERE u.session_id = (
+                   SELECT m.session_id FROM messages m
+                    WHERE m.role = 'assistant'
+                      AND m.content = o.content
+                      AND m.session_id LIKE 'cron_%'
+                    ORDER BY ABS(m.timestamp - o.created_at) LIMIT 1)
+                 LIMIT 1) AS model
+            FROM delivery_obligations o
+            WHERE o.platform = 'whatsapp'
+              AND o.state = 'delivered'
+              AND o.session_key LIKE 'cron:%'
+              AND o.created_at > ? AND o.created_at <= ?
+            """,
+            (since, until),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(str(row["model"] or "unknown"), str(row["text"] or "")) for row in rows]
+
+
+# The reminder's draft, which is the only copy with history.
+#
+# Patch 16 put cron sends into the delivery ledger on 18 Sep 2026 at 22:53, so
+# `delivered_reminders` can see one day and `messages` can see a fortnight.
+# Both are printed for the same reason the chat view prints both.
+#
+# The two counts are very different and that is not a bug: most cron firings
+# never reach anybody. `_cron_reminder_gate` suppresses a reminder for a paused
+# or broken-off user *after* the model has written it, so a drafted reminder is
+# a thing Ted wrote and a delivered one is a thing somebody read. See the
+# memory note "API spend is cron, not chat".
+def drafted_reminders(
+    db: sqlite3.Connection, since: float, until: float
+) -> list[tuple[str, str]]:
+    """(model, reminder text) for scheduled sends the model wrote."""
+    try:
+        rows = db.execute(
+            """
+            SELECT
+              m.content AS text,
+              (SELECT u.model FROM session_model_usage u
+                 WHERE u.session_id = m.session_id LIMIT 1) AS model
+            FROM messages m
+            WHERE m.role = 'assistant'
+              AND m.session_id LIKE 'cron_%'
+              AND m.timestamp > ? AND m.timestamp <= ?
+            """,
+            (since, until),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [(str(row["model"] or "unknown"), str(row["text"] or "")) for row in rows]
+
+
 def show(label: str, stats: dict) -> None:
     if not stats["replies"]:
         print(f"  {label:16} no replies")
@@ -287,6 +372,11 @@ def main() -> int:
         action="store_true",
         help="split the window by who has a stored voice rule",
     )
+    parser.add_argument(
+        "--cron",
+        action="store_true",
+        help="measure delivered reminders instead of chat, split by model",
+    )
     args = parser.parse_args()
 
     db = connect()
@@ -306,6 +396,38 @@ def main() -> int:
     def window(label: str, since: float, until: float) -> None:
         show(f"{label} received", measure([t for _w, t in delivered(db, since, until)]))
         show(f"{label} drafted", measure([t for _w, t in replies(db, since, until)]))
+
+    if args.cron:
+        span = args.days or 7
+        lo = now - span * 86400
+        print(f"last {span} days, reminders only, split by model")
+        print("Never averaged with chat: a reminder is allowed to be one line")
+        print("with no reaction, and mixing the two moves every number.\n")
+        unknown = False
+        for title, rows in (
+            ("received", delivered_reminders(db, lo, now)),
+            ("drafted", drafted_reminders(db, lo, now)),
+        ):
+            if not rows:
+                print(f"  {title:16} no reminders")
+                continue
+            for model in sorted({m for m, _t in rows}):
+                show(f"{title} {model}", measure([t for m, t in rows if m == model]))
+            unknown = unknown or any(m == "unknown" for m, _t in rows)
+        print(
+            "\n  received is smaller than drafted on purpose: the cron gate "
+            "suppresses\n  a reminder for a paused user after the model has "
+            "written it, so most\n  firings are a thing Ted wrote and nobody "
+            "read. The ledger only holds\n  cron from 18 Sep 2026 22:53, when "
+            "patch 16 landed."
+        )
+        if unknown:
+            print(
+                "\n  `unknown` is a reminder with no usage row to name its "
+                "model, or one\n  the cron gate rewrote on the way out. Not "
+                "guessed at."
+            )
+        return 0
 
     if args.days:
         print(f"last {args.days} days")
