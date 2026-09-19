@@ -11648,14 +11648,15 @@ class TestTedNeverTalksAboutTheMachine(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertEqual(gates.strip_assistant_speak(said), said)
 
-    def test_ted_may_still_introduce_himself_as_a_whatsapp_coach(self) -> None:
-        """The bare word "whatsapp" appears in 4 drafts and every one is
-        legitimate. Matching it would have deleted Ted's own introduction,
-        which is why each pattern was counted against the corpus first."""
-        said = (
-            "hey there — I'm Ted, your fitness buddy on WhatsApp \U0001f642 "
-            "what should I call you?"
-        )
+    def test_the_bare_channel_name_never_deletes_a_reply(self) -> None:
+        """A single common noun must not be able to take out a whole message.
+
+        "whatsapp" looks like the safest tell for a reply about the channel and
+        is deliberately not matched: it is a word a Hinglish coach can reach
+        for. Under-stripping leaves a bad sentence; over-stripping deletes a
+        good message, and only one of those is recoverable.
+        """
+        said = "photo whatsapp pe bhej de, main dekh leta hoon \U0001f440"
         self.assertEqual(gates.strip_assistant_speak(said), said)
 
     def test_real_reminders_are_untouched(self) -> None:

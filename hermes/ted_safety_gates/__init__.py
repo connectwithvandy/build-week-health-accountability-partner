@@ -5287,13 +5287,19 @@ _THIRD_PERSON_NOTE = re.compile(
 #   i can't send …        1 draft,  and it is the break       -> matched
 #   paste it / this       0 drafts                            -> matched
 #   the exact message     0 drafts                            -> matched
-#   the bare word whatsapp  4 drafts, ALL legitimate          -> NOT matched
+#   the bare word whatsapp  4 drafts, none of them a break     -> NOT matched
 #
-# That last row is why this is counted rather than reasoned about. "whatsapp"
-# looks like the safest possible tell for a reply about the channel, and
-# matching it would have deleted Ted's own introduction: "hey there — I'm Ted,
-# your fitness buddy on WhatsApp 🙂 what should I call you?". It stays out, and
-# the channel is only matched as part of a phrase no coach ever writes.
+# That last row needs its caveat stated, because the evidence is weaker than
+# the count makes it look. All four are self-introductions from 31 Aug and
+# 1 Sep 2026, written in copy the onboarding rebuild of 4 Sep replaced and
+# Vandy has since rejected. So "these four would break" is not really an
+# argument for keeping the word out.
+#
+# It stays out on the principle instead: a single common noun must never be
+# able to delete a whole reply, and "whatsapp" is a word a Hinglish coach can
+# legitimately reach for ("whatsapp pe bhej de"). The channel is matched only
+# as part of a phrase no coach writes. Under-stripping leaves a bad sentence;
+# over-stripping deletes a good message, and only one of those is recoverable.
 #
 # Bare "i can't" appears in 9 drafts, 6 of them ordinary coaching, so it is not
 # matched either. The machine verbs are: access, send, reach, deliver.
