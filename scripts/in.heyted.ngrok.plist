@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>ai.ted.tunnel</string>
+  <string>in.heyted.ngrok</string>
 
   <!-- Carries Meta's webhooks from the public internet to the gateway.
 
