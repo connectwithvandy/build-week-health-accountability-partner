@@ -174,3 +174,39 @@ class TestAnEmptyReplyIsNotACleanSheet:
         stats = voice.measure(["", "", ""])
         assert all(stats[name] == 0 for name, _why, _pattern in voice.RULES)
         assert bakeoff.empty_replies(["", "", ""]) == 3
+
+
+class TestTranscriptionIsNotComposition:
+    """The measurement the first bakeoff lacked.
+
+    Three models returned byte-identical text and scored a clean sheet. The
+    sentence was the reminder's own stored body, sitting in the turn prompt.
+    It passes every rule because the text it copied passes every rule.
+
+    It matters because Ted varies: 60 of 66 jobs that fired 3+ times in the
+    fortnight to 19 Sep 2026 produced a different line nearly every firing.
+    """
+
+    def test_handing_back_the_prompt_is_caught(self, bakeoff):
+        prompt = "remind them: 5 min meditation ka scene, bas baith ja"
+        assert bakeoff.transcribed("5 min meditation ka scene, bas baith ja", prompt)
+
+    def test_a_fresh_line_is_not_transcription(self, bakeoff):
+        """What Sonnet did on the same prompt."""
+        prompt = "remind them: 5 min meditation ka scene, bas baith ja"
+        assert not bakeoff.transcribed(
+            "5 min ka time nikal, aankh band kar ke bas saans pe dhyaan de", prompt
+        )
+
+    def test_an_empty_reply_is_not_counted_as_a_copy(self, bakeoff):
+        """It is its own failure and is counted by `empty_replies`. Counting it
+        twice would make a silent model look like a chatty one."""
+        assert not bakeoff.transcribed("", "anything at all")
+
+    def test_the_rate_pairs_replies_with_their_own_case(self, bakeoff):
+        cases = [
+            {"prompt": "remind them: omega 3 after breakfast"},
+            {"prompt": "remind them: hanuman chalisa time"},
+        ]
+        texts = ["omega 3 after breakfast", "arre chalisa, thoda sukoon le aaj"]
+        assert bakeoff.transcription_rate(texts, cases) == 1

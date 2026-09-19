@@ -57,6 +57,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -92,10 +93,20 @@ BASELINE = "claude-sonnet-5"
 # it in an article and adding it here would have put a model in the router that
 # cannot be called. Sarvam would need a new provider integration, which is real
 # work and not a config change.
+# The middle tier, which the first run skipped entirely.
+#
+# `--shortlist 8` selects on price alone, so it picked the eight cheapest models
+# on OpenRouter and never tested the ones actually built for this work. That run
+# proved "the eight cheapest fail", which is not the claim "cheap fails", and
+# the difference matters at scale: ~20 reminder firings a day today, but ~10,000
+# at 5,000 users, which is roughly $9,800 a month on Sonnet against $129 on a
+# model 77x cheaper. The question was never whether to route. It is which tier
+# still writes a fresh line instead of handing back the one it was given.
 DEFAULT_CANDIDATES = [
     "claude-haiku-4-5",
     "google/gemini-3.8-flash",
     "openai/gpt-4o-mini",
+    "amazon/nova-micro-v1",
 ]
 
 
@@ -410,9 +421,55 @@ def empty_replies(texts: list[str]) -> int:
     return sum(1 for text in texts if not (text or "").strip())
 
 
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+# Did the model write a line, or hand back the one it was given?
+#
+# This is the measurement the first bakeoff lacked, and without it the run
+# reached the wrong verdict twice over. Three models returned byte-identical
+# text and scored a clean sheet; the sentence turned out to be the reminder's
+# own stored body, sitting in the turn prompt.
+#
+# It matters because of what Ted's cron traffic actually looks like. Over the
+# fortnight to 19 Sep 2026, 60 of 66 jobs that fired three times or more
+# produced a **different line nearly every firing** — 13 fires, 13 distinct.
+# SOUL.md asks for exactly that ("I do not use the same reaction shape twice in
+# a row"), and it is the one thing the expensive model is buying on this
+# surface. A model that transcribes is not a cheaper way of doing the job. It
+# is a different, worse job that happens to pass every countable rule, because
+# the text it copied passes them too.
+#
+# Deliberately generous about what counts as a copy. Nine tenths of the words
+# already present, in a one-line reminder, is the same sentence with a word
+# moved. Being strict here would report "not transcription" for output nobody
+# would call original.
+_TRANSCRIPTION_OVERLAP = 0.9
+
+
+def transcribed(text: str, prompt: str) -> bool:
+    """True when the reply is substantially the prompt's own words returned."""
+    said = _words(text)
+    if not said:
+        return False  # empty is its own failure, counted separately
+    given = set(_words(prompt))
+    borrowed = sum(1 for word in said if word in given)
+    return borrowed / len(said) >= _TRANSCRIPTION_OVERLAP
+
+
+def transcription_rate(texts: list[str], case_list: list[dict]) -> int:
+    return sum(
+        1
+        for text, case in zip(texts, case_list)
+        if transcribed(text, case["prompt"])
+    )
+
+
 def show(
     label: str, stats: dict, voice, cost: float, tokens: dict, ted_length: int | None,
     blank: int = 0,
+    copied: int = 0,
 ) -> None:
     if not stats["replies"]:
         print(f"  {label:26} nothing came back")
@@ -440,6 +497,13 @@ def show(
         print(
             f"    SAID NOTHING: {blank} of {stats['replies']} came back empty. "
             "Disqualifying — see `check_silent`."
+        )
+    if copied:
+        print(
+            f"    TRANSCRIBED: {copied} of {stats['replies']} handed back the "
+            "prompt's own words.\n"
+            "      Ted varies 13 lines in 13 firings; a copier sends one "
+            "forever."
         )
     print(f"    rules broken: {', '.join(broke) if broke else 'none'}")
 
@@ -578,6 +642,7 @@ def main() -> int:
             tokens[model],
             ted_length,
             empty_replies(results[model]),
+            transcription_rate(results[model], case_list),
         )
 
     print("\nWhat each model actually wrote:\n")
