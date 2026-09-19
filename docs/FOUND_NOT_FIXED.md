@@ -97,3 +97,24 @@ the next cause will not be a 402.
 **Still not acted on:** the three affected people. Fifteen days on, a message to
 them is a product decision rather than a repair, and nobody is messaged without
 Vandy saying so.
+
+**Ted's own copy breaks his own "never open with logged, noted, got it or
+saved" rule nine times a week.** Three strings do it: `got it, all six ✅`
+(the setup summary), `done, nudges off from right now 🤝 this is a break, not
+a breakup.` (the open-ended pause reply) and `done, 1870 locked ✅` (the
+target confirmation). A fourth string, the onboarding activity question, asks
+one thing with three options and punctuates it as two questions, against
+"contains no more than one question".
+
+**LEFT BY DECISION, 19 Sep 2026.** Asked as "which is wrong, the copy or the
+rule", Vandy chose neither: leave both and watch the number. All four are
+deliberate, approved copy, and the check only started measuring delivered text
+today, so there is one week of honest history to argue from. Do not quietly
+rewrite any of these to make `npm run voice` go green.
+
+**The model's own three receipt openings were checked and rejected as a fix.**
+`got it, 4'10. and weight, roughly?` is how a person texts. The SOUL rule
+exists for a bare receipt standing in for a reaction, which
+`reminder_receipt_gate` already catches. A blunt strip in
+`strip_assistant_speak` would leave three natural lines reading abrupt, for a
+rule they do not really break.

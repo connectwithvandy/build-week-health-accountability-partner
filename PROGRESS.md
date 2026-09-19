@@ -2014,6 +2014,92 @@ would show it if the prediction is wrong.
 clean. Convex was deployed to production (the `forget-facts` route, verified by
 `npm run convex:check`); no user data was written or deleted.
 
+## Order 34 — 19 Sep 2026, the voice check was reading the wrong copy
+
+One task, and the first thing it found was that the instrument was wrong. The
+question was "Ted breaks two of his own SOUL.md rules, fix it". The answer is
+that one of the two was never happening and the other was mostly Ted's own
+fixed copy, and neither could be seen until the check stopped measuring
+drafts.
+
+### What it was reading
+
+`ted-voice-check.py` read the `messages` table and called it "Ted's own
+replies". That table holds what the **model** wrote. The gates then edit it,
+replace it, and append to it, and nine of the twelve receipt openings a real
+person read in the last seven days are fixed strings the gates themselves
+write — `got it, all six ✅`, `done, nudges off from right now 🤝`. Those
+appear in no draft, so every number this check had ever printed was blind to
+them.
+
+The memory rule that names this exactly is "delivered text is not the messages
+table". It was written about reminders. It is true of every gated reply, and
+the check was written after it and still went the other way.
+
+    receipt opening, last 7 days
+      drafted   10/352  (2.8%)   ← what the check used to print
+      received  12/165  (7.3%)   ← what people read
+
+It now prints both, labelled, because the gap between them *is* the gates'
+contribution to Ted's voice and nothing else measures it. Cron sends are
+excluded from the ledger read the same way they were from the draft read
+(patch 16 put them there), and so is anything not `delivered`: an abandoned
+row is a delivery fault, not a voice one.
+
+The ledger only reaches back to 11 Sep 2026, so the four-week view prints
+"no replies" for received on the older weeks and says why, rather than a tidy
+zero.
+
+### The rule that was counting its own furniture
+
+"no emoji beside a metric, ever" read **45 hits in 165 replies**, 27%. Forty
+three of them were the meal card obeying its own approved spec:
+
+    Fiber: 6g
+
+    📊 Daily Overview:
+    🟢🟢⚪⚪⚪⚪ 31%
+
+`\s` crossed the line break, so `6g` and `📊` two lines apart matched as an
+emoji beside a metric, and the six-circle calorie bar matched on every card.
+Two fixes, because either alone leaves the other:
+
+- the pattern is spaces and tabs now, never a newline;
+- `spoken_part` cuts the appended card before counting. The card is a fixed
+  block the gate prints, not prose the model wrote, and Vandy approved its
+  design. Counting it buried the two real hits under forty three false ones.
+
+The count went 45 to 2, and both survivors are genuine: `yup pakda 😄 1870 pe
+lock karein` and `solid, 175 👌`.
+
+### What is actually left, and why it was left
+
+    receipt opening        12/165 (7.3%)   9 gate copy, 3 the model
+    two or more questions   4/165 (2.4%)   all one gate string
+    emoji beside a number   2/165 (1.2%)   both the model
+    everything else            0
+
+**Decided: leave both, measure.** Vandy's call, and the right one. The nine
+are three strings of deliberate copy — the setup summary, the break-not-a-
+breakup pause reply, the target confirmation — and the four "two question"
+hits are one onboarding line that asks one thing and offers three options,
+punctuated with two question marks. Rewriting somebody's approved voice to
+satisfy a regular expression is the tail wagging the dog.
+
+The model's three were **checked and rejected as a fix**. `got it, 4'10. and
+weight, roughly?` is how a person texts. The rule exists for a bare receipt
+standing in for a reaction, which `reminder_receipt_gate` already catches, and
+a blunt strip would leave three natural lines reading abrupt.
+
+So nothing in the gates changed today. The instrument did, which is the part
+that was actually broken.
+
+### Numbers
+
+1,507 Python tests, 2,164 subtests. 9 new, all on the check: the ledger read,
+the cron and abandoned exclusions, a missing-ledger database, the newline in
+the emoji rule, and the card cut.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
