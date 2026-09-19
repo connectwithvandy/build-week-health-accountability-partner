@@ -210,3 +210,53 @@ class TestTranscriptionIsNotComposition:
         ]
         texts = ["omega 3 after breakfast", "arre chalisa, thoda sukoon le aaj"]
         assert bakeoff.transcription_rate(texts, cases) == 1
+
+
+class TestBrokeCharacter:
+    """Case 11 of the 19 Sep run: haiku-4-5 answered a supplement reminder with
+    700 characters about WhatsApp Business API integration. The existing gates
+    do not catch it — `_is_internal_note` matches "the user", that reply said
+    "Vandy's WhatsApp" — so it would have been delivered."""
+
+    def test_the_real_one_is_caught(self, bakeoff):
+        assert bakeoff.broke_character([
+            "I appreciate the request, but I need to be direct: I cannot send "
+            "WhatsApp messages. I have no access to WhatsApp, SMS, email, or any "
+            "messaging service."
+        ]) == 1
+
+    def test_the_architecture_lecture_is_caught(self, bakeoff):
+        assert bakeoff.broke_character([
+            "you would need to integrate this Hermes session with a WhatsApp "
+            "Business API"
+        ]) == 1
+
+    def test_a_real_reminder_is_not(self, bakeoff):
+        assert bakeoff.broke_character([
+            "coq10 time ⚡ 200mg before you lift, yaar",
+            "omega-3, 1500mg, right after breakfast 🐟",
+            "hey pradosh, kaisa raha aaj ka din? 🙂",
+        ]) == 0
+
+
+class TestSelfRepetition:
+    """nova-micro answered three separate check-ins with the byte-identical
+    "how's your day going? 🌟". It copied nothing from the prompt, so
+    transcription missed it, and no countable rule sees it either."""
+
+    def test_the_identical_line_is_caught(self, bakeoff):
+        assert bakeoff.self_repeats([
+            "how's your day going? 🌟",
+            "how's your day going? 🌟",
+            "how's your day going? 🌟",
+        ]) == 2
+
+    def test_punctuation_alone_is_not_a_fresh_line(self, bakeoff):
+        assert bakeoff.self_repeats(["kya scene hai", "kya scene hai!"]) == 1
+
+    def test_teds_actual_variation_passes(self, bakeoff):
+        assert bakeoff.self_repeats([
+            "hey, how'd today go 🙂",
+            "hey pradosh, kaisa raha aaj ka din? 🙂",
+            "morning pradosh, how's it going so far? 🙂",
+        ]) == 0

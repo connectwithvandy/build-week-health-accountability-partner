@@ -83,9 +83,8 @@ OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 BASELINE = "claude-sonnet-5"
 
-# The shortlist, cheapest last. Every one of these is reachable through a path
-# TED already has: Claude direct, or OpenRouter, which is already the
-# configured `fallback_model`.
+# Every one of these is reachable through a path TED already has: Claude
+# direct, or OpenRouter, which is already the configured `fallback_model`.
 #
 # Deliberately NOT on this list: `sarvamai/sarvam-m`. It is the obvious
 # candidate for a Hinglish product and it is **no longer served by
@@ -458,6 +457,64 @@ def transcribed(text: str, prompt: str) -> bool:
     return borrowed / len(said) >= _TRANSCRIPTION_OVERLAP
 
 
+# Did the model stop being Ted and start being a chatbot?
+#
+# Case 11 of the 19 Sep run, `claude-haiku-4-5`, in full seriousness, to a
+# person waiting for a supplement nudge:
+#
+#   "I appreciate the request, but I need to be direct: I cannot send WhatsApp
+#    messages... you would need to integrate this Hermes session with a
+#    WhatsApp Business API..."
+#
+# Seven hundred characters of a model explaining TED's architecture, wearing
+# Ted's name. It is the single worst output of either run and it came from the
+# candidate most people would have picked first.
+#
+# Checked rather than assumed: the **existing gates do not catch it**.
+# `_is_internal_note` matches "the user" and "this user"; that reply says
+# "Vandy's WhatsApp". `strip_assistant_speak` takes off markdown furniture and
+# closing offers, not a refusal. It would have been delivered.
+#
+# Matched on the machinery a reminder can never mention. Narrow on purpose:
+# "I cannot" alone is a thing a coach might say about a meal.
+_BROKE_CHARACTER = re.compile(
+    r"\b(?:as an ai|language model|i (?:can ?not|can't) (?:send|access|actually)"
+    r"|i have no access|i do not have access"
+    r"|whatsapp business api|hermes|cron job|integrate this"
+    r"|fabricate|tool output|system prompt|the instruction at the top)\b",
+    re.IGNORECASE,
+)
+
+
+def broke_character(texts: list[str]) -> int:
+    return sum(1 for text in texts if _BROKE_CHARACTER.search(text or ""))
+
+
+# Did it write the same line twice?
+#
+# `amazon/nova-micro-v1` answered three separate check-in turns with the
+# byte-identical "how's your day going? 🌟". That is not transcription — it
+# copied nothing from the prompt — and no countable rule sees it, so it scored
+# better than it deserved on both measures that existed.
+#
+# It is the same harm though. SOUL.md: "I do not use the same reaction shape
+# twice in a row." The traffic says Ted manages 13 distinct lines in 13
+# firings. A model that has one sentence for "how was your day" sends that
+# sentence every evening forever.
+def self_repeats(texts: list[str]) -> int:
+    """How many replies are a repeat of one already written in this run."""
+    seen: set[str] = set()
+    repeats = 0
+    for text in texts:
+        key = " ".join(_words(text))
+        if not key:
+            continue
+        if key in seen:
+            repeats += 1
+        seen.add(key)
+    return repeats
+
+
 def transcription_rate(texts: list[str], case_list: list[dict]) -> int:
     return sum(
         1
@@ -470,6 +527,8 @@ def show(
     label: str, stats: dict, voice, cost: float, tokens: dict, ted_length: int | None,
     blank: int = 0,
     copied: int = 0,
+    meta: int = 0,
+    repeats: int = 0,
 ) -> None:
     if not stats["replies"]:
         print(f"  {label:26} nothing came back")
@@ -497,6 +556,18 @@ def show(
         print(
             f"    SAID NOTHING: {blank} of {stats['replies']} came back empty. "
             "Disqualifying — see `check_silent`."
+        )
+    if meta:
+        print(
+            f"    BROKE CHARACTER: {meta} of {stats['replies']} talked about the "
+            "machine.\n"
+            "      Disqualifying. The gates do not catch this; it would be "
+            "delivered."
+        )
+    if repeats:
+        print(
+            f"    REPEATED ITSELF: {repeats} of {stats['replies']} reused a line "
+            "already written."
         )
     if copied:
         print(
@@ -643,6 +714,8 @@ def main() -> int:
             ted_length,
             empty_replies(results[model]),
             transcription_rate(results[model], case_list),
+            broke_character(results[model]),
+            self_repeats(results[model]),
         )
 
     print("\nWhat each model actually wrote:\n")

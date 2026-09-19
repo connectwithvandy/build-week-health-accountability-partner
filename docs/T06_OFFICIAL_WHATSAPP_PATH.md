@@ -129,8 +129,12 @@ changes.
 - marketing template: **~₹0.8631**, about 7.5x
 
 At 85 out-of-window reminders a month, utility templates cost about **₹10 a
-month**. Cost is not the obstacle. Filing a reminder as *marketing*
-rather than *utility* would make it ₹520 a month and is the mistake to avoid.
+month**. Cost is not the obstacle. Filing a reminder as *marketing* rather than
+*utility* would make it about **₹73 a month** (85 × ₹0.8631). An earlier
+version of this line said ₹520, which follows from no figure on this page; the
+7.5x multiple is the real point. The reason to avoid marketing is not the bill:
+it is a different approval bar, and a health reminder filed as a promotion can
+be switched off by a user's own marketing settings.
 
 **Unconfirmed and worth re-checking:** several vendor blogs say Meta will
 charge for service messages from **1 October 2026** at the utility rate. Meta's
@@ -185,10 +189,19 @@ Worth confirming on the free test number before designing around it.
 
 Each step is reversible until step 6.
 
-1. **Meta's free test number.** No SIM, no purchase, no cost. Creating a
-   developer app issues one immediately, along with a pre-approved
-   `hello_world` template. It will message up to **5 recipients** you verify
-   first, which Meta treats as a hard allowlist.
+1. ~~**Meta's free test number.**~~ — **done, 19 Sep 2026.** App "Ted",
+   App ID `1092607106462705`, business portfolio "Ted Health". Test number
+   `+1 (555) 162-3902`, Phone Number ID `1324962557368120`, WABA
+   `1756517772307257`. Vandy's own number is the one verified recipient of a
+   possible five, and Meta's demo template was sent to it and arrived, so
+   outbound on the official platform is proved rather than assumed.
+
+   **The token on that page is not the token.** Step 1's "Generate token"
+   button issues a 24-hour user token. The adapter needs a System User
+   permanent token from Business Settings, and that is still to do.
+
+   No SIM, no purchase, no cost. It will message up to **5 recipients** you
+   verify first, which Meta treats as a hard allowlist.
 
    *An earlier draft of this said "buy a spare SIM". That was wrong and was
    corrected the same evening when Vandy asked why it was needed. It is worth
@@ -216,6 +229,12 @@ Each step is reversible until step 6.
    back.
 3. **Templates drafted and submitted** for the reminders, in the *utility*
    category, and approved. This has a lead time and nothing else can start it.
+
+   **Submitted 19 Sep 2026:** `ted_daily_review` and `ted_scheduled_reminder`,
+   both UTILITY, both *In review*. `ted_quiet_check` held pending Vandy's
+   decision. `ted_daily_review` was stopped by Meta's pre-submit category
+   classifier until its body said the person set the check-in themselves; see
+   `T06_TEMPLATES.md`, which now records that as a rule rather than a theory.
 
    *Drafted on 19 Sep: `T06_TEMPLATES.md` has three submission-ready templates
    covering all 20 enabled reminder jobs, the categorisation reasoning against
@@ -255,6 +274,7 @@ Each step is reversible until step 6.
 - Whether Ted's own number migrates cleanly. Needs step 6, and is the only
   step with no rehearsal available: the test number cannot rehearse a
   migration of a different number.
-- Whether Meta approves a reminder template in Ted's voice at all.
+- Whether Meta approves a reminder template in Ted's voice at all. Two are in
+  review since 19 Sep; the pre-submit classifier passing them is not approval.
 - Whether service messages start being charged on 1 Oct 2026.
 - Business verification, whenever growth passes 250 unique users a day.

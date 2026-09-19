@@ -2215,6 +2215,77 @@ the toolset — the job is not finished.
 Reminders stay on Sonnet. The instrument is now honest, which it was not this
 morning, and the next move is the prompt floor rather than the price list.
 
+## Order 36 — 19 Sep 2026, the model everyone would have picked broke character
+
+Vandy pushed back on Order 35 and was right. `--shortlist` sorts on price, so
+that run tested the eight cheapest models on OpenRouter and never touched the
+tier built for this work. It proved "the eight cheapest fail", which is not
+"cheap fails". The scale argument is hers and it is correct: ~20 reminder
+firings a day at 50 users, ~10,000 at 5,000, which is about **$9,800 a month on
+Sonnet against $500 on gpt-4o-mini**. TED cannot open to the public on the
+current arrangement.
+
+Second run: 12 real cron turns, Sonnet against Haiku 4.5, Gemini 3.8 Flash,
+GPT-4o-mini and Nova Micro. $0.69.
+
+### claude-haiku-4-5 is disqualified, and it is the one most people pick first
+
+Case 11, a supplement reminder, in full:
+
+> "I appreciate the request, but I need to be direct: I cannot send WhatsApp
+> messages. I have no access to WhatsApp, SMS, email, or any messaging
+> service... you would need to integrate this Hermes session with a WhatsApp
+> Business API, and that integration does not currently exist in this setup."
+
+Seven hundred characters of a model explaining TED's architecture, wearing
+Ted's name, to somebody waiting to be told to take their CoQ10.
+
+**The existing gates do not catch it**, checked rather than assumed.
+`_is_internal_note` matches "the user" and "this user"; that reply says
+"Vandy's WhatsApp". `strip_assistant_speak` removes markdown furniture and
+closing offers, not a refusal. It would have been delivered. `broke_character`
+now scores it, and that is a finding about the **gates**, not only about Haiku:
+nothing in the output path stops a model that starts talking about the machine.
+
+### What the twelve cases actually say
+
+    model                      cost    length      transcribed  repeats  rules
+    claude-sonnet-5          $0.3918   41 (0.9x)        0          0     none
+    claude-haiku-4-5         $0.1496   98 (2.1x)        2          0     emoji 3  + BROKE CHARACTER
+    google/gemini-3.8-flash  $0.1275   48 (1.0x)        0          0     emoji 2
+    openai/gpt-4o-mini       $0.0202   48 (1.0x)        1          0     2 questions 1
+    amazon/nova-micro-v1     $0.0050   36 (0.8x)        2          2     emoji 1
+
+**`openai/gpt-4o-mini` is the candidate.** 19x cheaper than Sonnet, Ted's exact
+length, no character breaks, no repetition, and it reads like him: *"arre, kya
+scene hai aaj ka? how's the day treating you? 😊"*, *"coq10 time ⚡ take that
+200mg before you hit the workout!"*.
+
+**`nova-micro` is 78x cheaper and cannot hold a voice.** It answered three
+separate check-ins with the byte-identical *"how's your day going? 🌟"*, drifted
+into English, and returned one reply wrapped in literal quote marks. That is
+`self_repeats`, added this run: it copies nothing from the prompt, so
+transcription missed it, and no countable rule sees it.
+
+**`gemini-3.8-flash` truncated mid-sentence** on case 11 — *"coq10 time ⚡ 200mg
+down before you lift or your"* — because it spent 5,819 output tokens on
+reasoning against a 512 ceiling. Fixable with a higher ceiling, but it is a
+configuration gotcha that costs output tokens on every firing.
+
+### Two measurements this run added, both of which changed the answer
+
+`broke_character` and `self_repeats`. Between them and `transcribed` from Order
+35, three of the four candidates fail on something **no countable SOUL.md rule
+can see**. The rules were never wrong; they were never sufficient, and a
+routing decision made on them alone would have shipped Haiku.
+
+### Still not answered
+
+Tool calling. Every replay runs without tools, and a reminder turn can call
+`ted_day_summary`. gpt-4o-mini writing well is not evidence it calls TED's
+tools correctly, and that is the next test, against the live harness rather
+than this one.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.

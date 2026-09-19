@@ -1,8 +1,33 @@
 # T06 step 3 — the reminder templates
 
-**Status: drafted, not submitted.** Submission needs the Meta developer app
-from step 1, which nobody has created yet. Everything below is ready to paste
-the moment it exists.
+**Status: two submitted and in review, 19 Sep 2026.** `ted_daily_review` and
+`ted_scheduled_reminder` are with Meta, both filed UTILITY, both showing
+*In review* in WhatsApp Manager. `ted_quiet_check` is deliberately held: it is
+drafted, not adopted, and that call is Vandy's (§3.3).
+
+The developer app that was said to block this already existed. App ID
+`1092607106462705`, WABA `1756517772307257`, test number `+1 (555) 162-3902`.
+
+**One wording change was forced, and it is the most useful thing learned here.**
+Meta runs a category classifier *before* submission. `ted_daily_review` as
+drafted was stopped at that gate with "Category does not match", recommended
+Marketing, and "This message template will be rejected". The body said
+*"it's your usual check-in time"*, which never states that the person asked for
+it. Changed to:
+
+> hey {{1}}, it's the check-in time you set with me. want to run through the
+> day and see where you landed?
+
+and it passed. `ted_scheduled_reminder` was waved through first time, and its
+body already carried *"this is the reminder you asked me for"*. So §3's claim
+that stating the opt-in inside the message is what turns the UTILITY category
+on is not reasoning any more; it was tested twice, and it decided both
+outcomes. **Any future template must say, inside its own text, that the person
+asked for it.**
+
+The variable samples were submitted as `Priya` and `omega 3 after lunch`, not
+the real users named in the drafts below. Meta's own note on that field asks
+for no customer information, and a sample is not a place for one.
 
 Step 3 is first because it is the only step with a queue in front of it. Meta
 reviews a template on its own schedule, and every later step — the full flow on
@@ -87,8 +112,8 @@ Covers the 8 daily review jobs.
   "components": [
     {
       "type": "BODY",
-      "text": "hey {{1}}, it's your usual check-in time. want to run through the day and see where you landed?",
-      "example": { "body_text": [["Ankiita"]] }
+      "text": "hey {{1}}, it's the check-in time you set with me. want to run through the day and see where you landed?",
+      "example": { "body_text": [["Priya"]] }
     },
     {
       "type": "BUTTONS",
@@ -101,7 +126,10 @@ Covers the 8 daily review jobs.
 }
 ```
 
-`{{1}}` is the stored first name. "not today" is a real answer, not a decoy:
+`{{1}}` is the stored first name. "the check-in time you set with me" is the
+sentence that carries the opt-in, and it is why this one is UTILITY; the
+drafted wording without it was refused before submission. "not today" is a real
+answer, not a decoy:
 it reopens the window too, and Ted can then offer a pause in his own words —
 which is the existing break flow, unchanged.
 
@@ -119,7 +147,7 @@ personal ones. One template, one variable, twelve jobs.
     {
       "type": "BODY",
       "text": "hey {{1}}, this is the reminder you asked me for: {{2}}. tap when it's done and i'll pick up from there.",
-      "example": { "body_text": [["Gourav", "omega 3 after lunch"]] }
+      "example": { "body_text": [["Priya", "omega 3 after lunch"]] }
     },
     {
       "type": "BUTTONS",
@@ -227,13 +255,13 @@ Two details the module settles, both because they reach a real person:
   greeting with no name in it, is worse than a missed nudge — and the hold says
   which job it was, so it can be fixed rather than discovered.
 
-**Everything else is behind the developer app existing**, which is the honest
-summary of T06: no template can be submitted and nothing can be sent until
-somebody creates it.
+**The app exists and the templates are filed.** What is left is the wiring
+above, the permanent System User token, and a public webhook URL.
 
 ## 6. Unverified, on purpose
 
-- Whether Meta approves any of these. Nothing here has been submitted.
+- Whether Meta approves the two in review. Passing the pre-submit classifier
+  is not approval; a human or a second model still reads them.
 - Whether romanised Hinglish passes under `en` (§4).
 - Whether a quick-reply tap on a template opens the window the same way a typed
   message does. It should — it is an inbound message from the user — but it is
