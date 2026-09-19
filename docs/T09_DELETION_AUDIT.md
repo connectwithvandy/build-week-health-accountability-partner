@@ -94,18 +94,31 @@ retention is named rather than emptied.
 | `~/.hermes/sessions/` | request dumps, whole API calls | `hermes sessions delete` |
 | `cache/images`, `cache/audio` | photos and voice notes | `ted-forget-user.py` |
 | `state/ted-safety-gates-*.json` | onboarding, disclosures | `_forget_user` (live pair) |
-| `cron/jobs.json` | **scheduled reminders** | **nothing** |
-| `channel_directory.json` | routing targets | **nothing** |
-| `whatsapp/lid-phone-map-*.json` | phone ↔ lid mapping | **nothing** |
+| `cron/jobs.json` | **scheduled reminders**, and `origin.chat_name` | `ted-forget-user.py` (19 Sep) |
+| `channel_directory.json` | routing targets **and display name** | `ted-forget-user.py` (19 Sep) |
+| `whatsapp/lid-phone-map-*.json` | phone ↔ lid mapping | `ted-forget-user.py` (19 Sep) |
 | `state/*.bak*`, `cron/*.bak*` | pre-repair snapshots | retention, by design |
 | `profiles/backup*/` | whole profile copies | retention, by design |
 | `~/ted-backups/` | daily backup, drilled | retention, by design |
 | Convex | profile, facts, targets, logs | `_delete_user_data` |
 
 **Cron is the one that would be felt.** T09 asks for future reminders to be
-cancelled, and nothing in either half of the deletion touches `jobs.json`. A
+cancelled, and nothing in either half of the deletion touched `jobs.json`. A
 deleted person with an enabled job hears from Ted after asking to be erased.
-Udayan has none, so this has never happened — it is unexercised, not safe.
+
+**Closed 19 Sep 2026.** `ted-forget-user.py` now finds jobs by
+`origin.chat_id` or `origin.user_id`, reports them in the dry run, and
+cancels them with `hermes cron remove` rather than editing `jobs.json` — the
+CLI owns that schema, and a hand-written rewrite is how `next_run_at` ends up
+null and a different person's reminder silently stops.
+
+Udayan has no jobs, so the live data cannot exercise this path at all. It is
+held up by fixtures in `scripts/test_ted_forget_user.py` and nothing else,
+which is worth knowing before trusting it on the next deletion.
+
+**Two of these stores hold a name, not just an identifier.** `origin.chat_name`
+in a cron job and `name` in `channel_directory.json`. The audit line for
+Udayan said the directory "names his chat id"; it also names *him*.
 
 **The retention rows are a decision, not a leak.** A backup that forgets on
 demand is not a backup, and `ted-backup.py` exists because a host move is when
@@ -134,8 +147,11 @@ matters is that they are named: an undeclared store is the one nobody empties.
 2. **Clear the name from the tombstone**, and find which writer put it there.
    The fix is the class, not the record: a repair script must skip a record
    marked `forgotten_at`.
-3. **Cancel cron jobs on deletion.** Nothing does this today.
-4. **Remove a deleted person from `channel_directory.json`.**
+3. ~~**Cancel cron jobs on deletion.**~~ **Closed 19 Sep**, unexercised
+   against real data — see above.
+4. ~~**Remove a deleted person from `channel_directory.json`.**~~ **Closed
+   19 Sep**, along with the lid-to-phone map, which was declared in the table
+   above and had no owner either.
 5. **Decide the backup answer.** A deletion request and a seven-day backup
    retention are in genuine tension, and the honest options are to say so in
    the privacy page or to exclude erased users on restore. Not a code question.

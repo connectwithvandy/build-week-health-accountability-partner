@@ -69,6 +69,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 HERMES = Path.home() / ".hermes"
@@ -91,6 +92,9 @@ MEDIA_PATH = re.compile(r"(/[^\s\"'<>|]+\.(?:jpg|jpeg|png|gif|webp|ogg|oga|opus|
 # them ever comes back for it. On 17 Sep 2026 there were twenty, holding all
 # 55 users. This reports them. It does not delete them yet.
 GATE_STATE_DIR = HERMES / "state"
+CRON_JOBS = HERMES / "cron" / "jobs.json"
+CHANNEL_DIRECTORY = HERMES / "channel_directory.json"
+LID_MAP_GLOB = "whatsapp/lid-phone-map-*.json"
 
 
 # Voice notes are not findable the way photos are.
@@ -418,6 +422,72 @@ def delete_rows(table: str, column: str, values: list[str]) -> int:
         con.close()
 
 
+def cron_jobs_for(chats: list[str]) -> list[dict]:
+    """Scheduled reminders that would still fire at somebody who left.
+
+    T09 asks for future reminders to be cancelled and nothing did it. Udayan
+    had none, so this has never actually happened — it was unexercised, not
+    safe, and "the deleted person got a nudge" is the one failure here a real
+    person would feel rather than read about in an audit.
+
+    A job carries its target in `origin`, which holds `chat_id`, `user_id`
+    **and `chat_name`** — so the job file is a store of their display name
+    too, not only of an identifier.
+    """
+    if not CRON_JOBS.exists():
+        return []
+    wanted = {c for c in chats if c}
+    found = []
+    for job in json.loads(CRON_JOBS.read_text(encoding="utf-8")).get("jobs", []):
+        origin = job.get("origin") or {}
+        if not isinstance(origin, dict):
+            continue
+        if {origin.get("chat_id"), origin.get("user_id")} & wanted:
+            found.append(job)
+    return found
+
+
+def channel_entries_for(chats: list[str]) -> list[tuple[str, dict]]:
+    """Routing targets naming this person, by platform."""
+    if not CHANNEL_DIRECTORY.exists():
+        return []
+    wanted = {c for c in chats if c}
+    payload = json.loads(CHANNEL_DIRECTORY.read_text(encoding="utf-8"))
+    found = []
+    for platform, entries in (payload.get("platforms") or {}).items():
+        for entry in entries or []:
+            if isinstance(entry, dict) and entry.get("id") in wanted:
+                found.append((platform, entry))
+    return found
+
+
+def lid_map_entries_for(chats: list[str]) -> list[tuple[Path, str]]:
+    """The lid-to-phone mapping, which is the link between their two ids."""
+    wanted = {c.split("@")[0] for c in chats if c} | {c for c in chats if c}
+    found = []
+    for path in sorted(HERMES.glob(LID_MAP_GLOB)):
+        mapping = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(mapping, dict):
+            continue
+        for key, value in mapping.items():
+            if key in wanted or str(value) in wanted:
+                found.append((path, key))
+    return found
+
+
+def _rewrite(path: Path, payload: object) -> None:
+    """Back up beside the file, then replace it atomically."""
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    path.with_name(f"{path.name}.bak.pre-forget-{stamp}").write_text(
+        path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    temporary.replace(path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -475,9 +545,28 @@ def main() -> int:
     # naming it here now would send somebody to check a store that no longer
     # holds words. What replaced it is not reachable from here either, and
     # saying nothing would be the same mistake in the other direction.
-    print("\n  not reachable from here: channel_directory.json still names this")
-    print("  chat, and nothing removes it. Snapshots and ~/ted-backups keep a copy")
-    print("  on purpose — a backup that forgets on demand is not a backup.")
+    # Three stores that nothing reached until 19 Sep 2026. All three are
+    # addressed by the same chat id the rest of this script resolves, so the
+    # only reason they were left is that nobody had declared them.
+    jobs = cron_jobs_for(c["chats"])
+    channels = channel_entries_for(c["chats"])
+    lid_rows = lid_map_entries_for(c["chats"])
+
+    enabled = [j for j in jobs if j.get("enabled")]
+    print(f"\n  {len(jobs):>5}  scheduled reminders, {len(enabled)} of them enabled")
+    for job in jobs[:8]:
+        state = "enabled" if job.get("enabled") else "disabled"
+        print(f"         {job.get('id')}  {state:8}  {job.get('name')}")
+    if enabled:
+        print("         these would still fire at somebody who asked to be erased.")
+    print(f"  {len(channels):>5}  routing entries in channel_directory.json")
+    for platform, entry in channels[:4]:
+        # The name, not only the id: this file stores both.
+        print(f"         {platform}: {entry.get('name')}")
+    print(f"  {len(lid_rows):>5}  rows in the lid-to-phone map, which links their two ids")
+
+    print("\n  still not reachable from here: snapshots and ~/ted-backups keep a")
+    print("  copy on purpose — a backup that forgets on demand is not a backup.")
     print("  Prove what is left rather than assuming: npm run deletion:audit")
 
     if not args.apply:
@@ -523,7 +612,54 @@ def main() -> int:
         else:
             print(f"  session {sid} failed: {(result.stderr or result.stdout).strip()[:120]}")
 
-    print(f"\n  {deleted_sessions}/{len(session_ids)} sessions deleted, "
+    # Cron first, because it is the only one of the three that would reach
+    # the person. `hermes cron remove` rather than an edit to jobs.json: the
+    # CLI owns that schema, and a hand-written rewrite is how `next_run_at`
+    # ends up null and a *different* person's reminder silently stops.
+    removed_jobs = 0
+    for job in jobs:
+        result = subprocess.run(
+            ["hermes", "cron", "remove", str(job.get("id"))],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            removed_jobs += 1
+        else:
+            print(f"  cron job {job.get('id')} failed: "
+                  f"{(result.stderr or result.stdout).strip()[:120]}")
+
+    # Re-read both files immediately before writing. The gateway appends to
+    # the directory as it routes, so anything read at the top of this run is
+    # already minutes stale, and writing that back would undo somebody else's
+    # entry to remove this one.
+    removed_channels = 0
+    if channels and CHANNEL_DIRECTORY.exists():
+        payload = json.loads(CHANNEL_DIRECTORY.read_text(encoding="utf-8"))
+        wanted = {ch for ch in c["chats"] if ch}
+        for platform, entries in (payload.get("platforms") or {}).items():
+            kept = [e for e in entries or []
+                    if not (isinstance(e, dict) and e.get("id") in wanted)]
+            removed_channels += len(entries or []) - len(kept)
+            payload["platforms"][platform] = kept
+        if removed_channels:
+            _rewrite(CHANNEL_DIRECTORY, payload)
+
+    removed_lid = 0
+    for path in sorted({path for path, _ in lid_map_entries_for(c["chats"])}):
+        mapping = json.loads(path.read_text(encoding="utf-8"))
+        wanted = {ch.split("@")[0] for ch in c["chats"] if ch} | {
+            ch for ch in c["chats"] if ch
+        }
+        kept = {k: v for k, v in mapping.items()
+                if k not in wanted and str(v) not in wanted}
+        removed_lid += len(mapping) - len(kept)
+        if len(kept) != len(mapping):
+            _rewrite(path, kept)
+
+    print(f"\n  {removed_jobs}/{len(jobs)} scheduled reminders cancelled, "
+          f"{removed_channels} routing entr(ies) removed, "
+          f"{removed_lid} lid-map row(s) removed.")
+    print(f"  {deleted_sessions}/{len(session_ids)} sessions deleted, "
           f"{removed_media} media files removed, {rows} other rows removed.")
     print(f"  {scrubbed_records} gate record(s) scrubbed from "
           f"{scrubbed_files} snapshot(s).")

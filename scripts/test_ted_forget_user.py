@@ -350,3 +350,107 @@ def test_voice_notes_stay_inside_the_deletable_roots(tmp_path, monkeypatch):
     owned, _ = forget.unreferenced_audio_for(["sess-asha"])
 
     assert owned and all(p.is_relative_to(tmp_path / "cache" / "audio") for p in owned)
+
+
+# --- the three stores nothing reached until 19 Sep 2026 -------------------
+#
+# T09 asks for future reminders to be cancelled. Nothing did. Udayan, the one
+# person who ever asked to be erased, happens to have no cron jobs, so the
+# path cannot be exercised against the live data at all — it was unexercised,
+# not safe. These fixtures are the only thing standing behind it.
+
+CHAT = "121002247876610@lid"
+OTHER = "999888777666555@lid"
+
+
+def _jobs(tmp_path, monkeypatch, jobs):
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+    monkeypatch.setattr(forget, "CRON_JOBS", path)
+    return path
+
+
+def test_a_deleted_person_s_reminders_are_found(tmp_path, monkeypatch):
+    _jobs(tmp_path, monkeypatch, [
+        {"id": "aaa", "name": "Vitamin D", "enabled": True,
+         "origin": {"chat_id": CHAT, "user_id": CHAT, "chat_name": "Udayan"}},
+        {"id": "bbb", "name": "Water", "enabled": True,
+         "origin": {"chat_id": OTHER, "user_id": OTHER, "chat_name": "Someone"}},
+    ])
+    found = forget.cron_jobs_for([CHAT])
+    assert [j["id"] for j in found] == ["aaa"]
+
+
+def test_a_disabled_reminder_still_counts(tmp_path, monkeypatch):
+    """It can be resumed. Leaving it is leaving a scheduled action behind."""
+    _jobs(tmp_path, monkeypatch, [
+        {"id": "aaa", "name": "Vitamin D", "enabled": False,
+         "origin": {"chat_id": CHAT}},
+    ])
+    assert len(forget.cron_jobs_for([CHAT])) == 1
+
+
+def test_a_job_matched_on_user_id_alone_is_found(tmp_path, monkeypatch):
+    _jobs(tmp_path, monkeypatch, [
+        {"id": "aaa", "enabled": True, "origin": {"user_id": CHAT}},
+    ])
+    assert len(forget.cron_jobs_for([CHAT])) == 1
+
+
+def test_a_malformed_origin_is_skipped_not_fatal(tmp_path, monkeypatch):
+    _jobs(tmp_path, monkeypatch, [
+        {"id": "aaa", "origin": None},
+        {"id": "bbb", "origin": "whatsapp"},
+        {"id": "ccc", "enabled": True, "origin": {"chat_id": CHAT}},
+    ])
+    assert [j["id"] for j in forget.cron_jobs_for([CHAT])] == ["ccc"]
+
+
+def test_no_cron_file_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(forget, "CRON_JOBS", tmp_path / "absent.json")
+    assert forget.cron_jobs_for([CHAT]) == []
+
+
+def test_the_routing_entry_is_found_and_it_holds_their_name(tmp_path, monkeypatch):
+    """channel_directory.json stores the display name, not only the id."""
+    path = tmp_path / "channel_directory.json"
+    path.write_text(json.dumps({"platforms": {"whatsapp": [
+        {"id": CHAT, "name": "Udayan", "type": "dm"},
+        {"id": OTHER, "name": "Someone", "type": "dm"},
+    ], "whatsapp_cloud": []}}), encoding="utf-8")
+    monkeypatch.setattr(forget, "CHANNEL_DIRECTORY", path)
+    found = forget.channel_entries_for([CHAT])
+    assert len(found) == 1
+    platform, entry = found[0]
+    assert platform == "whatsapp"
+    assert entry["name"] == "Udayan"
+
+
+def test_the_lid_map_is_matched_on_either_side(tmp_path, monkeypatch):
+    """It is the link between somebody's two identifiers, so either finds it."""
+    whatsapp = tmp_path / "whatsapp"
+    whatsapp.mkdir()
+    (whatsapp / "lid-phone-map-20260917.json").write_text(
+        json.dumps({"121002247876610": "918882688533", "1": "2"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(forget, "HERMES", tmp_path)
+    assert len(forget.lid_map_entries_for([CHAT])) == 1
+    assert len(forget.lid_map_entries_for(["918882688533"])) == 1
+
+
+def test_nobody_else_is_ever_matched(tmp_path, monkeypatch):
+    _jobs(tmp_path, monkeypatch, [
+        {"id": "bbb", "enabled": True, "origin": {"chat_id": OTHER}},
+    ])
+    assert forget.cron_jobs_for([CHAT]) == []
+
+
+def test_a_rewrite_backs_the_file_up_first(tmp_path):
+    path = tmp_path / "channel_directory.json"
+    path.write_text(json.dumps({"platforms": {"whatsapp": [{"id": CHAT}]}}),
+                    encoding="utf-8")
+    forget._rewrite(path, {"platforms": {"whatsapp": []}})
+    backups = list(tmp_path.glob("channel_directory.json.bak.pre-forget-*"))
+    assert len(backups) == 1
+    assert CHAT in backups[0].read_text(encoding="utf-8")
+    assert CHAT not in path.read_text(encoding="utf-8")
