@@ -110,6 +110,22 @@ class TestItReadsTheRealOutput:
     def test_the_template_share_is_read(self, sweep):
         assert sweep.window(WINDOW) == {"% of sends needing a template": 16}
 
+    def test_the_log_exposure_total_is_read(self, sweep):
+        report = (
+            "/Users/x/.hermes/logs\n\n"
+            "  agent.log    clean, 922 already withheld, 0.0 days old\n\n"
+            "  0 line(s) hold a user's words.\n"
+        )
+        assert sweep.logs(report) == {"log lines holding user text": 0}
+
+    def test_a_regression_in_the_log_redaction_shows_up(self, sweep):
+        report = "  14 line(s) hold a user's words.\n  Redact them with: ...\n"
+        assert sweep.logs(report) == {"log lines holding user text": 14}
+
+    def test_a_reworded_log_report_is_not_silently_clean(self, sweep):
+        with pytest.raises(sweep.ShapeChanged):
+            sweep.logs("logs look fine")
+
     def test_the_bill_is_rounded_to_the_nearest_ten(self, sweep):
         payload = json.dumps({"windows": {"window": {"all": {"usd": 46.25}}}})
         assert sweep.spend(payload) == {

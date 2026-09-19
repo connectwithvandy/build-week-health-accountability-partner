@@ -36,7 +36,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -202,11 +204,84 @@ def prune(days: int) -> list[str]:
     return dropped
 
 
+REPO = Path(__file__).resolve().parent.parent
+LABEL = "ai.ted.logs"
+PLIST_SRC = REPO / "scripts" / f"{LABEL}.plist"
+PLIST_DEST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+
+def install() -> int:
+    """Put the retention window on a timer, and prove it can run.
+
+    T35 asks for old logs to expire *predictably*. A tool that expires them
+    only when somebody remembers to type it is not a retention rule, it is a
+    good intention, and this project has now scheduled four things for exactly
+    that reason.
+
+    Validated with `plutil`, which is what launchd parses with, not only with
+    plistlib: the two disagree, and a plist plistlib reads happily can be
+    rejected outright by launchd, which then silently goes on running the
+    previous definition. Unloaded and loaded rather than kickstarted, because
+    `kickstart -k` restarts a job from launchd's in-memory copy and never
+    re-reads the file.
+    """
+    linted = subprocess.run(["plutil", "-lint", str(PLIST_SRC)], capture_output=True)
+    if linted.returncode != 0:
+        print((linted.stdout + linted.stderr).decode().strip(), file=sys.stderr)
+        return 1
+    try:
+        plistlib.loads(PLIST_SRC.read_bytes())
+    except (OSError, ValueError) as exc:
+        print(f"Cannot read {PLIST_SRC}: {exc}", file=sys.stderr)
+        return 1
+
+    PLIST_DEST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(PLIST_SRC, PLIST_DEST)
+    subprocess.run(["launchctl", "unload", str(PLIST_DEST)], capture_output=True)
+    loaded = subprocess.run(["launchctl", "load", str(PLIST_DEST)], capture_output=True)
+    if loaded.returncode != 0:
+        print(loaded.stderr.decode().strip() or "launchctl load failed", file=sys.stderr)
+        return 1
+
+    target = f"gui/{os.getuid()}/{LABEL}"
+    started = subprocess.run(["launchctl", "kickstart", "-p", target], capture_output=True)
+    if started.returncode != 0:
+        print(started.stderr.decode().strip() or "kickstart failed", file=sys.stderr)
+        return 1
+
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        printed = subprocess.run(
+            ["launchctl", "print", target], capture_output=True
+        ).stdout.decode()
+        for line in printed.splitlines():
+            if "last exit code" not in line:
+                continue
+            value = line.split("=", 1)[1].strip()
+            if value.startswith("("):
+                break
+            if value == "0":
+                print(f"  Loaded {LABEL}, ran once, exited cleanly.")
+                print("  Rotated logs older than 30 days are pruned daily at 04:30,")
+                print("  half an hour after the backup that copies them first.")
+                return 0
+            print(f"  The job ran and exited {value}. A non-zero exit here means a", file=sys.stderr)
+            print("  live log still holds user text, which patch 14 should prevent.", file=sys.stderr)
+            return 1
+        time.sleep(2)
+    print("  It did not finish within 120s.", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Keep users' words out of the logs.")
     parser.add_argument("--scrub", action="store_true", help="redact what is safe to redact")
     parser.add_argument("--days", type=int, help="also delete rotated logs older than this")
+    parser.add_argument("--install", action="store_true", help="prune daily at 04:30")
     args = parser.parse_args()
+
+    if args.install:
+        return install()
 
     rows = survey()
     if not rows:

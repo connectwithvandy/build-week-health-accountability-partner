@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ted.logs</string>
+
+  <!-- T35's other half: old logs expiring predictably.
+
+       The content half was closed by Hermes patch 14, which withholds the
+       message text in the gateway itself, and is verified: there is not one
+       real user word in the live logs. What was never built is expiry. The
+       tool to do it has existed since 18 Sep and ran only when somebody
+       thought to type it, which is the same shape as every other thing this
+       project has had to schedule.
+
+       04:30, half an hour after ai.ted.backup. Deliberate order: a log is
+       copied into the backup before anything prunes it, so the retention
+       window never eats the only copy of a day nobody has looked at yet.
+
+       30 days, which is the window the script's own usage line has suggested
+       since it was written. It is a decision rather than a law: these logs
+       now hold metadata, not health content, so the cost of keeping them is
+       disk and the cost of losing them is a diagnosis. Change the number here
+       if a real investigation ever needs longer.
+
+       It rewrites nothing the gateway has open. A live log is reported and
+       left, which is the script's own rule and the reason a rotated log is
+       the only thing this can actually clean. That is fine: the rotations are
+       where the bulk sits.
+
+       Exit code 0 is a real signal here. The job exits non-zero only when a
+       live log genuinely still holds user text, which would mean patch 14 has
+       regressed, and that is worth waking up for.
+
+       The interpreter is the Hermes venv's, not /usr/bin/python3: macOS
+       refuses a launchd agent access to ~/Documents unless that binary has
+       been granted it. See the same note in ai.ted.backup.plist. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/vandana.agarwal/.hermes/hermes-agent/venv/bin/python3</string>
+    <string>/Users/vandana.agarwal/Documents/build-week-health accountability partner/scripts/ted-log-retention.py</string>
+    <string>--scrub</string>
+    <string>--days</string>
+    <string>30</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>4</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/vandana.agarwal/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/vandana.agarwal</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-log-retention.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/vandana.agarwal/.hermes/logs/ted-log-retention.log</string>
+</dict>
+</plist>

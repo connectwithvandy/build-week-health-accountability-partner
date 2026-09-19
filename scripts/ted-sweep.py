@@ -187,6 +187,20 @@ def spend(text: str) -> dict:
     return {"$ in the last 7 days, to the nearest 10": round(total / 10) * 10}
 
 
+def logs(text: str) -> dict:
+    """T35. Whether any of users' own words are sitting in the logs.
+
+    Enforcement is `ai.ted.logs`, which prunes and scrubs at 04:30. This is
+    the other half: the number, every morning, so a regression in patch 14 is
+    seen rather than waited for. It was reading 62 until today and the truth
+    was 0, which is its own lesson about a check nobody can believe.
+    """
+    found = re.search(r"(\d+) line\(s\) hold a user's words", text)
+    if not found:
+        raise ShapeChanged("no exposure total")
+    return {"log lines holding user text": int(found.group(1))}
+
+
 # Order matters only for reading: the ones that are somebody's experience go
 # first, the ones that are money go last.
 #
@@ -200,6 +214,7 @@ CHECKS = (
     ("onboarding", ["ted-reconcile-setup.py", "--json"], onboarding, True),
     ("users crossing", ["ted-concurrency-check.py"], concurrency, True),
     ("memory keys", ["ted-memory-audit.py", "--json"], memory, True),
+    ("user text in logs", ["ted-log-retention.py"], logs, True),
     ("template share", ["ted-window-check.py"], window, False),
     ("spend", ["ted-api-spend.py", "--json"], spend, False),
 )
