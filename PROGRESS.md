@@ -2286,6 +2286,100 @@ Tool calling. Every replay runs without tools, and a reminder turn can call
 tools correctly, and that is the next test, against the live harness rather
 than this one.
 
+## Order 37 — 19 Sep 2026, Ted explaining his own plumbing
+
+Step 1 of the T15 sequence, shipped and live at 14:15:57. It is independent of
+any routing decision and would have been worth doing if the bakeoff had never
+run.
+
+### What the bakeoff found on its way past
+
+Asked to remind somebody to take their CoQ10, `claude-haiku-4-5` answered with
+seven hundred characters about having no access to WhatsApp and needing a
+Business API integration, wearing Ted's name.
+
+**Nothing in the gates stopped it**, checked rather than assumed.
+`_THIRD_PERSON_NOTE` matches "the user" and that reply said "Vandy's WhatsApp".
+`_ASSISTANT_CLOSERS` matches a closing offer, not a refusal. Patch 11 catches
+nine gateway sentinels and this is none of them: it is the model's own
+`final_response`. It would have been delivered.
+
+**And it is not a cheap-model problem.** Three of TED's 3,014 drafts have
+already broken character on `claude-sonnet-5`, one of them in a real thread on
+8 Sep. 0.1% against Haiku's 8% is a difference of degree, and the fallback
+model has not been Sonnet since the credit outage.
+
+### Every pattern was counted before it went in
+
+The rule that nearly shipped: match the bare word "whatsapp". It is the
+obvious tell for a reply about the channel. The corpus says it appears in four
+drafts and **none of them is a break** — all four are self-introductions. It
+stays out, and the channel is only matched inside a phrase no coach writes.
+
+Vandy then caught the second half of that: all four are pre-4-Sep copy she has
+since rejected, so "these four would break" was never much of an argument. The
+word still stays out, on the principle instead — a single common noun must
+never be able to delete a whole reply, and under-stripping leaves a bad
+sentence while over-stripping deletes a good message.
+
+### The fix missed the path it was found on
+
+Found by checking my own change rather than waiting for it to fail.
+`_cron_reminder_gate` ends in `return None`, which means "send what the model
+wrote", and never calls `strip_assistant_speak`. So the first version covered
+chat and missed **cron entirely** — the path the whole problem came from. The
+meal-card branch of `transform_response` has the same shape, and the real 8 Sep
+break was a reply about a meal.
+
+`drop_machine_talk` closes both, and is deliberately separate from
+`strip_assistant_speak` because it returns `""` when that was the whole
+message. Every other thing that gate removes is packaging, so an emptied reply
+is better sent over-polished than not at all. This one is not packaging, and
+both callers have a better answer than the original: the meal card still
+carries its numbers, and a cron send can simply not happen.
+
+### Two bugs the corpus caught and reasoning did not
+
+    version 1   246 of 3,014 drafts altered — 243 were lost paragraph breaks
+    version 2   151 of 3,014 altered — the rest were indentation and spaces
+    final         3 of 3,014 altered — all 3 the known breaks
+
+Rebuilding each line from its sentences collapsed every `\n\n` to `\n`, which
+on WhatsApp is a visible change to how a message reads. Then it still
+normalised indentation, which breaks the meal card's indented rows. A line with
+nothing to remove is now returned exactly as it was.
+
+### Proof it can only improve
+
+    3,014 drafts ever written  ->  3 altered, all 3 known breaks
+    798 cron reminders ever    ->  0 suppressed, 0 stripped, 798 untouched
+    169 delivered messages     ->  0 altered
+
+The suppression path was checked hardest, because a suppressed reminder is Ted
+saying nothing and that is what lost Palak and Vishwas on 4 Sep. Zero of 798
+real reminders would be suppressed.
+
+### Verified live, not just in tests
+
+`ted_safety_gates_registered` at 14:15:57 from the repo path, all 17 patches
+applied, `drop_machine_talk` present in the running module, and the real 8 Sep
+break reduced live to "two meals in today, palak paneer with roti" while
+"omega-3, 1500mg, right after breakfast" came back unchanged.
+
+The restart forced a launchd kill with a 0s drain, so it was checked: zero
+non-delivered obligations in the hour, nobody waiting, every message answered.
+
+**A false alarm worth knowing the shape of.** The first deployment check
+reported `drop_machine_talk: MISSING` from the installed plugin and was one
+sentence away from being called a failed deploy. The shim exports only
+`register`; the module hangs off `MODULE`. The check was wrong, not the
+deployment.
+
+### Numbers
+
+1,543 Python tests, 2,174 subtests, 161 in the web suite. Lint and TypeScript
+clean.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.
