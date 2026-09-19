@@ -206,3 +206,62 @@ class TestItSpeaksOnlyWhenSomethingMoved:
         """With nothing stored, every fact is new. Sending that as an alert on
         the day it is installed is how a watcher gets filtered on day two."""
         assert sweep.differences({}, {"unanswered people": self._facts(unanswered=4)}) == []
+
+
+class TestInstallingItIsProvedNotAnnounced:
+    """The mistake this class is named after was made on 19 Sep 2026.
+
+    The job was installed, kickstarted, and reported exit code 0. It was also
+    blind in one place the whole time, because launchd had no PATH and the
+    memory audit could not find `npx`. Exit code 0 was true and worthless.
+    """
+
+    def test_a_clean_run_has_nothing_unreadable(self, sweep):
+        state = {"checks": {
+            "unanswered people": {"facts": {"unanswered": 0}},
+            "memory keys": {"facts": {"keys stored under two spellings": 1}},
+        }}
+        assert sweep.unreadable_checks(state) == []
+
+    def test_a_blind_check_is_named_however_well_the_job_exited(self, sweep):
+        state = {"checks": {
+            "unanswered people": {"facts": {"unanswered": 0}},
+            "memory keys": {"unreadable": "did not print JSON"},
+            "spend": {"unreadable": "no total in the spend report"},
+        }}
+        assert sweep.unreadable_checks(state) == ["memory keys", "spend"]
+
+    def test_no_state_at_all_is_not_read_as_healthy(self, sweep):
+        """An install that produced no state file has not been proved either,
+        and the caller checks the exit code first for exactly that."""
+        assert sweep.unreadable_checks({}) == []
+
+    def test_the_plist_is_valid_to_the_parser_launchd_actually_uses(self, sweep):
+        """plutil, not plistlib. They disagree, and a stray `-->` once left a
+        plist that plistlib read happily and launchd rejected outright, going
+        on running the previous definition without a word."""
+        import subprocess
+
+        done = subprocess.run(
+            ["plutil", "-lint", str(sweep.PLIST_SRC)], capture_output=True
+        )
+        assert done.returncode == 0, done.stdout.decode()
+
+    def test_the_plist_carries_a_path_that_can_find_npx(self, sweep):
+        """The specific fix. Without it the memory audit is perfect by hand
+        and silently useless on the schedule."""
+        import plistlib
+
+        loaded = plistlib.loads(sweep.PLIST_SRC.read_bytes())
+        path = loaded["EnvironmentVariables"]["PATH"]
+        assert any(
+            (Path(part) / "npx").exists() for part in path.split(":")
+        ), f"no npx on {path}"
+
+    def test_the_plist_runs_the_interpreter_launchd_is_allowed_to_use(self, sweep):
+        """macOS refuses a launchd agent access to ~/Documents unless the
+        binary has been granted it, and Command Line Tools python has not."""
+        import plistlib
+
+        loaded = plistlib.loads(sweep.PLIST_SRC.read_bytes())
+        assert "venv/bin/python3" in loaded["ProgramArguments"][0]

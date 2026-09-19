@@ -45,7 +45,9 @@ import argparse
 import importlib.util
 import json
 import os
+import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -57,6 +59,11 @@ STATE = HERMES / "state" / "ted-sweep-state.json"
 # Long enough for the 30-day ordering scan and a Convex round trip, short
 # enough that a hung check cannot hold the whole sweep open all night.
 TIMEOUT_SECONDS = 300
+
+LABEL = "ai.ted.sweep"
+PLIST_SRC = REPO / "scripts" / f"{LABEL}.plist"
+PLIST_DEST = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+SWEEP_LOG = HERMES / "logs" / "ted-sweep.log"
 
 
 class ShapeChanged(Exception):
@@ -281,6 +288,121 @@ def notifier():
         return None
 
 
+def unreadable_checks(state: dict) -> list[str]:
+    """The checks the last run could not read. Empty is the only good answer.
+
+    Separate from the exit code on purpose, and this is the whole reason the
+    installer exists in this shape. The sweep exits 0 when a check comes back
+    unreadable, because one broken check must not take the other six down with
+    it — so "the job ran and exited cleanly" is true and useless. The first
+    scheduled run of this very file exited 0 with the memory audit reporting
+    "did not print JSON", which was `npx` missing from launchd's PATH.
+
+    An installer whose proof is an exit code would have called that a success.
+    """
+    return sorted(
+        name for name, result in (state.get("checks") or {}).items()
+        if "unreadable" in result
+    )
+
+
+def install() -> int:
+    """Put the job on, then refuse to say it works until it has worked.
+
+    Modelled on `ted-backup.py --install`, including its lesson: validate with
+    `plutil`, which is what launchd uses, rather than only with plistlib. The
+    two disagree, and a stray `-->` once left a plist that plistlib read
+    happily and launchd rejected outright, silently going on running the
+    previous definition.
+
+    That failure has a sibling, met on 19 Sep 2026 and the reason this is a
+    flag rather than a line in a README: `launchctl kickstart -k` restarts a
+    job from launchd's in-memory copy and never re-reads the file. The plist
+    on disk was correct, the running job was the old one, and the evidence was
+    a fix that changed nothing twice. Unload, then load, then kickstart.
+    """
+    linted = subprocess.run(["plutil", "-lint", str(PLIST_SRC)], capture_output=True)
+    if linted.returncode != 0:
+        detail = (linted.stdout + linted.stderr).decode().strip()
+        print(f"{PLIST_SRC} is not valid: {detail}", file=sys.stderr)
+        return 1
+    try:
+        plistlib.loads(PLIST_SRC.read_bytes())
+    except (OSError, ValueError) as exc:
+        print(f"Cannot read {PLIST_SRC}: {exc}", file=sys.stderr)
+        return 1
+
+    PLIST_DEST.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(PLIST_SRC, PLIST_DEST)
+    subprocess.run(["launchctl", "unload", str(PLIST_DEST)], capture_output=True)
+    loaded = subprocess.run(["launchctl", "load", str(PLIST_DEST)], capture_output=True)
+    if loaded.returncode != 0:
+        print(loaded.stderr.decode().strip() or "launchctl load failed", file=sys.stderr)
+        return 1
+
+    print(f"Loaded {LABEL}. Running it once to prove it works...")
+    ok, detail = prove_the_job_runs()
+    if not ok:
+        print(f"\n  THE SCHEDULED JOB CANNOT RUN: {detail}", file=sys.stderr)
+        print("  It is loaded and it would fail silently at 09:00.", file=sys.stderr)
+        return 1
+
+    blind = unreadable_checks(read_state())
+    if blind:
+        print(f"\n  It ran, and it is blind in {len(blind)} place(s):", file=sys.stderr)
+        for name in blind:
+            print(f"    {name}", file=sys.stderr)
+        print(
+            "\n  The job works and those checks do not, which is the state that\n"
+            "  looks healthiest and is worth least. Usually the environment:\n"
+            "  launchd inherits almost nothing. Fix, then --install again.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"\n  Proven: {detail}, and all {len(CHECKS)} checks were readable.")
+    print("  It runs daily at 09:00 and says nothing unless something moved.")
+    return 0
+
+
+def prove_the_job_runs(timeout: float = 420.0) -> tuple[bool, str]:
+    """Fire the installed job once and wait for a real exit code.
+
+    launchd reports `last exit code` per job, which is the only answer that
+    accounts for the whole path: the interpreter, its permissions, the script
+    location, the environment and the script itself. Anything this process
+    checked directly would be checking its own permissions, and those are
+    exactly the ones that differ.
+    """
+    target = f"gui/{os.getuid()}/{LABEL}"
+    before = SWEEP_LOG.stat().st_size if SWEEP_LOG.exists() else 0
+    started = subprocess.run(["launchctl", "kickstart", "-p", target], capture_output=True)
+    if started.returncode != 0:
+        return False, started.stderr.decode().strip() or "launchctl kickstart failed"
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        printed = subprocess.run(
+            ["launchctl", "print", target], capture_output=True
+        ).stdout.decode()
+        for line in printed.splitlines():
+            if "last exit code" not in line:
+                continue
+            value = line.split("=", 1)[1].strip()
+            if value.startswith("("):  # "(never exited)", still running
+                break
+            if value == "0":
+                return True, "the scheduled job ran and exited cleanly"
+            tail = ""
+            if SWEEP_LOG.exists():
+                with SWEEP_LOG.open(errors="replace") as handle:
+                    handle.seek(before)
+                    tail = " ".join(handle.read().split())[:200]
+            return False, f"exit code {value}. {tail}"
+        time.sleep(2)
+    return False, f"it did not finish within {timeout:.0f}s"
+
+
 def read_state() -> dict:
     try:
         return json.loads(STATE.read_text())
@@ -300,7 +422,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="The product checks, together.")
     parser.add_argument("--dry-run", action="store_true", help="save nothing, send nothing")
     parser.add_argument("--force", action="store_true", help="send even if nothing moved")
+    parser.add_argument("--install", action="store_true", help="run it daily at 09:00")
     args = parser.parse_args()
+
+    if args.install:
+        return install()
 
     before = read_state()
     after = sweep()
