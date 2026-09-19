@@ -29,7 +29,10 @@
     "memory:audit": "python3 scripts/ted-memory-audit.py",
     "memory:voice-rules": "python3 scripts/ted-purge-voice-rules.py",
     "voice": "python3 scripts/ted-voice-check.py",
-    "bakeoff": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-model-bakeoff.py"
+    "bakeoff": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-model-bakeoff.py",
+    "eval:cases": "python3 scripts/ted-eval-suite.py",
+    "eval:build": "python3 scripts/ted-eval-suite.py --build 6",
+    "eval:run": "$HOME/.hermes/hermes-agent/venv/bin/python3 scripts/ted-model-bakeoff.py --suite"
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",

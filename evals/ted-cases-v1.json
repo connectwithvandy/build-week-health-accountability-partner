@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "per_category": 6,
+  "counts": {
+    "meal_text": 6,
+    "meal_photo": 6,
+    "hinglish": 6,
+    "correction": 6,
+    "pause_reschedule": 6,
+    "goal_change": 6,
+    "safety_boundary": 6,
+    "ambiguous": 6,
+    "frustration": 4
+  },
+  "unavailable": {
+    "voice": "arrives already transcribed, with no marker: indistinguishable from typed text after the fact"
+  },
+  "cases": [
+    {
+      "hash": "0a772ab2a2b91bae",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 7
+    },
+    {
+      "hash": "1d04a16de91671c1",
+      "categories": [
+        "frustration"
+      ],
+      "chars": 192
+    },
+    {
+      "hash": "263af63f41ee7d9f",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 64
+    },
+    {
+      "hash": "2691d2f17c104a20",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 27
+    },
+    {
+      "hash": "2b72f807f4a97294",
+      "categories": [
+        "hinglish"
+      ],
+      "chars": 8
+    },
+    {
+      "hash": "339be4490a4c6327",
+      "categories": [
+        "correction",
+        "pause_reschedule"
+      ],
+      "chars": 218
+    },
+    {
+      "hash": "346bb7802ff50b00",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 32
+    },
+    {
+      "hash": "377af4fc7558d993",
+      "categories": [
+        "pause_reschedule"
+      ],
+      "chars": 19
+    },
+    {
+      "hash": "393ed04ce47b7ac0",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 7
+    },
+    {
+      "hash": "39ad7eeabd28be32",
+      "categories": [
+        "correction"
+      ],
+      "chars": 177
+    },
+    {
+      "hash": "39be15289c7942a8",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 4
+    },
+    {
+      "hash": "3bbfac5c39a5824e",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 109
+    },
+    {
+      "hash": "49a4106e38e77779",
+      "categories": [
+        "correction"
+      ],
+      "chars": 103
+    },
+    {
+      "hash": "49be417ad74080a0",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 4
+    },
+    {
+      "hash": "5553b4f51f151460",
+      "categories": [
+        "hinglish"
+      ],
+      "chars": 226
+    },
+    {
+      "hash": "5a993b105671dd48",
+      "categories": [
+        "pause_reschedule"
+      ],
+      "chars": 177
+    },
+    {
+      "hash": "5da24f1be203c639",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 116
+    },
+    {
+      "hash": "5fec2e20edf130bf",
+      "categories": [
+        "frustration"
+      ],
+      "chars": 31
+    },
+    {
+      "hash": "60c41967d61ab489",
+      "categories": [
+        "correction"
+      ],
+      "chars": 50
+    },
+    {
+      "hash": "6210c0bf05396716",
+      "categories": [
+        "pause_reschedule"
+      ],
+      "chars": 5
+    },
+    {
+      "hash": "62605992b7241178",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 113
+    },
+    {
+      "hash": "6747d771d9be7c85",
+      "categories": [
+        "pause_reschedule"
+      ],
+      "chars": 16
+    },
+    {
+      "hash": "6e553d75f343fe3b",
+      "categories": [
+        "hinglish",
+        "correction"
+      ],
+      "chars": 61
+    },
+    {
+      "hash": "75c90868cb594859",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 23
+    },
+    {
+      "hash": "7e5c8bd743777d9b",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 5
+    },
+    {
+      "hash": "7ffffc02151ea2a4",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 126
+    },
+    {
+      "hash": "858e4ba7a29fd38b",
+      "categories": [
+        "pause_reschedule"
+      ],
+      "chars": 5
+    },
+    {
+      "hash": "887ab6f0487ca216",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 2025
+    },
+    {
+      "hash": "8c46032097c1c487",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 155
+    },
+    {
+      "hash": "8f3c09aecf646c07",
+      "categories": [
+        "hinglish"
+      ],
+      "chars": 340
+    },
+    {
+      "hash": "977ecfce9f7ed7f3",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 34
+    },
+    {
+      "hash": "99351b9a71d965d7",
+      "categories": [
+        "frustration"
+      ],
+      "chars": 27
+    },
+    {
+      "hash": "99595c9c6e038107",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 122
+    },
+    {
+      "hash": "99a184d7ca9e7e55",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 142
+    },
+    {
+      "hash": "a1eebacb23aea54e",
+      "categories": [
+        "hinglish"
+      ],
+      "chars": 20
+    },
+    {
+      "hash": "a29b3330481c3fd0",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 4
+    },
+    {
+      "hash": "a741961ac65aca63",
+      "categories": [
+        "hinglish"
+      ],
+      "chars": 22
+    },
+    {
+      "hash": "b26e24bc2ee2f9ce",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 22
+    },
+    {
+      "hash": "b808f286215da6f6",
+      "categories": [
+        "frustration"
+      ],
+      "chars": 28
+    },
+    {
+      "hash": "b82e2178ecf4d0c5",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 2
+    },
+    {
+      "hash": "cc393faa92d0d4fa",
+      "categories": [
+        "correction"
+      ],
+      "chars": 9
+    },
+    {
+      "hash": "df70083f9a89498b",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 419
+    },
+    {
+      "hash": "e7a94ded3b5ffd49",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 38
+    },
+    {
+      "hash": "ec10528c4301ac39",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 26
+    },
+    {
+      "hash": "ee8e6dca8d8078c1",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 7
+    },
+    {
+      "hash": "ef387f203641bec5",
+      "categories": [
+        "meal_photo"
+      ],
+      "chars": 116
+    },
+    {
+      "hash": "f8d850f809a07b6f",
+      "categories": [
+        "meal_text"
+      ],
+      "chars": 9
+    },
+    {
+      "hash": "fb90e195f75ce408",
+      "categories": [
+        "safety_boundary"
+      ],
+      "chars": 11
+    },
+    {
+      "hash": "fd171962edb32872",
+      "categories": [
+        "goal_change"
+      ],
+      "chars": 23
+    },
+    {
+      "hash": "fedf2346b479533f",
+      "categories": [
+        "ambiguous"
+      ],
+      "chars": 5
+    }
+  ]
+}

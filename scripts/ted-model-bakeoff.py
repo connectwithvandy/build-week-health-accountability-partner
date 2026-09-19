@@ -64,6 +64,14 @@ import time
 import urllib.request
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ted_eval_cases  # noqa: E402
+
+SUITE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "evals" / f"ted-cases-v{ted_eval_cases.SUITE_VERSION}.json"
+)
+
 STATE_DB = Path.home() / ".hermes" / "state.db"
 _HERE = Path(__file__).resolve().parent
 
@@ -584,6 +592,13 @@ def main() -> int:
     parser.add_argument("--run", action="store_true", help="actually call the models")
     parser.add_argument("--cases", type=int, default=5, help="how many real turns")
     parser.add_argument(
+        "--suite",
+        nargs="?",
+        const=str(SUITE_PATH),
+        metavar="FILE",
+        help="replay T16's versioned case set instead of the newest cron turns",
+    )
+    parser.add_argument(
         "--against",
         default=",".join(DEFAULT_CANDIDATES),
         help="comma-separated candidate models",
@@ -601,9 +616,26 @@ def main() -> int:
     voice = _load("ted_voice_check", "ted-voice-check.py")
 
     db = connect()
-    case_list = cases(db, args.cases)
+    if args.suite:
+        suite = ted_eval_cases.read(Path(args.suite))
+        if not suite:
+            print(f"No case suite at {args.suite}. "
+                  "Build one: python3 scripts/ted-eval-suite.py --build 6")
+            return 1
+        case_list, unresolved = ted_eval_cases.resolve(db, suite)
+        # Named, never skipped quietly. Two runs are only comparable if they
+        # replayed the same cases, so a shrunk set has to be visible before
+        # anybody spends money comparing against an older result.
+        if unresolved:
+            print(f"\n  {len(unresolved)} of {len(suite.get('cases', []))} case(s) "
+                  "no longer resolve — the message is gone from the store.\n"
+                  "  This run is NOT comparable with one made before they went.\n")
+        print(f"  suite v{suite.get('version')}: replaying {len(case_list)} case(s) "
+              f"across {len(ted_eval_cases.CATEGORIES)} categories.")
+    else:
+        case_list = cases(db, args.cases)
     if not case_list:
-        print("No cron session carries a stored system prompt. Nothing to replay.")
+        print("No session carries a stored system prompt. Nothing to replay.")
         return 1
     biggest = max(prompt_tokens(case) for case in case_list)
 
@@ -625,7 +657,11 @@ def main() -> int:
     ted_length = house_style.get("avg chars")
 
     rates = live_rates(models)
-    print("Real cron turns, replayed through each model.")
+    print(
+        f"T16 case suite, {len(case_list)} real turn(s), replayed through each model."
+        if args.suite
+        else "Real cron turns, replayed through each model."
+    )
     print("No tools, no thinking. This measures wording, not tool calling.")
     print("The user's half of the prompt is read and never printed.\n")
 
