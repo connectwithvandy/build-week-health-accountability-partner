@@ -44,6 +44,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+import ted_deletion_guard
+
 STATE = Path.home() / ".hermes" / "state" / "ted-safety-gates-onboarding.json"
 
 
@@ -130,6 +132,11 @@ def main() -> int:
 
     payload = json.loads(STATE.read_text(encoding="utf-8"))
     users = payload.get("users") or {}
+    # See ted_deletion_guard: a repair script must not refill an erased record.
+    skipped = ted_deletion_guard.note(users)
+    if skipped:
+        print(skipped)
+    users = ted_deletion_guard.living(users)
 
     found = []
     stuck = []

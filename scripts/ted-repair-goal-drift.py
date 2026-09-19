@@ -73,6 +73,8 @@ sys.path.insert(0, str(REPO))
 
 from hermes import ted_safety_gates as gates  # noqa: E402
 
+import ted_deletion_guard
+
 GATE_STATE = Path.home() / ".hermes" / "state" / "ted-safety-gates-onboarding.json"
 HERMES_ENV = Path.home() / ".hermes" / ".env"
 REQUIRED_ENV = ("TED_CONVEX_SITE_URL", "TED_HERMES_SHARED_SECRET")
@@ -163,6 +165,11 @@ def main() -> int:
 
     state = json.loads(GATE_STATE.read_text(encoding="utf-8"))
     gate_users = state.get("users", {})
+    # See ted_deletion_guard: a repair script must not refill an erased record.
+    skipped = ted_deletion_guard.note(gate_users)
+    if skipped:
+        print(skipped)
+    gate_users = ted_deletion_guard.living(gate_users)
 
     # setupAudit carries the goal and target, so this is one read for everyone
     # rather than a round trip per user.

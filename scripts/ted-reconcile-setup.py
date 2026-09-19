@@ -44,6 +44,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import ted_deletion_guard
+
 IST = timezone(timedelta(hours=5, minutes=30))
 HERMES = Path.home() / ".hermes"
 HERMES_ENV = HERMES / ".env"
@@ -126,7 +128,19 @@ def user_key(sender_id: str) -> str:
 def read_gate_state() -> dict[str, dict]:
     if not GATE_STATE.exists():
         return {}
-    return json.loads(GATE_STATE.read_text(encoding="utf-8")).get("users", {})
+    users = json.loads(GATE_STATE.read_text(encoding="utf-8")).get("users", {})
+    # A tombstone is not a user with missing fields. See ted_deletion_guard.
+    # Reported in the human section below, never here: this function is also
+    # on the --json path the sweep reads.
+    return ted_deletion_guard.living(users)
+
+
+def forgotten_note() -> str:
+    """The skip line, for the human output only."""
+    if not GATE_STATE.exists():
+        return ""
+    raw = json.loads(GATE_STATE.read_text(encoding="utf-8")).get("users", {})
+    return ted_deletion_guard.note(raw)
 
 
 def read_disclosed() -> set[str]:
@@ -368,6 +382,9 @@ def main() -> int:
     print(f"TED SETUP RECONCILE   {datetime.now(IST):%d %b %Y %H:%M IST}   {mode}")
     print("=" * 96)
     print(f"users in Convex: {len(rows)}")
+    skipped = forgotten_note()
+    if skipped:
+        print(skipped.strip())
     print()
 
     already = [p for p in plans if not p["missing"] and not p["blocked"]]

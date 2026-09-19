@@ -56,6 +56,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import ted_deletion_guard
+
 REPO = Path(__file__).resolve().parent.parent
 GATE_STATE = Path.home() / ".hermes" / "state" / "ted-safety-gates-onboarding.json"
 HERMES_ENV = Path.home() / ".hermes" / ".env"
@@ -150,6 +152,11 @@ def main() -> int:
     targets = {t["userId"]: t for t in convex_rows("targets")}
     state = json.loads(GATE_STATE.read_text(encoding="utf-8"))
     gate = state.get("users", {})
+    # See ted_deletion_guard: a repair script must not refill an erased record.
+    skipped = ted_deletion_guard.note(gate)
+    if skipped:
+        print(skipped)
+    gate = ted_deletion_guard.living(gate)
 
     plans = []
     for user in users:

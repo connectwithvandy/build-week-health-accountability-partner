@@ -54,6 +54,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 sys.path.insert(0, str(REPO))
 from hermes import ted_safety_gates as gates  # noqa: E402
 
+import ted_deletion_guard
+
 
 def user_key(chat_id: str) -> str:
     """The gate's key for one WhatsApp sender. Must match _user_state_key."""
@@ -107,6 +109,11 @@ def main() -> int:
     if not isinstance(users, dict):
         print("gate state has no users object")
         return 1
+    # See ted_deletion_guard: a repair script must not refill an erased record.
+    skipped = ted_deletion_guard.note(users)
+    if skipped:
+        print(skipped)
+    users = ted_deletion_guard.living(users)
 
     asked = requests_from_history()
     if not asked:
