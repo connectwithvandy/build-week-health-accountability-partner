@@ -201,6 +201,24 @@ def logs(text: str) -> dict:
     return {"log lines holding user text": int(found.group(1))}
 
 
+def hygiene(text: str) -> dict:
+    """Test fixture keys sitting in the live gate state.
+
+    Three times now this has been caught by a person happening to look, most
+    recently by me putting `proof-mealtime` there on 19 Sep while proving a
+    different fix. `conftest.py` guards the test suite; nothing guarded an
+    ad-hoc script. It alerts because a key appearing here means something
+    wrote to the live state that was not the gateway, and the hazard
+    `conftest.py` names is a fixture key colliding with a real user key and
+    silently skipping a disclosure they are owed.
+    """
+    payload = _json(text)
+    try:
+        return {"fixture keys in live state": int(payload["fixture_keys"])}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ShapeChanged(f"no fixture key total: {exc}") from exc
+
+
 # Order matters only for reading: the ones that are somebody's experience go
 # first, the ones that are money go last.
 #
@@ -215,6 +233,7 @@ CHECKS = (
     ("users crossing", ["ted-concurrency-check.py"], concurrency, True),
     ("memory keys", ["ted-memory-audit.py", "--json"], memory, True),
     ("user text in logs", ["ted-log-retention.py"], logs, True),
+    ("fixture keys", ["ted-state-hygiene.py", "--json"], hygiene, True),
     ("template share", ["ted-window-check.py"], window, False),
     ("spend", ["ted-api-spend.py", "--json"], spend, False),
 )
