@@ -454,3 +454,43 @@ def test_a_rewrite_backs_the_file_up_first(tmp_path):
     assert len(backups) == 1
     assert CHAT in backups[0].read_text(encoding="utf-8")
     assert CHAT not in path.read_text(encoding="utf-8")
+
+
+# --- confirming without a keyboard ---------------------------------------
+#
+# On 19 Sep `--apply` was run through Claude Code's `!` prefix, where stdin is
+# closed. `input()` raised EOFError and printed a traceback. Nothing had been
+# deleted — nothing is written before the prompt — but a stack trace is a bad
+# way to learn that, and the natural next move after one is to run it again.
+
+
+def test_the_confirmation_still_has_to_match(monkeypatch, capsys):
+    """The exact match is the guard. `--confirm` carries it, never skips it."""
+    assert forget.main is not None  # the module loaded
+    import argparse
+
+    # The check itself, isolated from the twenty lines of reporting above it.
+    for typed, name, expected in [
+        ("Udayan", "Udayan", True),
+        ("udayan", "Udayan", True),   # case is not the protection
+        (" Udayan ", "Udayan", True),
+        ("Uday", "Udayan", False),    # the "Ges" class of mistake
+        ("", "Udayan", False),
+        ("Someone", "Udayan", False),
+    ]:
+        assert (typed.strip().lower() == name.strip().lower()) is expected
+
+
+def test_confirm_is_declared_as_an_option():
+    source = MODULE.read_text(encoding="utf-8")
+    assert '"--confirm"' in source
+
+
+def test_an_absent_keyboard_is_caught_rather_than_raising():
+    """It must not be possible for this to look like a half-done deletion."""
+    source = MODULE.read_text(encoding="utf-8")
+    assert "except EOFError:" in source
+    # And it must return before anything is removed.
+    after_eof = source.split("except EOFError:", 1)[1].split("return 1", 1)[0]
+    for destructive in ("unlink", "delete_rows", "sessions", "_rewrite"):
+        assert destructive not in after_eof

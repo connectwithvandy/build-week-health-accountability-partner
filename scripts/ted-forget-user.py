@@ -493,6 +493,11 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--who", required=True, help="@lid, phone number, or display name")
     parser.add_argument("--apply", action="store_true", help="actually delete")
+    parser.add_argument(
+        "--confirm",
+        metavar="NAME",
+        help="the name, for a shell with no keyboard; must match exactly",
+    )
     args = parser.parse_args()
 
     session_ids, name = resolve(args.who)
@@ -574,7 +579,28 @@ def main() -> int:
         return 0
 
     print(f"\nThis permanently erases the above for {name}. It cannot be undone.")
-    if input("Type the name to confirm: ").strip().lower() != name.strip().lower():
+
+    # The exact match is the guard, not the typing. It exists because "Ges"
+    # once resolved to somebody, and naming the person in full is what makes
+    # a deletion aimed at the wrong one impossible to do by accident.
+    #
+    # `--confirm` carries that same match for a shell with no keyboard. This
+    # script is run through Claude Code's `!` prefix, where stdin is closed:
+    # on 19 Sep the prompt raised EOFError and printed a traceback, which
+    # looks exactly like a deletion that half happened. It had not — nothing
+    # is written before this point — but a stack trace is a bad way to learn
+    # that, and a person's next move after one is to run it again.
+    if args.confirm is not None:
+        typed = args.confirm
+    else:
+        try:
+            typed = input("Type the name to confirm: ")
+        except EOFError:
+            print("\nNothing was deleted: this shell has no keyboard to confirm with.")
+            print(f"  Re-run in a terminal, or pass the name:")
+            print(f"    --apply --confirm '{name}'\n")
+            return 1
+    if typed.strip().lower() != name.strip().lower():
         print("Not confirmed. Nothing deleted.")
         return 1
 
