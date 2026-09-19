@@ -303,6 +303,51 @@ Nothing reached it only because the app is unpublished. Both scripts now walk
 every live WhatsApp platform. **Publishing the app was the step that would have
 opened it**, and it is the step above.
 
+## 7b. The words on the real number, decided in advance
+
+§1 says the mitigation for the AI-provider clause is to describe the service as
+what it does, never as an AI assistant, in the display name, the business
+description and the app review. That is a rule with no text attached, and it
+would be written at the worst possible moment — during a cutover, in a hurry.
+So it is written here instead, 19 Sep 2026.
+
+**None of it can be set today.** WhatsApp Manager refuses: *"Profile for the
+test phone number cannot be edited."* The test number is fixed as "Test Number"
+with category Other. These fields exist only on the real number, at step 6.
+
+| field | text |
+| --- | --- |
+| Display name | `Ted Health` |
+| About | `meal logging, a daily calorie target, and the reminders you ask for.` |
+| Business description | `Ted helps you log meals, keeps a daily calorie target, and sends the reminders you set. Not medical advice, not for emergencies, diagnosis or treatment.` |
+| Category | **Professional Services** |
+
+Every clause names something the product does. No "assistant", no "chat", no
+"AI", and no verb that only a model performs.
+
+**Why Professional Services and not Medical & Health.** Medical & Health is the
+more literal label and the argument for it is honesty. It is also the category
+that invites the [Business Messaging Policy](https://whatsappbusiness.com/policy/)
+health clause — *"Don't use WhatsApp for telemedicine or to send or request any
+health related information, if applicable regulations prohibit"* — to be read
+against Ted first rather than last. Ted gives calorie estimates, refuses
+under-18s and never returns a deficit, so it would survive that reading; the
+point is not to invite it for no gain. Professional Services is accurate for a
+coaching service rather than evasive.
+
+**What is deliberately not being softened:** `heyted.in/privacy` names the AI
+model provider among the processors, and it stays. The clause in §1 binds what
+is *sold*, not what a privacy policy discloses, and hiding a data processor to
+look better to a reviewer is the kind of thing that fails much worse than it
+succeeds. The same page carries "Ted is a habit coach, not a doctor", which is
+the sentence the health policy actually wants to see.
+
+App-level settings, checked and already correct on 19 Sep: app display name
+`Ted`, business portfolio `Ted Health`, privacy policy, data deletion and terms
+URLs all pointing at `https://heyted.in/privacy` (the last two were pointing at
+`https://www.facebook.com/`, which is what a placeholder looks like to a
+reviewer).
+
 ## 8. What is still open
 
 - Whether Ted's own number migrates cleanly. Needs step 6, and is the only
