@@ -115,6 +115,10 @@ _DISCLOSURE_SENT_KEYS = _load_disclosure_state()
 _ONBOARDING_STATE_PATH = _STATE_DIR / "ted-safety-gates-onboarding.json"
 _ONBOARDING_LOCK = threading.Lock()
 _MAX_NAME_ASKS = 3
+# The same cap, for the same reason, on the last question of onboarding. Three
+# is what the name question settled on: enough that a distracted person is
+# asked again, few enough that it is never a nag.
+_MAX_REVIEW_TIME_ASKS = 3
 # The opener, plus one re-ask. Past that the question stops going out even
 # when the model keeps writing it: three asks in ninety seconds is what a
 # tester saw on 3 Sep, and the third one had already been answered.
@@ -6933,6 +6937,51 @@ REVIEW_TIME_NOT_SAVED = (
 )
 
 
+def _review_time_asks(user_key: str) -> int:
+    value = _onboarding(user_key).get("review_time_asks", 0)
+    return value if isinstance(value, int) else 0
+
+
+def _note_review_time_ask(user_key: str) -> None:
+    _update_onboarding(user_key, review_time_asks=_review_time_asks(user_key) + 1)
+
+
+def _asks_something(text: str) -> bool:
+    """Whether Ted's own reply already puts a question to them.
+
+    A turn belongs to one question. The file says so above the target gate and
+    SOUL.md says so as a never, so the check-in question waits for a turn that
+    is not already asking rather than arriving alongside one.
+    """
+    return "?" in (text or "")
+
+
+def _review_time_due(user_key: str) -> bool:
+    """Whether this person is owed the check-in question right now.
+
+    Read from the record, never from the model's prose. That distinction is
+    the whole bug: see the comment on `_ONBOARDING_STATE_PATH`, which has said
+    since the beginning that onboarding state is recorded by the code that
+    performs each step and never re-derived by pattern-matching what the model
+    said, because SOUL.md tells the model to vary its wording and any phrase
+    match will eventually fail. This step was the one place that broke the
+    rule, and it failed exactly as predicted: of 27 people who finished the
+    six questions, 15 were never asked this at all.
+    """
+    record = _onboarding(user_key)
+    if record.get("review_state") == "done" or record.get("review_time"):
+        return False
+    # Not owed until the hard part is behind them and they have agreed the
+    # numbers. Before that, this is not the outstanding question.
+    if record.get("setup") != "done" or record.get("profile_summary") != "agreed":
+        return False
+    # Never jump an outstanding question. If the target choice or the picks
+    # question is open, that one owns the turn and this waits.
+    if record.get("target_state") == "asking" or record.get("picks_state") == "asking":
+        return False
+    return _review_time_asks(user_key) < _MAX_REVIEW_TIME_ASKS
+
+
 def review_time_gate(
     response_text: str,
     user_text: str,
@@ -6943,6 +6992,17 @@ def review_time_gate(
 
     Runs only while the step is outstanding, so a user who has settled their
     time never meets it again.
+
+    WHY THIS ASKS ON ITS OWN, since 19 Sep 2026. It used to ask only when the
+    model's reply happened to match `_MODEL_REVIEW_TIME_ASK`, which made the
+    last question of onboarding the only one nothing was responsible for. The
+    first two thirds are driven by the gate: it asks, counts and retries. This
+    third waited for the model to remember.
+
+    It mostly did not. 15 of the 27 people who finished setup were never asked
+    at all, and they had not left: they sent a median of 12 messages each after
+    that point, one of them 56. In the eight days the delivery ledger covers,
+    this question went out to two people.
     """
     if not user_key or _review_time_done(user_key):
         return None
@@ -6963,7 +7023,16 @@ def review_time_gate(
     # the gate's words instead, once.
     if _MODEL_REVIEW_TIME_ASK.search(response_text or ""):
         _update_onboarding(user_key, review_state="asking")
+        _note_review_time_ask(user_key)
         LOGGER.info("ted_review_time_asked user_key=%s source=model", user_key)
+        return REVIEW_TIME_QUESTION
+
+    # Asking, when the model did not. The record says they are owed it, and
+    # this reply is not already putting a question to them, so it goes now.
+    if _review_time_due(user_key) and not _asks_something(response_text):
+        _update_onboarding(user_key, review_state="asking")
+        _note_review_time_ask(user_key)
+        LOGGER.info("ted_review_time_asked user_key=%s source=gate", user_key)
         return REVIEW_TIME_QUESTION
     return None
 

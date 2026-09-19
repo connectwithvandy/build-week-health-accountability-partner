@@ -9255,6 +9255,103 @@ class DeficitPhrasingTest(unittest.TestCase):
                 self.assertNotIn("1650", out)
 
 
+class TheCheckInTimeIsActuallyAskedTest(unittest.TestCase):
+    """19 Sep 2026. It was asked once, and mostly it was never asked at all.
+
+    Of the 27 people who finished the six setup questions, 15 were never asked
+    for a check-in time. They had not drifted off: they sent a median of 12
+    messages each afterwards, one of them 56, and Ted answered. In the eight
+    days the delivery ledger reaches back, this question went out to two
+    people.
+
+    The cause was that the last question of onboarding was the only one nothing
+    owned. The gate asks for the name and asks the six, counting and retrying.
+    This one fired on a regex over the model's own reply, so when the model did
+    not reach for it, nobody did. The comment on `_ONBOARDING_STATE_PATH` has
+    warned against exactly that since the beginning: onboarding state is
+    recorded by the code that performs each step, never re-derived by matching
+    model prose, because SOUL tells the model to vary its wording.
+    """
+
+    def _ready(self, name: str, **extra) -> str:
+        """Somebody who has finished the six and agreed their numbers."""
+        key = f"review-due-{name}"
+        gates._DISCLOSURE_SENT_KEYS.add(key)
+        with gates._ONBOARDING_LOCK:
+            gates._ONBOARDING_STATE.pop(key, None)
+        self.addCleanup(gates._DISCLOSURE_SENT_KEYS.discard, key)
+        gates._update_onboarding(
+            key, setup="done", profile_summary="agreed", **extra
+        )
+        return key
+
+    def test_it_is_asked_even_though_the_model_never_reached_for_it(self) -> None:
+        """The 15. Ted says something ordinary and the question goes with it."""
+        key = self._ready("plain")
+        asked = gates.review_time_gate("nice one, that's a solid plate.", "thanks", key)
+        self.assertEqual(asked, gates.REVIEW_TIME_QUESTION)
+        self.assertEqual(gates._review_state(key), "asking")
+
+    def test_it_waits_for_a_turn_that_is_not_already_asking(self) -> None:
+        """A turn belongs to one question, which this file says twice already."""
+        key = self._ready("busy")
+        self.assertIsNone(
+            gates.review_time_gate("sure. how many rotis was that?", "hi", key)
+        )
+        self.assertIsNone(gates._review_state(key))
+
+    def test_it_does_not_jump_an_outstanding_target_choice(self) -> None:
+        key = self._ready("target", target_state="asking")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_it_does_not_jump_an_outstanding_picks_question(self) -> None:
+        key = self._ready("picks", picks_state="asking")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_it_is_not_asked_before_the_six_are_done(self) -> None:
+        key = self._ready("early")
+        gates._update_onboarding(key, setup="running")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_it_is_not_asked_before_they_agree_their_numbers(self) -> None:
+        key = self._ready("unagreed")
+        gates._update_onboarding(key, profile_summary="shown")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_it_stops_after_three_and_is_never_a_nag(self) -> None:
+        """The cap the name question settled on, for the same reason."""
+        key = self._ready("capped")
+        for _ in range(gates._MAX_REVIEW_TIME_ASKS):
+            self.assertEqual(
+                gates.review_time_gate("okay.", "hmm", key), gates.REVIEW_TIME_QUESTION
+            )
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_answering_it_still_closes_the_step(self) -> None:
+        """The reading half must survive the change to the asking half."""
+        key = self._ready("answers")
+        self.assertEqual(
+            gates.review_time_gate("okay.", "hmm", key), gates.REVIEW_TIME_QUESTION
+        )
+        with patch.object(gates, "_convex_request", return_value={"success": True}):
+            settled = gates.review_time_gate("9pm", "9pm", key)
+        self.assertIn("9pm", settled)
+        self.assertEqual(gates._review_state(key), "done")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_somebody_who_already_has_a_time_is_left_alone(self) -> None:
+        key = self._ready("settled", review_state="done", review_time="21:00")
+        self.assertIsNone(gates.review_time_gate("okay.", "hmm", key))
+
+    def test_the_question_asks_for_the_city_as_well_as_the_time(self) -> None:
+        """A second finding from the same dig: the wording that added the city
+        had never been delivered to anybody. Both real sends were the older
+        text, so the timezone fix of 16 Sep had never actually run. Ted knew
+        somebody wanted 9pm and not whose 9pm."""
+        self.assertIn("city", gates.REVIEW_TIME_QUESTION)
+        self.assertEqual(gates.REVIEW_TIME_QUESTION.count("?"), 1)
+
+
 class TheCheckInTimeIsAskedOnceTest(unittest.TestCase):
     """4 Sep 2026: Parth was asked for his check-in time twice in 60 seconds.
 
