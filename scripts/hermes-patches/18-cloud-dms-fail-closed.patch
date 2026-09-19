@@ -1,0 +1,42 @@
+--- a/gateway/platforms/whatsapp_cloud.py	2026-09-19 16:02:07
++++ b/gateway/platforms/whatsapp_cloud.py	2026-09-19 16:02:07
+@@ -257,16 +257,35 @@
+         _allow_all_optin = str(
+             os.getenv("WHATSAPP_CLOUD_ALLOW_ALL_USERS", "")
+         ).strip().lower() in {"true", "1", "yes"}
+-        _default_dm_policy = (
+-            "open" if _allow_all_optin
+-            else ("allowlist" if self._allow_from else "open")
+-        )
++        # Ted patch 18. The last branch used to be "open", so an unset
++        # WHATSAPP_CLOUD_ALLOWED_USERS did not widen the door, it removed it:
++        # any number on earth could reach a published app with a live webhook.
++        # That is one deleted line away at all times, and nothing about the
++        # deletion looks like a security change.
++        #
++        # Now the absence of an allowlist means nobody rather than everybody.
++        # Opening the channel stays possible and has to be said out loud, with
++        # WHATSAPP_CLOUD_ALLOW_ALL_USERS=true or WHATSAPP_CLOUD_DM_POLICY=open.
++        # The failure this creates is Ted ignoring people, which is visible and
++        # recoverable. The failure it removes is strangers in a health product,
++        # which is neither.
++        _default_dm_policy = "open" if _allow_all_optin else "allowlist"
+         self._dm_policy: str = str(
+             extra.get("dm_policy")
+             or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+             or os.getenv("WHATSAPP_DM_POLICY")
+             or _default_dm_policy
+         ).strip().lower()
++        # A closed door nobody can see is the same outage as a broken one. If
++        # this is where the default landed, the operator gets told once, at
++        # boot, in the log they already read when nothing is arriving.
++        if self._dm_policy == "allowlist" and not self._allow_from:
++            logger.warning(
++                "[whatsapp_cloud] DM policy is 'allowlist' and the allowlist "
++                "is empty: every inbound message will be ignored. Set "
++                "WHATSAPP_CLOUD_ALLOWED_USERS, or WHATSAPP_CLOUD_DM_POLICY=open "
++                "to take messages from anyone."
++            )
+         self._group_policy: str = str(
+             extra.get("group_policy")
+             or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")

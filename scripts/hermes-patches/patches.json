@@ -295,6 +295,22 @@
           "absent": []
         }
       ]
+    },
+    {
+      "file": "18-cloud-dms-fail-closed.patch",
+      "what": "an unset Cloud allowlist means nobody, not everybody",
+      "checks": [
+        {
+          "path": "gateway/platforms/whatsapp_cloud.py",
+          "present": [
+            "_default_dm_policy = \"open\" if _allow_all_optin else \"allowlist\"",
+            "every inbound message will be ignored"
+          ],
+          "absent": [
+            "else (\"allowlist\" if self._allow_from else \"open\")"
+          ]
+        }
+      ]
     }
   ]
 }
