@@ -5242,12 +5242,104 @@ _THIRD_PERSON_NOTE = re.compile(
 )
 
 
+# Ted talking about the machine he runs on.
+#
+# `_THIRD_PERSON_NOTE` above catches Ted talking about the *user* in the third
+# person. This is the other direction, and nothing caught it until 19 Sep 2026.
+#
+# Found by replaying twelve real reminder turns through candidate models for
+# T15. Asked to remind somebody to take their CoQ10, `claude-haiku-4-5` sent
+# seven hundred characters:
+#
+#   "I appreciate the request, but I need to be direct: I cannot send WhatsApp
+#    messages. I have no access to WhatsApp, SMS, email, or any messaging
+#    service. The instruction at the top tells me not to fabricate tool
+#    output... you would need to integrate this Hermes session with a WhatsApp
+#    Business API, and that integration does not currently exist in this
+#    setup."
+#
+# Checked, not assumed: **nothing in this file stopped it.**
+# `_THIRD_PERSON_NOTE` matches "the user"; that reply says "Vandy's WhatsApp".
+# `_ASSISTANT_CLOSERS` matches a closing offer, not a refusal. Patch 11 catches
+# nine gateway sentinels, and this is none of them — it is the model's own
+# `final_response`. It would have been delivered.
+#
+# It is not a cheap-model problem either, which is the part that makes this
+# worth a gate rather than a note. Three of TED's 3,014 drafts have already
+# broken character on `claude-sonnet-5`, one of them on 8 Sep in a real thread:
+# "I can't send a formatted breakdown like that, my numbers just show up under
+# my message automatically" — which was true of every meal turn and false of
+# the one she was on. 0.1% on Sonnet against 8% on Haiku is a difference of
+# degree, and the fallback model is already not Sonnet.
+#
+# NARROW ON PURPOSE. Ted says "i can't" constantly and should keep being able
+# to: "i can't tell from the photo", "i can't promise that". What is matched is
+# only a claim about *this machine's* wiring — the channel it speaks over, the
+# tools it holds, the prompt it was given, the company that made it. Every
+# pattern below is a phrase from a real observed break or the vocabulary that
+# produced one, not an imagined one.
+#
+# EVERY PATTERN WAS COUNTED AGAINST THE CORPUS BEFORE IT WENT IN. 3,014 drafts,
+# and the question asked of each candidate was "how many real Ted replies does
+# this take out":
+#
+#   i can't access …      2 drafts, and both are the breaks   -> matched
+#   i can't send …        1 draft,  and it is the break       -> matched
+#   paste it / this       0 drafts                            -> matched
+#   the exact message     0 drafts                            -> matched
+#   the bare word whatsapp  4 drafts, ALL legitimate          -> NOT matched
+#
+# That last row is why this is counted rather than reasoned about. "whatsapp"
+# looks like the safest possible tell for a reply about the channel, and
+# matching it would have deleted Ted's own introduction: "hey there — I'm Ted,
+# your fitness buddy on WhatsApp 🙂 what should I call you?". It stays out, and
+# the channel is only matched as part of a phrase no coach ever writes.
+#
+# Bare "i can't" appears in 9 drafts, 6 of them ordinary coaching, so it is not
+# matched either. The machine verbs are: access, send, reach, deliver.
+_MACHINE_TALK = re.compile(
+    # The channel. Ted lives on WhatsApp; a Ted who explains he cannot reach it
+    # is not Ted. Unconditional on the verb, because the corpus says every use
+    # of these four is already a break.
+    r"\bi (?:can ?not|can'?t) (?:send|access|reach|deliver)\b"
+    r"|\bi have no access\b|\bi do(?: not|n'?t) have access\b"
+    r"|\baccess\b[^.!?]{0,40}\bdirectly\b"
+    # Handing the user a script to run themselves, which is the shape a refusal
+    # takes when the model is trying to be helpful about it.
+    r"|\bpaste (?:it|this)\b|\bthe exact message\b"
+    # The plumbing, by name.
+    r"|\bwhatsapp business api\b|\bhermes\b|\bcron job\b|\bapi key\b"
+    r"|\bintegrat(?:e|ion|ing) (?:this|a|the|with)\b"
+    # The prompt and the tools, which the user is never told about.
+    r"|\bsystem prompt\b|\bthe instruction(?:s)? (?:at the top|above|say)\b"
+    r"|\bfabricat(?:e|ing) (?:tool|any) \w+\b|\btool output\b"
+    r"|\bno tool (?:here|available|that)\b"
+    # The model admitting to being one.
+    r"|\bas an ai\b|\blanguage model\b|\bi'?m an? (?:ai|assistant|model)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_machine_talk(text: str) -> bool:
+    """A sentence about the wiring, which no user ever needs and Ted never has."""
+    return bool(_MACHINE_TALK.search((text or "").strip()))
+
+
 def _is_internal_note(text: str) -> bool:
-    """A sentence or line that is Ted talking about the user, not to them."""
+    """A sentence or line that is Ted talking about the user, or about himself.
+
+    Two directions, one answer, because the harm and the remedy are identical:
+    a sentence that is about the machinery rather than to the person, and the
+    fix is to take it out and keep the rest.
+    """
     stripped = (text or "").strip()
     if not stripped:
         return False
-    return bool(_WHOLE_ASIDE.match(stripped) or _THIRD_PERSON_NOTE.search(stripped))
+    return bool(
+        _WHOLE_ASIDE.match(stripped)
+        or _THIRD_PERSON_NOTE.search(stripped)
+        or _is_machine_talk(stripped)
+    )
 
 
 def strip_assistant_speak(text: str) -> str:
@@ -5266,6 +5358,12 @@ def strip_assistant_speak(text: str) -> str:
     recurrence visible rather than silent.
     """
     dropped_note = False
+    # Tracked apart from `dropped_note`, because the two disagree about what to
+    # do when nothing survives. A message that was all furniture is better sent
+    # over-polished than not at all. A message that was all machine talk is the
+    # one case where sending the original is the worst available option: it is
+    # a refusal explaining TED's plumbing to somebody waiting on a reminder.
+    dropped_machine = False
     lines: list[str] = []
     for line in (text or "").splitlines():
         cleaned = _HEADING.sub("", line)
@@ -5289,6 +5387,7 @@ def strip_assistant_speak(text: str) -> str:
                 continue
             if _is_internal_note(sentence):
                 dropped_note = True
+                dropped_machine = dropped_machine or _is_machine_talk(sentence)
                 continue
             sentences.append(sentence)
         joined = " ".join(sentences).strip()
@@ -5299,11 +5398,23 @@ def strip_assistant_speak(text: str) -> str:
     result = "\n".join(kept).strip()
     if dropped_note:
         LOGGER.warning(
-            "ted_internal_note_in_reply removed=%s text=%r",
+            "ted_internal_note_in_reply removed=%s machine=%s text=%r",
             "yes" if result else "no, whole message was the note",
+            "yes" if dropped_machine else "no",
             (text or "")[:200],
         )
-    return result or (text or "").strip()
+    if result:
+        return result
+    # Nothing survived, and the whole message was about the machine. Returning
+    # the original here would deliver exactly the failure this is for, so the
+    # one already-approved line stands in instead. It is not perfect copy for
+    # every surface — a reminder the user never asked for does not need "send
+    # it again" — but it is Ted's voice, it is honest that nothing landed, and
+    # it is enormously better than a paragraph about the WhatsApp Business API.
+    if dropped_machine:
+        LOGGER.warning("ted_machine_talk_replaced text=%r", (text or "")[:200])
+        return STORAGE_NOT_SAVED
+    return (text or "").strip()
 
 
 # A line the block already says. "Today · 3 meals" is not a figure by the

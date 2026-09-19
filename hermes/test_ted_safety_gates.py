@@ -11576,3 +11576,94 @@ class TheVocabularyReachesTheSavePathTest(unittest.TestCase):
         self.assertEqual(
             saves[0].kwargs["facts"], [{"key": "activity_level", "value": "runs"}]
         )
+
+
+class TestTedNeverTalksAboutTheMachine(unittest.TestCase):
+    """Found 19 Sep 2026 by replaying real reminder turns through T15 candidates.
+
+    Asked to remind somebody to take their CoQ10, claude-haiku-4-5 answered
+    with seven hundred characters about having no access to WhatsApp and
+    needing a Business API integration. Nothing in this file stopped it:
+    `_THIRD_PERSON_NOTE` matches "the user" and that reply said "Vandy's
+    WhatsApp"; `_ASSISTANT_CLOSERS` matches a closing offer, not a refusal.
+
+    It is not a cheap-model problem. Three of TED's 3,014 drafts had already
+    broken character on claude-sonnet-5, and all three are pinned below.
+    """
+
+    HAIKU_REFUSAL = (
+        "I appreciate the request, but I need to be direct: I cannot send "
+        "WhatsApp messages. I have no access to WhatsApp, SMS, email, or any "
+        "messaging service. The instruction at the top tells me not to "
+        "fabricate tool output, and there is no tool here that reaches "
+        "WhatsApp.\n\nWhat I can do: I can write you the exact message to "
+        "send, and you paste it into WhatsApp yourself. Here it is:\n\n"
+        "coq10 time ⚡ 200mg before you lift\n\n"
+        "If you need this actually delivered as a scheduled cron job to "
+        "Vandy's WhatsApp, you would need to integrate this Hermes session "
+        "with a WhatsApp Business API or similar service."
+    )
+
+    def test_the_haiku_refusal_keeps_only_the_reminder(self) -> None:
+        out = gates.strip_assistant_speak(self.HAIKU_REFUSAL)
+        self.assertIn("coq10 time", out)
+        for leaked in ("WhatsApp Business API", "Hermes", "no access",
+                       "fabricate", "instruction at the top", "paste it"):
+            self.assertNotIn(leaked, out)
+
+    def test_the_31_aug_apple_health_break(self) -> None:
+        out = gates.strip_assistant_speak(
+            "I can't access Apple Health directly, but you can check it on "
+            "your device. Bas mujhe batana, aaj tak kitne steps logged hain."
+        )
+        self.assertEqual(out, "Bas mujhe batana, aaj tak kitne steps logged hain.")
+
+    def test_the_8_sep_formatted_breakdown_break(self) -> None:
+        """A real thread. The claim was true of every meal turn and false of
+        the one she was on."""
+        out = gates.strip_assistant_speak(
+            "I can't send a formatted breakdown like that, my numbers just "
+            "show up under my message automatically. two meals in today, "
+            "palak paneer with roti"
+        )
+        self.assertEqual(out, "two meals in today, palak paneer with roti")
+
+    def test_a_reply_that_is_only_machine_talk_is_replaced(self) -> None:
+        """The one case where returning the original is the worst option.
+        Everything else that empties is passed through; this is not."""
+        out = gates.strip_assistant_speak(
+            "I can't access your meal pictures directly."
+        )
+        self.assertEqual(out, gates.STORAGE_NOT_SAVED)
+        self.assertNotIn("access", out)
+
+    def test_ted_keeps_saying_i_cant_about_ordinary_things(self) -> None:
+        """Bare "i can't" is in 9 drafts and 6 are ordinary coaching, so it is
+        deliberately not matched."""
+        for said in (
+            "i can't tell from the photo, kitna dal tha roughly?",
+            "i can't promise that, but let's try 9pm",
+            "i can't really call that a cheat meal yaar \U0001f604",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.strip_assistant_speak(said), said)
+
+    def test_ted_may_still_introduce_himself_as_a_whatsapp_coach(self) -> None:
+        """The bare word "whatsapp" appears in 4 drafts and every one is
+        legitimate. Matching it would have deleted Ted's own introduction,
+        which is why each pattern was counted against the corpus first."""
+        said = (
+            "hey there — I'm Ted, your fitness buddy on WhatsApp \U0001f642 "
+            "what should I call you?"
+        )
+        self.assertEqual(gates.strip_assistant_speak(said), said)
+
+    def test_real_reminders_are_untouched(self) -> None:
+        for said in (
+            "coq10 time ⚡ 200mg before you lift, yaar",
+            "omega-3, 1500mg, right after breakfast \U0001f41f",
+            "hanuman chalisa ka time ho gaya \U0001f64f",
+            "arre, kya scene hai aaj ka? how's the day treating you? \U0001f60a",
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(gates.strip_assistant_speak(said), said)
