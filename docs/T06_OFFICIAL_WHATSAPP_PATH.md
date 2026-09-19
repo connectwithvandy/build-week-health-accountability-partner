@@ -136,12 +136,20 @@ version of this line said ₹520, which follows from no figure on this page; the
 it is a different approval bar, and a health reminder filed as a promotion can
 be switched off by a user's own marketing settings.
 
-**Unconfirmed and worth re-checking:** several vendor blogs say Meta will
-charge for service messages from **1 October 2026** at the utility rate. Meta's
-own pricing page still says non-template messages inside the window are free
-and names no such date. If the blogs are right, the 321 free messages a month
-become roughly **₹37 a month**. Still not the
-obstacle; recheck near the date.
+**Largely settled, 19 Sep 2026.** The blogs said Meta would charge for service
+messages from 1 October. Meta's own Step 2 page in the app says, in its own
+words: *"For service messages where you reply to customer messages, you get
+1,000 free user-initiated conversations each month."* So replies are not free
+without limit any more, and they are free well past where Ted sits: **321 a
+month against a cap of 1,000**. The cap, not the date, is the thing to watch,
+and the trigger is roughly tripling the conversation volume.
+
+**What is not optional is a payment method.** The same page: a payment method
+is required to send business-initiated messages, which is *marketing, utility
+and authentication* — every template. Read in Billing Hub on 19 Sep: the
+WhatsApp Business account shows **No payment method**, balance $0.00. The two
+templates in review therefore cannot send when approved. This is the blocker
+for the reminder work, not the approval.
 
 ---
 
@@ -269,7 +277,33 @@ Each step is reversible until step 6.
   do not cut over on a day nobody is watching. `ted-watch.py` stays on the
   laptop watching from outside, as it does for any host move.
 
-## 7. What is still open
+## 7. Three things block the channel, and none of them is code
+
+Read in Meta's dashboard on 19 Sep 2026, after the token and templates were
+done:
+
+- **The app is unpublished.** Meta's banner on the webhook panel: production
+  data "will be delivered unless the app has been published". Until then only
+  test webhooks fired from the dashboard arrive. No real person can reach Ted
+  on this channel, whatever else is configured.
+- **No payment method** (§4). Templates cannot send.
+- **The callback URL is an ngrok free tunnel**,
+  `scarily-babbling-cupping.ngrok-free.dev`. A public URL exists, but it is one
+  more process held up by hand on the laptop, the same shape as the caffeinate
+  that keeps the machine awake. Treat it as equally unreliable.
+
+Subscribed webhook fields: `messages`, and `message_template_status_update`
+added 19 Sep so a template approval arrives rather than being checked by hand.
+
+**A near miss found on the way.** `whatsapp_cloud` was live and absent from
+`platform_toolsets`, so Hermes fell back to `hermes-whatsapp` — terminal,
+files, patch and the browser — on a channel whose DM policy defaults to open,
+and `ted-gate-guard.py` read only the `whatsapp` key and reported gates on.
+Nothing reached it only because the app is unpublished. Both scripts now walk
+every live WhatsApp platform. **Publishing the app was the step that would have
+opened it**, and it is the step above.
+
+## 8. What is still open
 
 - Whether Ted's own number migrates cleanly. Needs step 6, and is the only
   step with no rehearsal available: the test number cannot rehearse a
