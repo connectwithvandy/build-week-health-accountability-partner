@@ -2136,6 +2136,85 @@ voice-rules prediction comes due.
 the cron and abandoned exclusions, a missing-ledger database, the newline in
 the emoji rule, and the card cut.
 
+## Order 35 — 19 Sep 2026, the cheap models passed every rule by saying nothing
+
+T15 asks for task-based model routing. The first real bakeoff ran 4 real cron
+turns through Sonnet and 8 of the cheapest usable models, $0.14, and the answer
+is **do not switch on this evidence** — for two reasons neither of which was
+the price.
+
+### The scoreboard was wrong, and it was wrong in the worst direction
+
+`qwen/qwen3.7-flash` scored **"rules broken: none"**. It had returned an empty
+string on three of four cases. An empty reply contains no mid-sentence dash, no
+receipt opening and no emoji beside a metric, so all six countable rules pass
+perfectly. Two other models blanked once each: `ling-3.0-flash` and
+`deepseek-v4-flash`.
+
+That is the 4 September failure, by design, twenty times a day. `check_silent`
+in `ted-watch.py` exists because a turn composed nothing, Palak and Vishwas
+Mishra received silence, and neither ever wrote again. A model that does it
+structurally would have shipped on a clean rule sheet.
+
+Why it happens, named rather than guessed: those models put their output in a
+reasoning field and left `message.content` empty. Qwen billed **2,007 output
+tokens to return 14 characters** of visible text. A model that needs special
+handling to emit one line is not a cheap model.
+
+`empty_replies` now reports separately and never folds into the rules, because
+nothing about the rules can catch this. Three tests pin it, including one that
+asserts the six rules *would* have passed three empty strings.
+
+### The ones that spoke were transcribing, not writing
+
+Three different models returned byte-identical text:
+
+    mistralai/mistral-nemo           '5 min meditation ka scene, bas baith ja 🙏'
+    ibm-granite/granite-4.0-h-micro  '5 min meditation ka scene, bas baith ja 🙏'
+    openai/gpt-oss-20b               '5 min meditation ka scene, bas baith ja 🙏'
+
+Checked rather than assumed: that sentence **is the reminder's own stored
+text**, present in the turn prompt. They copied it out. Sonnet read the same
+prompt and wrote `5 min ka time nikal, aankh band kar ke bas saans pe dhyaan de
+🙏` — a different sentence with the same job.
+
+This is the failure the six rules are structurally blind to. Transcription
+passes every one of them, because the source text passes every one of them. It
+would look clean for a week, and every user would receive the same sentence at
+the same minute every day, which is the "receipt, not a reaction" complaint
+that started the voice work in the first place.
+
+### The one real candidate, and what is wrong with it
+
+`amazon/nova-micro-v1`: no blanks, no rules broken, **46 chars average against
+Ted's own 46**, and $0.0017 against Sonnet's $0.1303 for the same four calls —
+77x. It is the only model that matched Ted's length exactly.
+
+It also wrote `"vandy, don't forget your omega 3 (1500mg) after breakfast
+today!"` — English, not Hinglish, and "don't forget" is a nag. And `chal jao
+turant` on case 1, which is an order, not a friend. Worth a second round on
+more cases; not worth switching on four.
+
+### The bigger lever is the prompt, not the price per token
+
+`npm run prompt:audit`, same session:
+
+    cron  floor 21,288 tokens (system 15,829 + tools 5,459)
+          billed 35,739 per call, 32% cached, r/w 0.51
+    chat  floor 21,765, billed 24,654, 76% cached, r/w 4.2
+
+TED carries **21,288 tokens of fixed payload to emit a 42-character
+reminder**, and 5,459 of that is nine tool schemas for turns that mostly call
+no tool. Cutting the floor needs no model change, carries no voice risk, and
+multiplies with any model saving that comes later. It is the same shape as
+T13's first win, which took the cron prompt from 44,232 to 22,233 by scoping
+the toolset — the job is not finished.
+
+### Verdict
+
+Reminders stay on Sonnet. The instrument is now honest, which it was not this
+morning, and the next move is the prompt floor rather than the price list.
+
 ## Web product we are building
 
 The public web app explains Ted, sends interested visitors into the existing WhatsApp experience, captures leads, and stores/shows web data. WhatsApp message handling belongs entirely to Hermes.

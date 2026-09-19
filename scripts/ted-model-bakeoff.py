@@ -388,8 +388,31 @@ def ask(model: str, case: dict, max_tokens: int) -> tuple[str, dict]:
     return ask_claude(model, case, max_tokens)
 
 
+# An empty reply is the loudest failure here, not a clean sheet.
+#
+# The first run of this bakeoff scored `qwen/qwen3.7-flash` as breaking none of
+# the six rules. It had returned an empty string on three of four cases, and an
+# empty string contains no dash, no receipt opening and no emoji beside a
+# metric, so every rule passed. The scoreboard read "rules broken: none" for a
+# model that would have said nothing to three people.
+#
+# TED already has this scar. On 4 Sep 2026 a turn ended having composed nothing
+# at all, Palak and Vishwas Mishra received silence, and neither ever wrote
+# again; `check_silent` in `ted-watch.py` exists because of it. Shipping a
+# model that does that by design, on the strength of a clean rule sheet, would
+# be the same incident scheduled twenty times a day.
+#
+# Why it happens is worth naming rather than guessing at: those models put
+# their output in a reasoning field and left `message.content` empty — qwen
+# billed 2,007 output tokens to return 14 characters of visible text. A model
+# that needs special handling to emit one line is not a cheap model.
+def empty_replies(texts: list[str]) -> int:
+    return sum(1 for text in texts if not (text or "").strip())
+
+
 def show(
-    label: str, stats: dict, voice, cost: float, tokens: dict, ted_length: int | None
+    label: str, stats: dict, voice, cost: float, tokens: dict, ted_length: int | None,
+    blank: int = 0,
 ) -> None:
     if not stats["replies"]:
         print(f"  {label:26} nothing came back")
@@ -410,6 +433,14 @@ def show(
         f"  {label:26} {stats['replies']} replies, {length}, "
         f"{price}, {tokens['input']:,} in / {tokens['output']:,} out"
     )
+    # Printed before the rules, and never folded into them. A model that says
+    # nothing has not passed; it has failed in the one way this product has
+    # already been hurt by.
+    if blank:
+        print(
+            f"    SAID NOTHING: {blank} of {stats['replies']} came back empty. "
+            "Disqualifying — see `check_silent`."
+        )
     print(f"    rules broken: {', '.join(broke) if broke else 'none'}")
 
 
@@ -546,6 +577,7 @@ def main() -> int:
             costs[model],
             tokens[model],
             ted_length,
+            empty_replies(results[model]),
         )
 
     print("\nWhat each model actually wrote:\n")

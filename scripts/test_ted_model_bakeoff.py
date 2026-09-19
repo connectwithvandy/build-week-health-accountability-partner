@@ -148,3 +148,29 @@ class TestWhichTurnsAreReplayed:
             ("cron_b_1", "SOUL", "user", "fire the 10am nudge"),
         ])
         assert [c["id"] for c in self._read(bakeoff, db)] == ["cron_b_1"]
+
+
+class TestAnEmptyReplyIsNotACleanSheet:
+    """The first real run scored a model that said nothing as breaking no rules.
+
+    An empty string contains no dash, no receipt opening and no emoji beside a
+    metric. Every countable rule passes. `qwen/qwen3.7-flash` returned empty on
+    three of four cases and the scoreboard read "rules broken: none".
+
+    TED already has this scar: on 4 Sep 2026 a turn composed nothing, Palak and
+    Vishwas Mishra got silence, and neither wrote again.
+    """
+
+    def test_empties_are_counted(self, bakeoff):
+        assert bakeoff.empty_replies(["", "  ", "hanuman chalisa ka time 🙏"]) == 2
+
+    def test_a_full_sheet_counts_none(self, bakeoff):
+        assert bakeoff.empty_replies(["omega-3 time 💊", "how was your day?"]) == 0
+
+    def test_the_rules_alone_would_have_passed_it(self, bakeoff):
+        """The bug, pinned. Nothing about the six rules catches this, which is
+        why the count is reported separately and never folded into them."""
+        voice = bakeoff._load("ted_voice_check", "ted-voice-check.py")
+        stats = voice.measure(["", "", ""])
+        assert all(stats[name] == 0 for name, _why, _pattern in voice.RULES)
+        assert bakeoff.empty_replies(["", "", ""]) == 3
